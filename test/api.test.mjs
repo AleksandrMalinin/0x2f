@@ -300,3 +300,60 @@ test("a task with no event log yet is still present in the history", async () =>
     await fs.rm(base, { recursive: true, force: true });
   }
 });
+
+test("GET /api/providers lists the registry (default first) with normalized capabilities", async () => {
+  const { base, handle } = await startTestServer();
+  try {
+    const providers = await fetch(handle.url + "/api/providers").then(r => r.json());
+    assert.deepEqual(
+      providers.map(p => p.id),
+      ["claude-code", "deepseek-harness"]
+    );
+    const dsh = providers.find(p => p.id === "deepseek-harness");
+    assert.equal(dsh.displayName, "DeepSeek Harness");
+    assert.equal(dsh.capabilities.supportsResume, false);
+    assert.equal(dsh.capabilities.supportsStructuredEvents, false);
+    const cc = providers.find(p => p.id === "claude-code");
+    assert.equal(cc.capabilities.supportsResume, true);
+    // No vendor internals leak through the API.
+    for (const p of providers) {
+      assert.deepEqual(Object.keys(p).sort(), ["capabilities", "displayName", "id"]);
+    }
+  } finally {
+    await handle.close();
+    await fs.rm(base, { recursive: true, force: true });
+  }
+});
+
+test("POST /api/tasks creates through the selected provider", async () => {
+  const { base, node, handle } = await startTestServer();
+  try {
+    const res = await postJson(handle.url + "/api/tasks", {
+      title: "DSH task",
+      provider: "deepseek-harness"
+    });
+    assert.equal(res.status, 201);
+    const task = await res.json();
+    assert.equal(task.execution.provider, "deepseek-harness");
+    assert.equal(task.execution.node, "fake-node");
+    assert.deepEqual(node.calls, [["start", task.slug]]);
+  } finally {
+    await handle.close();
+    await fs.rm(base, { recursive: true, force: true });
+  }
+});
+
+test("POST /api/tasks with an unknown provider -> 400 from the shared action", async () => {
+  const { base, handle } = await startTestServer();
+  try {
+    const res = await postJson(handle.url + "/api/tasks", {
+      title: "Nope",
+      provider: "codex"
+    });
+    assert.equal(res.status, 400);
+    assert.match((await res.json()).error, /Unknown execution provider "codex"/);
+  } finally {
+    await handle.close();
+    await fs.rm(base, { recursive: true, force: true });
+  }
+});

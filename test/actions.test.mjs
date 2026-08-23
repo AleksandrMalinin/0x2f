@@ -262,3 +262,90 @@ test("CLI and HTTP API are the same actions: the runtime factory both use produc
     await fs.rm(base, { recursive: true, force: true });
   }
 });
+
+// --- provider selection (0x2F v0.3: second provider) -----------------------
+
+test("createWork selects the execution provider explicitly", async () => {
+  const runtime = await makeRuntime();
+  try {
+    const task = await runtime.actions.createWork({
+      title: "Run on DSH",
+      provider: "deepseek-harness"
+    });
+    assert.equal(task.execution.provider, "deepseek-harness");
+    assert.equal((await runtime.store.findTask(task.id)).execution.provider, "deepseek-harness");
+  } finally {
+    await fs.rm(runtime.base, { recursive: true, force: true });
+  }
+});
+
+test("createWork defaults to the runtime default provider (claude-code)", async () => {
+  const runtime = await makeRuntime();
+  try {
+    const task = await runtime.actions.createWork({ title: "Default provider" });
+    assert.equal(task.execution.provider, "claude-code");
+  } finally {
+    await fs.rm(runtime.base, { recursive: true, force: true });
+  }
+});
+
+test("createWork rejects an unknown provider with the shared error", async () => {
+  const runtime = await makeRuntime();
+  try {
+    await assert.rejects(
+      () => runtime.actions.createWork({ title: "Nope", provider: "codex" }),
+      /Unknown execution provider "codex"\. Available: claude-code, deepseek-harness\./
+    );
+    assert.deepEqual(runtime.node.calls, []); // nothing launched
+  } finally {
+    await fs.rm(runtime.base, { recursive: true, force: true });
+  }
+});
+
+test("createWork persists model when reliably known (separate concern from provider)", async () => {
+  const runtime = await makeRuntime();
+  try {
+    const task = await runtime.actions.createWork({
+      title: "With model",
+      provider: "deepseek-harness",
+      model: "deepseek-v4-flash"
+    });
+    assert.equal(task.execution.model, "deepseek-v4-flash");
+    assert.equal(task.execution.provider, "deepseek-harness");
+    assert.equal(task.execution.node, "fake-node");
+    const onDisk = await runtime.store.findTask(task.id);
+    assert.equal(onDisk.execution.model, "deepseek-v4-flash");
+  } finally {
+    await fs.rm(runtime.base, { recursive: true, force: true });
+  }
+});
+
+test("resumeWork refuses a provider that cannot resume (capability, not parity faking)", async () => {
+  const runtime = await makeRuntime();
+  try {
+    // DSH headless never produces permission blocks, but a decision block is
+    // possible; if one ever lands, allow/reject must refuse loudly rather
+    // than pretend a new run is a continuation.
+    const task = await runtime.actions.createWork({
+      title: "DSH decision",
+      provider: "deepseek-harness"
+    });
+    const blocked = applyOutcome(task, {
+      status: "needs_you",
+      reason: "decision",
+      blockedOn: { type: "decision", text: "pick a backend" }
+    });
+    await runtime.store.writeJson(
+      path.join(runtime.store.taskDir(task.slug), "task.json"),
+      blocked
+    );
+
+    await assert.rejects(
+      () => runtime.actions.allowWork(task.id),
+      /Provider "deepseek-harness" does not support resuming sessions/
+    );
+    assert.deepEqual(runtime.node.calls, [["start", task.slug]]); // no resume attempt
+  } finally {
+    await fs.rm(runtime.base, { recursive: true, force: true });
+  }
+});
