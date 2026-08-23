@@ -1,0 +1,21 @@
+# Work task state — never commit
+.work/
+
+# Dependencies
+node_modules/
+
+# Build artifacts
+dist/
+
+# Logs
+*.log
+
+# Environment / secrets
+.env
+.env.*
+
+# OS / editor noise
+.DS_Store
+*.swp
+.idea/
+.vscode/

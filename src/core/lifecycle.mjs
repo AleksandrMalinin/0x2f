@@ -1,0 +1,76 @@
+// Work task lifecycle — the state machine Work owns.
+//
+// Execution providers produce normalized *outcomes*; Work decides what they
+// mean for the task. The key rule this module enforces:
+//
+//   process completion != task completion
+//
+// A provider run can exit successfully while the engineering task is actually
+// blocked on the human (e.g. a headless agent that stopped because a file edit
+// needs permission). That maps to `needs_you`, never to `ready`.
+
+export const STATUSES = ["working", "needs_you", "ready", "failed", "done"];
+
+// `needs_you` reasons. v0.2 implements `permission` and `decision`;
+// `question` and others are future reasons the state model already allows.
+export const BLOCKED_REASONS = ["permission", "decision", "question"];
+
+// Normalized outcome shapes produced by execution providers:
+//
+//   { status: "ready",    result }
+//   { status: "needs_you", reason, blockedOn, result? }
+//   { status: "failed",   error }
+//
+// `blockedOn` is a normalized Work concept:
+//
+//   { type: "permission", tool, file, plannedChange, raw? }
+//   { type: "decision",   text }
+
+export function applyOutcome(task, outcome) {
+  const next = { ...task };
+  next.status = outcome.status;
+  next.updatedAt = new Date().toISOString();
+
+  if (outcome.status === "needs_you") {
+    next.blockedOn = outcome.blockedOn ?? { type: outcome.reason ?? "decision" };
+    delete next.error;
+  } else if (outcome.status === "ready") {
+    delete next.blockedOn;
+    delete next.error;
+  } else if (outcome.status === "failed") {
+    next.error = outcome.error ?? "Execution failed";
+    delete next.blockedOn;
+  }
+
+  return next;
+}
+
+// The user acted on a `needs_you` task (allow / reject / continue).
+// The task goes back to WORKING with the execution session kept intact.
+export function beginResume(task, grant) {
+  if (task.status !== "needs_you") {
+    throw new Error(
+      `Task #${task.id} is ${task.status}, not needs_you — nothing to resume.`
+    );
+  }
+
+  const next = { ...task };
+  next.status = "working";
+  next.updatedAt = new Date().toISOString();
+  delete next.blockedOn;
+  delete next.error;
+  next.execution = {
+    ...(task.execution ?? {}),
+    attempts: (task.execution?.attempts ?? 1) + 1,
+    lastAction: grant
+  };
+  return next;
+}
+
+export function closeTask(task) {
+  const next = { ...task };
+  next.status = "done";
+  next.updatedAt = new Date().toISOString();
+  delete next.blockedOn;
+  return next;
+}
