@@ -468,16 +468,28 @@ export function trace(steps, opts = {}) {
   const cellGap = marks ? 2 : 1;
   const groupGap = marks ? 14 : 5;
 
-  // Short runs get several cells per step so the track still reads as a
-  // punched strip; long runs are strided down so it stays one line wide.
-  const stride = units.length > budget ? Math.ceil(units.length / budget) : 1;
+  // One punched cell per unit of WORK, and the unit is time — a step that
+  // held the run for 40s is a longer strike than one that took 2s. Both the
+  // step order and the gaps between step timestamps are real, so this is an
+  // encoding of recorded data, not a filler that pads the track to width.
+  //
+  // Long runs are strided down first so the track stays one line wide; each
+  // surviving step then keeps at least two cells so it stays legible.
+  const stride = units.length > budget / 2 ? Math.ceil(units.length / (budget / 2)) : 1;
   const shown = units.filter((_, i) => i % stride === 0);
-  const per = shown.length
-    ? Math.max(1, Math.min(4, Math.floor(budget / Math.max(1, shown.length))))
-    : 1;
+
+  const endT = opts.endT ?? (units.length ? units[units.length - 1].t : 0);
+  const spanOf = i => {
+    const next = i + 1 < shown.length ? shown[i + 1].t : endT;
+    return Math.max(0.25, next - shown[i].t);
+  };
+  const totalSpan = shown.reduce((sum, _, i) => sum + spanOf(i), 0) || 1;
+  const cellsFor = i => Math.max(2, Math.round((spanOf(i) / totalSpan) * budget));
 
   let index = 0;
+  let stepIndex = -1;
   for (const step of shown) {
+    stepIndex++;
     const last = groups[groups.length - 1];
     const group =
       last && last.phase === step.phase
@@ -491,6 +503,7 @@ export function trace(steps, opts = {}) {
           }),
           groups[groups.length - 1]);
 
+    const per = cellsFor(stepIndex);
     for (let k = 0; k < per; k++) {
       group.cells.push({
         w: w + "px",
@@ -751,7 +764,16 @@ export function projectRow(task, events, opts = {}) {
   // A finished run's clock stops at its last event; a live one keeps running.
   const elapsed = (finished ? lastAt : now) - origin;
 
+  // The TRACK measures execution, not attention. A task parked on you for an
+  // hour has a long HALTED-AT clock, but the step it stopped mid-way through
+  // did not take an hour — so the track ends at the last recorded event
+  // unless the run is genuinely still moving.
+  const traceEnd = (running ? now : lastAt) - origin;
+
   const full = trace(steps, {
+    // Where the run currently stands, so the step in flight is measured
+    // against now instead of collapsing to a minimum-width strike.
+    endT: traceEnd / 1000,
     budget: mid ? 66 : 44,
     w: 4,
     scale: 1,
@@ -766,6 +788,7 @@ export function projectRow(task, events, opts = {}) {
   const mini = done
     ? { groups: [] }
     : trace(steps, {
+        endT: traceEnd / 1000,
         budget: 40,
         w: 2,
         scale: 0.5,

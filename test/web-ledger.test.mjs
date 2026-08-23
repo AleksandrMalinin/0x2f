@@ -557,3 +557,40 @@ test("projectRow exposes the AUTO routing decision of the current run", () => {
   assert.equal(manual.routed, null);
   assert.equal(projectRow(task(), [], {}).routed, null);
 });
+
+test("the track spends its cells on time, so a long step strikes wider", () => {
+  // Two steps: the first held the run for 40s, the second for 4s.
+  const events = log([
+    ["tool.started", 0, { name: "Read", input: { file_path: "a.ts" } }],
+    ["tool.started", 40, { name: "Edit", input: { file_path: "a.ts" } }],
+    ["run.completed", 44, { status: "ready" }]
+  ]);
+  const row = projectRow(task({ status: "ready" }), events, { open: true });
+  const [inspect, act] = row.groups;
+  assert.equal(inspect.label, "INSPECT");
+  assert.equal(act.label, "ACT");
+  assert.ok(
+    inspect.cells.length > act.cells.length * 3,
+    `expected the 40s step to strike far wider than the 4s one, got ${inspect.cells.length} vs ${act.cells.length}`
+  );
+});
+
+test("time parked on a human is not counted as execution on the track", () => {
+  const events = log([
+    ["tool.started", 0, { name: "Read", input: { file_path: "a.ts" } }],
+    ["tool.started", 10, { name: "Edit", input: { file_path: "a.ts" } }],
+    ["needs_user", 12, { reason: "permission", blockedOn: { type: "permission" } }]
+  ]);
+  const blocked = task({ status: "needs_you", blockedOn: { type: "permission", file: "a.ts" } });
+  // "now" is an hour after the halt: the HALTED-AT clock grows, the track does not.
+  const row = projectRow(blocked, events, {
+    open: true,
+    now: Date.parse("2026-01-01T11:00:00.000Z")
+  });
+  const act = row.groups.find(g => g.label === "ACT");
+  const inspect = row.groups.find(g => g.label === "INSPECT");
+  assert.ok(
+    act.cells.length < inspect.cells.length * 2,
+    `waiting time leaked into the track: inspect ${inspect.cells.length} vs act ${act.cells.length}`
+  );
+});
