@@ -301,14 +301,25 @@ test("projectRow renders the ready result from the files the run actually change
   assert.equal(row.elapsed, "0:04");
 });
 
-test("projectRow compresses a done task and drops its mini track", () => {
-  const events = log([["tool.started", 1, { name: "Read", input: { file_path: "a.ts" } }]]);
-  const row = projectRow(task({ status: "done" }), events, {});
+test("projectRow compresses a done task and drops its trace, as the design does", () => {
+  const events = log([
+    ["tool.started", 1, { name: "Read", input: { file_path: "a.ts" } }],
+    ["tool.started", 9, { name: "Edit", input: { file_path: "a.ts" } }],
+    ["run.completed", 14, { status: "ready" }]
+  ]);
+  const row = projectRow(task({ status: "done" }), events, { providers: RICH });
+
   assert.equal(row.compact, true);
   assert.equal(row.titleSize, "15px");
+  assert.equal(row.titleWeight, 400);
   assert.equal(row.titleColor, "#5c6771");
-  assert.deepEqual(row.mini, []);
   assert.match(row.sub, /^closed · /);
+  // The EXECUTION column belongs to live work; a closed row leaves it empty.
+  assert.deepEqual(row.mini, []);
+
+  // A task still in flight keeps its trace.
+  const live = projectRow(task({ status: "working" }), events, { providers: RICH });
+  assert.ok(live.mini.flatMap(g => g.cells).length > 0);
 });
 
 test("projectRow surfaces failure, a state the design does not draw", () => {
@@ -582,10 +593,15 @@ test("a coarse provider keeps the INSPECT/ACT/VERIFY frame instead of vanishing"
     ["run.started", 0, {}],
     ["run.completed", 40, { status: "ready" }]
   ]);
-  const row = projectRow(coarseTask({ status: "ready" }), events, { open: true, providers: COARSE });
+  const row = projectRow(coarseTask({ status: "ready" }), events, {
+    open: true,
+    providers: COARSE
+  });
 
   assert.equal(row.coarse, true);
+  // The frame is present and labelled...
   assert.deepEqual(row.groups.map(g => g.label), ["INSPECT", "ACT", "VERIFY"]);
+  // ...but every cell is marked unobserved, so nothing reads as activity.
   const cells = row.groups.flatMap(g => g.cells);
   assert.ok(cells.length > 0);
   assert.ok(cells.every(c => c.unobserved === true));
@@ -598,6 +614,7 @@ test("a coarse provider says 'not reported', never 'awaiting change'", () => {
     open: true,
     providers: COARSE
   }).bands;
+
   for (const band of rowBands) {
     assert.equal(band.pendingText, "not reported by this provider", band.label);
     assert.equal(band.unobserved, true, band.label);
@@ -641,6 +658,7 @@ test("a coarse frame carries the halt tear exactly once and invents no phase", (
   );
   const cells = row.groups.flatMap(g => g.cells);
   assert.equal(cells.filter(c => c.isHalt).length, 1);
+  // Still exactly three groups — the marker did not fabricate a fourth phase.
   assert.deepEqual(row.groups.map(g => g.label), ["INSPECT", "ACT", "VERIFY"]);
   assert.equal(row.phaseLabel, "HALTED AT");
 });
@@ -677,6 +695,7 @@ test("time parked on a human is not counted as execution on the track", () => {
   });
   const act = row.groups.find(g => g.label === "ACT");
   const inspect = row.groups.find(g => g.label === "INSPECT");
+  // The blocked EDIT must not have swallowed the whole track.
   assert.ok(
     act.cells.length < inspect.cells.length * 2,
     `waiting time leaked into the track: inspect ${inspect.cells.length} vs act ${act.cells.length}`

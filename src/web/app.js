@@ -966,9 +966,8 @@ function renderRow(row, accent) {
       [
         el("span", {
           class: "compact-title",
-          style: { fontSize: row.titleSize, fontWeight: row.titleWeight, color: row.titleColor },
-          text: row.title
-        }),
+          style: { fontSize: row.titleSize, fontWeight: row.titleWeight, color: row.titleColor }
+        }, inlineEls(parseInline(row.title))),
         el("span", { class: "compact-sub", style: { color: row.subColor }, text: row.sub }),
         renderMini(row, accent),
         el("span", { class: "compact-state", style: { color: row.stateColor }, text: row.stateLabel })
@@ -978,7 +977,7 @@ function renderRow(row, accent) {
     const detail = state.details?.get(row.id);
     body = el("div", { style: { padding: row.pad } }, [
       el("div", { class: "detail-head", onClick: () => toggleOpen(row.id) }, [
-        el("h1", { class: "detail-title", style: { fontSize: row.titleSize }, text: row.title }),
+        el("h1", { class: "detail-title", style: { fontSize: row.titleSize } }, inlineEls(parseInline(row.title))),
         el("span", { class: "detail-state", style: { color: row.stateColor }, text: row.stateLabel })
       ]),
       renderTrack(row, accent),

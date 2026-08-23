@@ -12,6 +12,11 @@
      #2F2F2F is the canonical graphite: it is the chrome, the ink, and the
      rule under the execution track. "/" is structural notation (the task
      gutter, the runtime path in the chrome), never decoration. */
+  /* Ledger column geometry. The header and the rows are separate layouts, so
+     the ONLY way they stay in one grid is by sharing these. Never hard-code a
+     column width or the row gap again — they drift silently. */
+  :root { --col-exec: 170px; --col-state: 78px; --col-gap: 20px; }
+
   html, body { margin: 0; height: 100%; background: #e4e8ec; }
   body {
     font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -81,9 +86,9 @@
   .head { display: grid; grid-template-columns: 56px 1fr; border-bottom: 1px solid #2f2f2f; position: sticky; top: 0; background: #f6f8fa; z-index: 3; }
   .head-gutter { padding: 11px 12px 10px; text-align: right; font-size: 10px; letter-spacing: .16em; color: #5c6771; }
   .head-cols { border-left: 1px solid #dbe2e7; padding: 11px 24px 10px 20px; display: flex; justify-content: space-between; gap: 20px; font-size: 10px; letter-spacing: .16em; color: #5c6771; }
-  .head-right { display: flex; gap: 0; }
-  .head-exec { width: 170px; text-align: left; }
-  .head-state { width: 78px; text-align: right; }
+  .head-right { display: flex; gap: var(--col-gap); }
+  .head-exec { width: var(--col-exec); text-align: left; }
+  .head-state { width: var(--col-state); text-align: right; }
 
   .row { display: grid; grid-template-columns: 56px 1fr; }
   /* Only a task arriving in the ledger animates in. Live re-renders must
@@ -94,12 +99,12 @@
   .row-num { font-size: 12.5px; font-variant-numeric: tabular-nums; line-height: 1.35; }
   .row-body { border-left: 1px solid #dbe2e7; min-width: 0; }
 
-  .compact { display: flex; align-items: center; gap: 20px; cursor: pointer; min-width: 0; }
+  .compact { display: flex; align-items: center; gap: var(--col-gap); cursor: pointer; min-width: 0; }
   .compact:hover { background: #edf1f5; }
   .compact-title { flex: 1; min-width: 0; font-family: "Instrument Sans", system-ui, sans-serif; letter-spacing: -.011em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .compact-sub { font-size: 12px; flex: none; white-space: nowrap; max-width: 300px; overflow: hidden; text-overflow: ellipsis; }
-  .compact-mini { display: flex; align-items: flex-end; gap: 5px; height: 16px; width: 170px; justify-content: flex-start; flex: none; }
-  .compact-state { font-size: 10px; letter-spacing: .15em; width: 78px; text-align: right; flex: none; }
+  .compact-sub { font-size: 12px; flex: none; white-space: nowrap; max-width: 300px; overflow: hidden; text-overflow: ellipsis; text-align: right; font-variant-numeric: tabular-nums; }
+  .compact-mini { display: flex; align-items: flex-end; gap: 5px; height: 16px; width: var(--col-exec); justify-content: flex-start; flex: none; }
+  .compact-state { font-size: 10px; letter-spacing: .15em; width: var(--col-state); text-align: right; flex: none; }
 
   .detail-head { display: flex; align-items: baseline; gap: 24px; cursor: pointer; min-width: 0; }
   .detail-title { flex: 1; min-width: 0; margin: 0; font-family: "Instrument Sans", system-ui, sans-serif; font-weight: 500; letter-spacing: -.026em; line-height: 1.08; color: #2f2f2f; text-wrap: pretty; overflow-wrap: anywhere; }
@@ -205,6 +210,13 @@
     font-size: .9em; background: #e9edf1; padding: 1px 5px; color: #37424c;
     overflow-wrap: anywhere;
   }
+  /* Inside a title the switch from Instrument Sans to mono IS the signal —
+     a filled chip on every ledger row would be noise, not emphasis. */
+  .compact-title .rich-code,
+  .detail-title .rich-code {
+    background: transparent; padding: 0; color: inherit; font-size: .92em;
+  }
+
   .rich-list { margin: 0 0 12px; }
   .rich-li { display: flex; gap: 10px; align-items: baseline; margin: 3px 0; }
   .rich-li-mark { flex: none; color: #79838c; font-variant-numeric: tabular-nums; }
@@ -278,10 +290,9 @@
 
   @media (max-width: 1179px) {
     .chrome-inner, .composer-inner, .legend-inner { padding: 0 18px; }
-    .head-cols { padding: 11px 20px 10px 18px; }
     .head, .row { grid-template-columns: 44px 1fr; }
     .band, .result { grid-template-columns: 112px 1fr; }
-    .head-exec, .compact-mini { width: 120px; }
+    :root { --col-exec: 120px; }
     .compact-sub { display: none; }
   }
   @media (max-width: 899px) {
