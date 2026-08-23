@@ -47,6 +47,34 @@
   .counter-n { font-size: 18px; line-height: 1; color: #f2f5f7; font-variant-numeric: tabular-nums; }
   .counter-k { font-size: 10px; letter-spacing: .16em; color: #a8b3bc; margin-top: 7px; white-space: nowrap; }
 
+  /* attention settings — two controls, nothing more */
+  .chrome-settings { display: flex; align-items: center; gap: 6px; padding: 0 12px; }
+  .setting {
+    background: none; border: 1px solid rgba(255,255,255,.16); color: #9aa6b0;
+    font-family: inherit; font-size: 10px; letter-spacing: .16em;
+    padding: 5px 9px; cursor: pointer; border-radius: 0; white-space: nowrap;
+  }
+  .setting:hover { border-color: rgba(255,255,255,.4); color: #dde4e9; }
+  .setting.disabled { opacity: .38; cursor: default; }
+  .setting.disabled:hover { border-color: rgba(255,255,255,.16); color: #9aa6b0; }
+
+  /* the slash's visual trace: the "/" mark fades once (READY) or splits
+     (NEEDS YOU) in step with the sound. Motion only; reduced-motion kills it. */
+  @keyframes wk-slash { 0%, 100% { opacity: 1 } 28% { opacity: .22 } }
+  @keyframes wk-slash-split { 0%, 100% { opacity: 1 } 10% { opacity: .22 } 24% { opacity: 1 } 38% { opacity: .22 } 52% { opacity: 1 } }
+  .brand-slash.slash { animation: wk-slash .3s ease-out both; }
+  .brand-slash.slash-split { animation: wk-slash-split .5s ease-out both; }
+
+  /* sound demo — dev only, shown only with ?sound-demo=1 */
+  .sound-demo { position: fixed; left: 24px; bottom: 100px; z-index: 30; display: flex; align-items: center; gap: 8px; background: #2f2f2f; color: #9aa6b0; padding: 8px 12px; box-shadow: 0 2px 14px rgba(21,21,21,.35); }
+  .sound-demo-k { font-size: 10px; letter-spacing: .16em; }
+  .sound-demo-btn { background: none; border: 1px solid rgba(255,255,255,.22); color: #dde4e9; font-family: inherit; font-size: 10px; letter-spacing: .14em; padding: 5px 10px; cursor: pointer; border-radius: 0; }
+  .sound-demo-btn:hover { background: #2f5fa8; border-color: #2f5fa8; color: #f6f8fa; }
+
+  @media (prefers-reduced-motion: reduce) {
+    .brand-slash.slash, .brand-slash.slash-split { animation: none; }
+  }
+
   /* ledger */
   .scroll { flex: 1; overflow-y: auto; background: #e4e8ec; }
   .sheet { max-width: 1280px; margin: 0 auto; background: #f6f8fa; border-left: 1px solid #ccd4da; border-right: 1px solid #ccd4da; min-height: 100%; }

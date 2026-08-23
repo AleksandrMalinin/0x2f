@@ -49,7 +49,9 @@ import { WorkError } from "./core/errors.mjs";
 const ASSETS = {
   "/": ["index.html", "text/html; charset=utf-8"],
   "/app/app.js": ["app.js", "text/javascript; charset=utf-8"],
-  "/app/ledger.mjs": ["ledger.mjs", "text/javascript; charset=utf-8"]
+  "/app/ledger.mjs": ["ledger.mjs", "text/javascript; charset=utf-8"],
+  "/app/sound-policy.mjs": ["sound-policy.mjs", "text/javascript; charset=utf-8"],
+  "/app/sound.mjs": ["sound.mjs", "text/javascript; charset=utf-8"]
 };
 
 async function readAsset(name) {

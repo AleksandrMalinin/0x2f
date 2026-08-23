@@ -19,6 +19,8 @@ import {
   fmtDuration,
   two
 } from "/app/ledger.mjs";
+import { createSoundPolicy } from "/app/sound-policy.mjs";
+import { createSlashPlayer } from "/app/sound.mjs";
 
 const EVENT_TYPES = [
   "task.created",
@@ -49,6 +51,30 @@ const STATE_EVENTS = new Set([
 
 const MAX_EVENTS_PER_TASK = 2000;
 
+// --- attention settings -----------------------------------------------------
+// Two settings, that is all: SOUND on/off, and browser notifications for
+// NEEDS YOU. Notifications are opt-in by default and browser permission is
+// requested only by a click on the NOTIFY control — never on page load.
+const SOUND_KEY = "0x2f.sound";
+const NOTIFY_KEY = "0x2f.notify";
+
+function storedFlag(key, fallback) {
+  try {
+    const raw = localStorage.getItem(key);
+    return raw === null ? fallback : raw === "1";
+  } catch {
+    return fallback;
+  }
+}
+
+function persistFlag(key, value) {
+  try {
+    localStorage.setItem(key, value ? "1" : "0");
+  } catch {
+    /* storage unavailable — the setting still applies for this session */
+  }
+}
+
 const state = {
   tasks: [],
   eventsByTask: new Map(),
@@ -65,7 +91,10 @@ const state = {
   connected: false,
   width: window.innerWidth,
   base: "",
-  flash: null
+  flash: null,
+  soundOn: storedFlag(SOUND_KEY, true),
+  notifyOn: storedFlag(NOTIFY_KEY, false),
+  pulse: null // { type: "ready"|"needs_you", at } — the slash's visual trace
 };
 
 // --- tiny DOM helper -------------------------------------------------------
@@ -120,6 +149,118 @@ function post(path) {
   return api(path, { method: "POST" });
 }
 
+// --- the slash: sound, visual, notification ---------------------------------
+//
+// Events are many, interruptions are few. The sound policy watches the live
+// event stream, dedupes each real transition, and emits at most ONE intent
+// per batching window (needs_you outranks ready). This handler turns that
+// intent into the same event expressed through three media: the slash sound,
+// a brief pulse of the "/" mark, and — for NEEDS YOU, tab hidden, opted in —
+// one restrained browser notification.
+
+const slash = createSlashPlayer();
+const policy = createSoundPolicy({ onIntent: handleIntent });
+
+function handleIntent(intent) {
+  if (intent.type === "needs_you") {
+    if (state.soundOn) slash.needsYou();
+    pulse("needs_you");
+    if (state.notifyOn && document.hidden) notifyNeedsYou(intent);
+  } else {
+    if (state.soundOn) slash.ready();
+    pulse("ready");
+  }
+}
+
+// The "/" in the chrome is the sonic gesture's visual trace: one quick fade
+// for READY, a split fade for NEEDS YOU. Rendered state, so a re-render (a
+// late progress event, the clock) never restarts the pulse mid-flight.
+const PULSE_MS = { ready: 300, needs_you: 500 };
+
+function pulse(type) {
+  state.pulse = { type, at: Date.now() };
+  render();
+}
+
+// One notification identity, one tag — a burst of halted tasks collapses
+// into a single entry. The task is the object; the reason is normalized Work
+// vocabulary; provider names never appear.
+function notifyNeedsYou(intent) {
+  if (!("Notification" in window) || Notification.permission !== "granted") return;
+  const task = state.tasks.find(t => t.id === intent.taskId);
+  const reason =
+    task?.blockedOn?.type === "permission"
+      ? "Permission required"
+      : task?.blockedOn?.type === "decision"
+        ? "Decision needed"
+        : "Needs you";
+  try {
+    const notification = new Notification("0x2F / needs you", {
+      body: task ? `${task.title} — ${reason}` : reason,
+      tag: "0x2f-needs-you"
+    });
+    notification.onclick = () => {
+      window.focus();
+      notification.close();
+    };
+  } catch {
+    /* notification could not be shown — the ledger row still says it */
+  }
+}
+
+function toggleSound() {
+  state.soundOn = !state.soundOn;
+  persistFlag(SOUND_KEY, state.soundOn);
+  slash.unlock(); // a click is a user gesture — prime audio while we are here
+  render();
+}
+
+// The only control that may ask for browser notification permission: a click
+// on NOTIFY. After denial the control stays disabled — no re-prompting.
+async function toggleNotify() {
+  if (!("Notification" in window) || Notification.permission === "denied") return;
+  let permission = Notification.permission;
+  if (permission === "default") {
+    try {
+      permission = await Notification.requestPermission();
+    } catch {
+      return; // request rejected by the browser — stay off
+    }
+  }
+  if (permission === "granted") {
+    state.notifyOn = !state.notifyOn;
+    persistFlag(NOTIFY_KEY, state.notifyOn);
+    render();
+  }
+}
+
+function renderNotifyControl() {
+  if (!("Notification" in window)) {
+    return el("button", {
+      class: "setting disabled",
+      disabled: true,
+      text: "NOTIFY —",
+      title: "browser notifications are not supported here"
+    });
+  }
+  if (Notification.permission === "denied") {
+    return el("button", {
+      class: "setting disabled",
+      disabled: true,
+      text: "NOTIFY BLOCKED",
+      title: "notifications are blocked in this browser"
+    });
+  }
+  return el("button", {
+    class: "setting",
+    onClick: toggleNotify,
+    text: state.notifyOn ? "NOTIFY ON" : "NOTIFY",
+    title: state.notifyOn
+      ? "browser notifications for NEEDS YOU: on"
+      : "notify me when 0x2F needs you (requests browser permission)"
+  });
+}
+
 function recordEvent(event) {
   const id = event.taskId;
   if (id === undefined || id === null) return false;
@@ -144,6 +285,7 @@ async function loadAll() {
     api("/api/events/history")
   ]);
   state.tasks = tasks;
+  policy.seed(tasks); // baseline: what is already on screen never sounds
   state.base = history.base ?? "";
   state.eventsByTask = new Map();
   state.seen = new Map();
@@ -159,6 +301,7 @@ async function loadAll() {
 
 async function reloadTasks() {
   state.tasks = await api("/api/tasks");
+  policy.seed(state.tasks);
   render();
   // State changed — re-read any selected runs so their details (outcome,
   // result) track the task instead of going stale.
@@ -712,11 +855,26 @@ function renderChrome(ledger, accent) {
   const clockCounter = counter(clock, "TODAY", "#c3ccd3", "clock");
   clockNode = clockCounter.querySelector(".counter-n");
 
+  // The "/" mark pulses with the sound: one fade for READY, a split fade for
+  // NEEDS YOU. The negative animation delay resumes a pulse across re-renders
+  // instead of restarting it mid-flight.
+  let slashClass = "brand-slash";
+  let slashDelay = null;
+  if (state.pulse) {
+    const elapsed = Date.now() - state.pulse.at;
+    if (elapsed < PULSE_MS[state.pulse.type]) {
+      slashClass += state.pulse.type === "needs_you" ? " slash-split" : " slash";
+      slashDelay = "-" + elapsed + "ms";
+    } else {
+      state.pulse = null;
+    }
+  }
+
   return el("div", { class: "chrome" }, [
     el("div", { class: "chrome-inner" }, [
       el("div", { class: "brand" }, [
         el("span", { class: "brand-mark", text: "0x2F" }),
-        el("span", { class: "brand-slash", text: "/" }),
+        el("span", { class: slashClass, style: slashDelay ? { animationDelay: slashDelay } : {}, text: "/" }),
         el("span", { class: "brand-scope", text: "LOCAL" }),
         el("span", { class: "chrome-div" }),
         el("span", { class: "runtime" }, [
@@ -724,6 +882,15 @@ function renderChrome(ledger, accent) {
           el("span", { class: "runtime-dot" + (state.connected ? "" : " off") }),
           el("span", { class: "runtime-host", text: location.host })
         ])
+      ]),
+      el("div", { class: "chrome-settings" }, [
+        el("button", {
+          class: "setting",
+          onClick: toggleSound,
+          text: state.soundOn ? "SOUND ON" : "SOUND OFF",
+          title: state.soundOn ? "the slash is on" : "silent — no audio at all"
+        }),
+        renderNotifyControl()
       ]),
       el("div", { class: "counters" }, [
         counter(ledger.countNeeds, "NEEDS YOU", needsColor),
@@ -863,6 +1030,34 @@ function updateAdapter() {
     (providers.length ? " \u00b7 " + providers.join(" + ").toUpperCase() : "");
 }
 
+// --- sound demo (dev only) --------------------------------------------------
+// `?sound-demo=1` in the URL shows two audition buttons so the two gestures
+// can be compared while tuning. Never rendered in the normal UI.
+const SOUND_DEMO = new URLSearchParams(location.search).has("sound-demo");
+
+function renderSoundDemo() {
+  if (!SOUND_DEMO) return null;
+  return el("div", { class: "sound-demo" }, [
+    el("span", { class: "sound-demo-k", text: "SOUND DEMO" }),
+    el("button", {
+      class: "sound-demo-btn",
+      onClick: () => {
+        slash.ready();
+        pulse("ready");
+      },
+      text: "READY"
+    }),
+    el("button", {
+      class: "sound-demo-btn",
+      onClick: () => {
+        slash.needsYou();
+        pulse("needs_you");
+      },
+      text: "NEEDS YOU"
+    })
+  ]);
+}
+
 // --- render loop -----------------------------------------------------------
 
 let scrollTop = 0;
@@ -919,6 +1114,7 @@ function render() {
     renderChrome(ledger, accent),
     scroll,
     composerNode,
+    ...(SOUND_DEMO ? [renderSoundDemo()] : []),
     ...(state.flash ? [el("div", { class: "flash", text: state.flash })] : [])
   );
 
@@ -1032,6 +1228,7 @@ function connect() {
         return;
       }
       const added = recordEvent(event);
+      policy.observe(event);
       if (STATE_EVENTS.has(event.type)) {
         reloadTasks()
           .then(() => ensureDetail(state.openId))
@@ -1050,6 +1247,11 @@ window.addEventListener("resize", () => {
   state.width = window.innerWidth;
   render();
 });
+// Prime audio after the first real interaction (autoplay policy): a context
+// starts suspended until the page has user activation, and only after that
+// can background-tab signals sound.
+window.addEventListener("pointerdown", () => slash.unlock(), { once: true });
+window.addEventListener("keydown", () => slash.unlock(), { once: true });
 
 // The chrome clock ticks every second. A full re-render happens only while
 // something is actually running, so an idle ledger stays still.

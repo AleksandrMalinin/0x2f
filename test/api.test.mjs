@@ -242,7 +242,7 @@ test("GET / serves the 0x2F Web shell and its module assets", async () => {
     assert.match(html, /<script type="module" src="\/app\/app.js">/);
     assert.match(html, /0x2F/);
 
-    for (const path of ["/app/app.js", "/app/ledger.mjs"]) {
+    for (const path of ["/app/app.js", "/app/ledger.mjs", "/app/sound.mjs", "/app/sound-policy.mjs"]) {
       const asset = await fetch(handle.url + path);
       assert.equal(asset.status, 200, path);
       assert.match(asset.headers.get("content-type"), /javascript/);
@@ -251,6 +251,9 @@ test("GET / serves the 0x2F Web shell and its module assets", async () => {
     // The browser imports the SAME projection module the tests import.
     const ledger = await fetch(handle.url + "/app/ledger.mjs").then(r => r.text());
     assert.match(ledger, /export function projectLedger/);
+    // ... and the SAME sound policy module the tests import.
+    const policy = await fetch(handle.url + "/app/sound-policy.mjs").then(r => r.text());
+    assert.match(policy, /export function createSoundPolicy/);
 
     // Nothing outside the allowlist is reachable.
     const escape = await fetch(handle.url + "/app/../server.mjs");

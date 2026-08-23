@@ -394,9 +394,12 @@ test("CLI: 2f new --provider auto routes through the real worker; 2f open shows 
     assert.equal(task.execution.provider, "beta");
     assert.equal(task.runs[0].requestedProvider, "auto");
     assert.equal(task.runs[0].routing.reason, "preferred compatible provider");
-    // beta preferred, alpha next; claude-code is on the real PATH so it is a
-    // considered candidate too (availability is honest, not curated).
-    assert.deepEqual(task.runs[0].routing.considered, ["beta", "alpha", "claude-code"]);
+    // beta preferred, alpha next; whatever else is on the real PATH joins the
+    // considered list too (availability is honest, not curated) — so only the
+    // preference order is pinned, never the machine's PATH.
+    const considered = task.runs[0].routing.considered;
+    assert.deepEqual(considered.slice(0, 2), ["beta", "alpha"]);
+    assert.ok(considered.length >= 2);
 
     const opened = await runCli(base, ["open", "1"], cliEnv);
     assert.match(opened.out, /Routing:\s+auto → beta \(preferred compatible provider\)/);
