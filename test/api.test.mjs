@@ -301,7 +301,7 @@ test("a task with no event log yet is still present in the history", async () =>
   }
 });
 
-test("GET /api/providers lists the registry (default first) with normalized capabilities", async () => {
+test("GET /api/providers lists the registry (default first) with normalized descriptors", async () => {
   const { base, handle } = await startTestServer();
   try {
     const providers = await fetch(handle.url + "/api/providers").then(r => r.json());
@@ -311,13 +311,19 @@ test("GET /api/providers lists the registry (default first) with normalized capa
     );
     const dsh = providers.find(p => p.id === "deepseek-harness");
     assert.equal(dsh.displayName, "DeepSeek Harness");
+    assert.equal(dsh.integrationType, "native");
+    assert.equal(typeof dsh.available, "boolean");
     assert.equal(dsh.capabilities.supportsResume, false);
     assert.equal(dsh.capabilities.supportsStructuredEvents, false);
     const cc = providers.find(p => p.id === "claude-code");
     assert.equal(cc.capabilities.supportsResume, true);
+    assert.equal(cc.integrationType, "native");
     // No vendor internals leak through the API.
     for (const p of providers) {
-      assert.deepEqual(Object.keys(p).sort(), ["capabilities", "displayName", "id"]);
+      assert.deepEqual(
+        Object.keys(p).sort(),
+        ["available", "capabilities", "displayName", "id", "integrationType"]
+      );
     }
   } finally {
     await handle.close();

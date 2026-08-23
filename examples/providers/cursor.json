@@ -1,0 +1,6 @@
+{
+  "id": "cursor",
+  "displayName": "Cursor",
+  "transport": "acp",
+  "command": ["agent", "acp"]
+}

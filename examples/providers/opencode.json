@@ -1,0 +1,6 @@
+{
+  "id": "opencode",
+  "displayName": "OpenCode",
+  "transport": "acp",
+  "command": ["opencode", "acp"]
+}

@@ -1,6 +1,6 @@
 # 0x2F
 
-A deliberately small, task-native wrapper around coding agents. (v0.4)
+A deliberately small, task-native wrapper around coding agents. (v0.5)
 
 The product thesis:
 
@@ -51,6 +51,13 @@ Claude/etc.    DeepSeek/etc.
 through different providers, and both executions persist under the task —
 inspection, not evaluation.
 
+**v0.5** makes 0x2F extensible across modern harnesses without one bespoke
+adapter per tool: two universal integration layers (a generic **ACP**
+provider speaking the Agent Client Protocol v1, and a generic **command**
+provider for headless executables) plus declarative provider manifests — a
+new harness is a JSON file in `.work/providers/`, not source code. Native
+adapters remain only where deep, provider-specific behavior is valuable.
+
 The key idea: **surface and execution location are separate**. A Web UI on the
 Mac may control execution on the same Mac today — and on a trusted mini-PC
 tomorrow — without Work Core changing. Clients render and invoke actions; they
@@ -86,6 +93,7 @@ Then, in any repository:
 2f init
 2f new "Long text overflow fix"              # default provider (claude-code)
 2f new "Audit the auth flow" --provider deepseek-harness
+2f new "Summarize the auth flow" --provider gemini   # configured (manifest)
 2f
 2f status
 2f open 1
@@ -94,6 +102,7 @@ Then, in any repository:
 2f allow 1     # grant the permission the task is blocked on
 2f reject 1    # decline the requested change
 2f close 1
+2f providers   # list providers: native + ACP + command, with availability
 2f ui
 ```
 
@@ -201,11 +210,24 @@ scores, no stars, no winner labels, no recommendations. You form the judgment.
 
 ### Providers (`src/providers/`)
 
-- `claude-code.mjs` — the Claude Code adapter. **Everything** Claude-shaped
-  lives here and stops here: stream-json parsing, `permission_denials`, session
-  resume, `acceptEdits`.
-- `index.mjs` — the provider registry (`getProvider`, `defaultProviderId`).
-  Core, worker, and clients never import a vendor module directly.
+- `claude-code.mjs` — the Claude Code native adapter. **Everything**
+  Claude-shaped lives here and stops here: stream-json parsing,
+  `permission_denials`, session resume, `acceptEdits`.
+- `deepseek-harness.mjs` — the DeepSeek Harness native adapter (headless CLI,
+  honest minimal capabilities).
+- `acp.mjs` — the generic **ACP** provider: speaks the Agent Client Protocol
+  v1 over stdio (initialize / session/new / session/load / session/prompt /
+  session/update / session/request_permission / session/cancel) and maps
+  reliable concepts to normalized Work events and outcomes. No vendor
+  behavior is hardcoded here.
+- `command.mjs` — the generic **command** provider: safe argv spawning with
+  `{prompt}`/`{workspace}` substitution and conservative capabilities.
+- `manifests.mjs` — declarative provider configuration
+  (`.work/providers/*.json`): strict validation, known placeholders only,
+  no shell, no shadowing of built-ins.
+- `index.mjs` — the single provider registry (`createProviderRegistry`,
+  `getProvider`, `defaultProviderId`, `available`, `register` seam). Core,
+  worker, and clients never import a vendor module directly.
 
 ### Execution nodes (`src/nodes/`)
 
@@ -332,9 +354,9 @@ GET  /api/tasks/:id/runs/:n      getRun(id, n)        ({ ...runRecord, result })
 POST /api/tasks/:id/allow        allowWork(id)
 POST /api/tasks/:id/reject       rejectWork(id)
 POST /api/tasks/:id/close        closeWork(id)
-GET  /api/providers              [{ id, displayName, capabilities }]
-                                     (default provider first — the registry
-                                     insertion order IS the default order)
+GET  /api/providers              [{ id, displayName, integrationType,
+                                     capabilities, available }] — native +
+                                     configured (ACP/command) providers
 GET  /api/events                 Server-Sent Events — live normalized events
 GET  /api/events/history         the persisted event log, per task
 ```
@@ -454,13 +476,15 @@ Provider-internal detail — see `src/providers/claude-code.mjs` and the
 
 ## Providers
 
-0x2F ships two real execution providers behind one contract. The contract is
-what Work Core, the worker, and every client see — nothing else:
+0x2F ships two native providers and two **universal integration layers**
+behind one contract. The contract is what Work Core, the worker, and every
+client see — nothing else:
 
 ```js
 {
   id: "deepseek-harness",          // stable provider id, stored on the task
   displayName: "DeepSeek Harness", // human label
+  integrationType: "native",       // native | acp | command
   capabilities: {
     supportsResume, supportsStructuredEvents,
     supportsPermissionRequests, supportsSandbox, supportsStreaming
@@ -476,21 +500,106 @@ Outcomes are normalized Work concepts (core/lifecycle.mjs):
 events (`run.started`, `progress`, `tool.started`, `file.changed`,
 `needs_user`) — provider shapes stop at the provider boundary.
 
+The provider registry (`src/providers/index.mjs`) is the single place that
+knows which providers exist:
+
+```
+                 Provider Registry
+               /        |         \
+           Native      ACP      Command
+           /    \       |          |
+       Claude   DSH   many       anything
+        Code          agents     executable
+```
+
+- **Native** — deep, provider-specific adapters (`claude-code`,
+  `deepseek-harness`).
+- **ACP** — one generic provider (`src/providers/acp.mjs`) speaking the Agent
+  Client Protocol v1 over stdio; any ACP-compatible agent is configured by a
+  manifest, never by source code.
+- **Command** — one generic provider (`src/providers/command.mjs`) for
+  headless executables with no protocol: argv array, `{prompt}`/`{workspace}`
+  substitution, exit-code normalization.
+
+The rest of 0x2F does not care which integration type created a provider —
+a configured provider is indistinguishable from a native one except for its
+`integrationType` descriptor.
+
+### Provider manifests (`.work/providers/`)
+
+Adding a harness = dropping one JSON file into `.work/providers/`. No source
+changes, no registry edits. `2f init` creates the directory with a README;
+see `examples/providers/` for verified manifests (Gemini CLI `--acp`, Cursor
+`agent acp`, OpenCode `opencode acp`, Codex via the official `codex-acp`
+adapter, and a plain command agent).
+
+```json
+{ "id": "gemini", "displayName": "Gemini CLI", "transport": "acp", "command": ["gemini", "--acp"] }
+{ "id": "my-agent", "displayName": "My Agent", "transport": "command", "command": ["my-agent", "--headless", "{prompt}"] }
+```
+
+Manifests are strictly validated (unique lowercase ids, `transport` in
+`acp`/`command`, argv arrays only, `{prompt}`/`{workspace}` only, no shadowing
+of built-ins); malformed configuration fails loudly at runtime creation,
+naming the file. For ACP agents an optional `"permissions"` field (`"deny"`
+default, `"approve"` opt-in) controls how tool permission requests are
+auto-resolved.
+
+### Security model for configured providers
+
+- Commands are spawned **directly as argv arrays** — never through a shell,
+  never with string interpolation; there is no templating language and no
+  environment-variable interpolation.
+- Manifests are plain JSON — no JavaScript, no code loading, no remote
+  manifests or marketplace.
+- `availability` is a deterministic, cheap executable resolution (PATH /
+  `X_OK`); it never spawns.
+- Adding a provider **grants 0x2F permission to execute that local command in
+  the configured workspace** — that is the point of the manifest, and it is
+  the documented trust boundary. The runtime remains localhost-only.
+- ACP permission requests are **auto-resolved headlessly** (declined by
+  default) and recorded as progress — a headless worker cannot answer a
+  mid-run prompt, so this is never a fake `needs_you` halt. Interactive
+  permission handling for ACP agents is future work.
+- 0x2F never stores credentials: agents that require authentication must be
+  pre-authenticated by the user (e.g. `agent login`, `GEMINI_API_KEY`,
+  `CODEX_API_KEY` in the environment).
+
 ### Capability differences
 
-| capability | claude-code | deepseek-harness |
-| --- | --- | --- |
-| `supportsResume` | yes (same-session `--resume`) | **no** (headless makes a fresh session per run) |
-| `supportsStructuredEvents` | yes (stream-json) | **no** (prints the final assistant text only) |
-| `supportsPermissionRequests` | yes (`permission_denials` → `needs_you`) | **no** (tools run without an approval prompt) |
-| `supportsStreaming` | yes | **no** |
-| `supportsSandbox` | no | no |
-| `needs_you / permission` | emitted | never |
-| `needs_you / decision` | parsed from `## Needs human decision` | same — it is a Work prompt convention, parsed in core |
+| capability | claude-code | deepseek-harness | ACP (manifest) | command (manifest) |
+| --- | --- | --- | --- | --- |
+| `supportsResume` | yes (same-session `--resume`) | **no** | yes, via `session/load` when the agent advertises it | **no** |
+| `supportsStructuredEvents` | yes (stream-json) | **no** | yes — status/tool updates *when the agent sends them* | **no** |
+| `supportsPermissionRequests` | yes (`permission_denials` → `needs_you`) | **no** | yes — auto-resolved headlessly (deny by default), recorded as progress | **no** |
+| `supportsStreaming` | yes | **no** | yes (`agent_message_chunk` → progress) | **no** |
+| `supportsSandbox` | no | no | no | no |
+| `needs_you / permission` | emitted | never | never (declined headlessly, not a halt) | never |
+| `needs_you / decision` | parsed from `## Needs human decision` | same | same (Work convention) | same |
 
 A `needs_you` task whose provider cannot resume is refused loudly at the
 action boundary ("does not support resuming sessions") instead of faking a
 continuation — the declared capability, not parity theatre.
+
+### ACP provider mapping (v1, verified)
+
+Verified against the official v1 spec (agentclientprotocol.com), Cursor CLI
+(`agent acp`), OpenCode (`opencode acp`), and Gemini CLI (`gemini --acp` —
+its ACP implementation is built on the official SDK). JSON-RPC 2.0 over
+stdio, one message per line:
+
+| ACP v1 concept | normalized Work |
+| --- | --- |
+| `initialize` + `session/new` | `run.started` (with the real session id) |
+| `session/update` `agent_message_chunk` | `progress` |
+| `session/update` `tool_call` with locations | `tool.started` / `file.changed` (only what the agent reports) |
+| `session/request_permission` | auto-resolved per manifest policy (default deny), recorded as progress |
+| `session/prompt` `stopReason: end_turn` | `run.completed` + `ready` (or `needs_you/decision` via the Work convention) |
+| `stopReason: cancelled` / `refusal` / early limits | `run.failed` |
+| `session id` | `execution.externalSessionId`; resume = `session/load` |
+| `session/cancel` | `provider.cancel()` (worker SIGTERM path) |
+
+Raw ACP message types never reach Work Core or the clients.
 
 ### DeepSeek Harness mapping
 
@@ -513,20 +622,38 @@ preview and may change; all compatibility-sensitive code is isolated in
 (`agent-default-model` in `$DSH_HOME/settings.yaml`) — 0x2F never overrides
 it, so `execution.model` is only persisted when reliably known.
 
-### Adding another provider
+### `2f providers`
 
-One file plus a registry line — nothing in core, CLI, worker, server, or UI
-changes (they consume only normalized outcomes and `execution.provider`):
+The registry as a table — `availability` is a cheap, deterministic
+executable resolution:
+
+```
+PROVIDER            INTEGRATION   AVAILABLE
+
+claude-code         native        yes
+deepseek-harness    native        no
+gemini              acp           yes
+my-agent            command       yes
+```
+
+### Adding a native provider (when a universal layer is not enough)
+
+A new bespoke adapter is needed only for capabilities the universal
+transports cannot express (e.g. Claude Code's permission → `needs_you` →
+interactive `--resume` flow). One file plus one registry line — nothing in
+core, CLI, worker, server, or UI changes (they consume only normalized
+outcomes and `execution.provider`):
 
 1. Create `src/providers/<name>.mjs` exporting a provider object with `id`,
-   `displayName`, `capabilities`, and `start({ cwd, prompt, onEvent })` →
-   normalized outcome (plus `resume` if supported). Keep every vendor shape
-   inside this file.
-2. Register it in `src/providers/index.mjs`:
-   `const providers = { "claude-code": …, "deepseek-harness": …, "<name>": … };`
-3. Declare capabilities honestly (`supportsResume`,
-   `supportsStructuredEvents`, `supportsPermissionRequests`, …) so Work
-   refuses flows the runtime can't do instead of faking them.
+   `displayName`, `integrationType: "native"`, `capabilities`, and
+   `start({ cwd, prompt, onEvent })` → normalized outcome (plus `resume` if
+   supported). Keep every vendor shape inside this file.
+2. Register it in `src/providers/index.mjs` (native map) or, for an external
+   package, pass it through `createRuntime(base, { providers: [...] })` or
+   the registry's `register()` seam — the plugin seam for future native
+   provider packages, without Work Core changes.
+3. Declare capabilities honestly so Work refuses flows the runtime can't do
+   instead of faking them.
 
 Models are a separate concern from providers: the same harness can run
 different models, and the same model can run under different harnesses. The
@@ -619,6 +746,25 @@ is not exposed to the LAN.
 - `test/cli-rerun.test.mjs` — the real CLI dogfooding loop: `2f new` →
   `2f rerun 1 --provider deepseek-harness` → `2f open 1` (RUNS strip) →
   `2f open 1 --run 2` (one run's facts), against fake CLIs.
+- `test/acp-provider.test.mjs` — the generic ACP provider driven through a
+  fake ACP agent (real stdio JSON-RPC): handshake, session creation,
+  completion → ready, the Work decision convention, early stop reasons,
+  process termination, malformed responses, missing session ids, permission
+  requests auto-declined/auto-approved per policy, resume via `session/load`
+  (and the loud failure when the agent lacks `loadSession`), cancellation
+  (`session/cancel`), and unknown-notification tolerance.
+- `test/command-provider.test.mjs` — the generic command provider: safe argv
+  spawning (never a shell), `{prompt}`/`{workspace}` substitution, success /
+  non-zero / missing-executable / decision-convention mapping, conservative
+  capabilities.
+- `test/provider-manifests.test.mjs` — manifest validation (every failure
+  mode names the file), duplicate ids, shadowing built-ins, the registry
+  (native + ACP + command coexist, availability resolution, the `register()`
+  seam), and executable resolution.
+- `test/provider-integration.test.mjs` — configured providers through the
+  API (`/api/providers` descriptor), the CLI (`2f providers`, `2f new
+  --provider <configured>` through the REAL worker), and native + ACP +
+  command coexistence in one workspace.
 
 ## What this intentionally does NOT do
 
@@ -631,3 +777,14 @@ is not exposed to the LAN.
   recommendations — run history is for inspection, you form the judgment
 - concurrent runs of one task (sequential only, until isolated worktrees)
 - per-run diffs (changed files are recorded; line-level diffs are not)
+- a plugin ecosystem: no remote manifests, no marketplace, no npm/plugin
+  discovery, no dynamic code loading, no permission UI — only the local
+  manifest mechanism and the registry's `register()` seam for future native
+  provider packages
+
+This iteration proves the architecture: native when deep integration is
+valuable (Claude Code, DeepSeek Harness), ACP when a standard protocol exists
+(Gemini, Cursor, OpenCode, Codex — one generic provider), and command when
+only a headless executable exists (anything). A new harness is a manifest; a
+bespoke adapter is needed only for capabilities the universal transports
+cannot express.

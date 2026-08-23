@@ -14,9 +14,11 @@
 //   POST /api/tasks/:id/allow      -> allowWork(id)
 //   POST /api/tasks/:id/reject     -> rejectWork(id)
 //   POST /api/tasks/:id/close      -> closeWork(id)
-//   GET  /api/providers            -> [{ id, displayName, capabilities }]
+//   GET  /api/providers            -> [{ id, displayName, integrationType,
+//                                      capabilities, available }]
 //                                      (default provider first — the registry
 //                                      insertion order IS the default order)
+//   GET  /api/routing              -> { default, prefer } (AUTO routing config)
 //   GET  /api/events               -> Server-Sent Events (live normalized events)
 //   GET  /api/events/history       -> the persisted normalized event log per task
 //
@@ -33,7 +35,6 @@ import { URL } from "node:url";
 import { createRuntime } from "./runtime.mjs";
 import { createTailer } from "./core/events.mjs";
 import { WorkError } from "./core/errors.mjs";
-import { listProviders } from "./providers/index.mjs";
 
 // The Web surface is served as three static files from src/web/:
 //
@@ -178,14 +179,32 @@ export async function startServer(base = process.cwd(), port = 4242, opts = {}) 
       }
 
       // Provider registry for clients that need to offer a choice. The shape
-      // is normalized (id/displayName/capabilities) — never vendor internals.
+      // is normalized — id/displayName/integrationType/capabilities/available
+      // — never vendor internals, and never a hint about how the provider was
+      // created (native, ACP or command all look the same to a client).
+      // AUTO routing configuration for clients that offer provider choice.
+      // The client uses `default` to preselect (AUTO or a provider id) and
+      // `prefer` is informational. Normalized, never raw config.
+      if (req.method === "GET" && url.pathname === "/api/routing") {
+        const config = runtime.router.config;
+        json(res, {
+          default: config?.default ?? runtime.providers.defaultProviderId,
+          prefer: config?.prefer ?? []
+        });
+        return;
+      }
+
       if (req.method === "GET" && url.pathname === "/api/providers") {
         json(
           res,
-          listProviders().map(p => ({
+          runtime.providers.listProviders().map(p => ({
             id: p.id,
             displayName: p.displayName,
-            capabilities: p.capabilities
+            integrationType: p.integrationType,
+            capabilities: p.capabilities,
+            // Deterministic and cheap: whether the configured executable can
+            // be resolved. Never spawns.
+            available: runtime.providers.available(p.id)
           }))
         );
         return;

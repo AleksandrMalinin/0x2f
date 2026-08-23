@@ -1,0 +1,116 @@
+# Provider manifests — examples
+
+Copy any file below into your workspace's `.work/providers/` to add a
+harness that 0x2F did not ship. Each file is one provider; no source changes,
+no restart of anything but the CLI/server process.
+
+Only invocations verified against official documentation are listed. Where an
+agent needs authentication, that is the user's job **before** the run (see
+the notes) — 0x2F never stores or enters credentials.
+
+---
+
+## `gemini.json` — Gemini CLI (ACP)
+
+Verified: `gemini --acp` starts Gemini CLI in ACP mode
+(`docs/cli/acp-mode.md`, google-gemini/gemini-cli).
+
+```json
+{
+  "id": "gemini",
+  "displayName": "Gemini CLI",
+  "transport": "acp",
+  "command": ["gemini", "--acp"]
+}
+```
+
+Authentication: on first run Gemini CLI advertises its auth methods over ACP
+(Google login, API key, Vertex). Pre-authenticate before running 0x2F (e.g.
+`gemini` interactively once, or a `GEMINI_API_KEY` in the environment) —
+0x2F does not authenticate for you.
+
+## `cursor.json` — Cursor CLI (ACP)
+
+Verified: `agent acp` starts Cursor CLI in ACP mode
+(`cursor.com/docs/cli/acp`).
+
+```json
+{
+  "id": "cursor",
+  "displayName": "Cursor",
+  "transport": "acp",
+  "command": ["agent", "acp"]
+}
+```
+
+Notes:
+
+- Pre-authenticate before launching (`agent login`, or `CURSOR_API_KEY` /
+  `CURSOR_AUTH_TOKEN` in the environment). Cursor advertises `cursor_login`
+  as its ACP auth method; 0x2F does not perform interactive login.
+- By default 0x2F declines ACP permission requests headlessly. Cursor agents
+  that need tool approval will see their requests declined — the run result
+  reflects that. Set `"permissions": "approve"` in the manifest if you want
+  the headless runtime to approve tool calls (equivalent to DSH headless
+  semantics).
+
+## `opencode.json` — OpenCode (ACP)
+
+Verified: `opencode acp` starts OpenCode as an ACP-compatible subprocess
+(`opencode.ai/docs/acp`).
+
+```json
+{
+  "id": "opencode",
+  "displayName": "OpenCode",
+  "transport": "acp",
+  "command": ["opencode", "acp"]
+}
+```
+
+## `codex-acp.json` — Codex via the official ACP adapter (ACP)
+
+Verified: `@agentclientprotocol/codex-acp` is an official stdio ACP server
+that drives the OpenAI Codex runtime (`github.com/agentclientprotocol/codex-acp`).
+
+```json
+{
+  "id": "codex",
+  "displayName": "Codex",
+  "transport": "acp",
+  "command": ["codex-acp"]
+}
+```
+
+Requires the adapter: `npm install -g @agentclientprotocol/codex-acp`
+(or use `["npx", "-y", "@agentclientprotocol/codex-acp"]`). Authentication is
+handled via the adapter's runtime options (`CODEX_API_KEY` / `OPENAI_API_KEY`
+in the environment).
+
+## `my-agent.json` — any headless executable (command)
+
+No protocol at all — a plain argv invocation. Only `{prompt}` and
+`{workspace}` are substituted; everything else about the process is between
+the executable and its own configuration.
+
+```json
+{
+  "id": "my-agent",
+  "displayName": "My Agent",
+  "transport": "command",
+  "command": ["my-agent", "--headless", "--task", "{prompt}", "--in", "{workspace}"]
+}
+```
+
+Security note: adding ANY provider here grants 0x2F permission to execute
+that local command in this workspace. The command runs directly (argv array,
+never a shell) with the workspace as its working directory.
+
+## Not listed
+
+- **Claude Code** stays a built-in native provider — its permission →
+  `needs_you` → interactive `--resume` flow is richer than the headless ACP
+  surface expresses. No ACP manifest is claimed for it here because the
+  invocation has not been verified against official docs.
+- **DeepSeek Harness** stays native: its headless CLI exposes no ACP surface
+  and its honest no-resume/no-events declaration is provider-specific.

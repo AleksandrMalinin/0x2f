@@ -27,6 +27,7 @@ export const EVENT_TYPES = Object.freeze([
   "tool.started",
   "file.changed",
   "needs_user",
+  "permission.resolved",
   "run.completed",
   "run.failed"
 ]);

@@ -13,8 +13,10 @@ import { initProject, requireProject, appendProjectKnowledge } from "./project.m
 import {
   renderTasks,
   providerName,
+  providerLabel,
   fmtRunDuration,
-  renderRuns
+  renderRuns,
+  renderProviders
 } from "./render.mjs";
 import { startServer } from "./server.mjs";
 
@@ -24,16 +26,19 @@ function help() {
 Commands:
   2f                list today's tasks
   2f init
-  2f new <task> [--provider <id>]
+  2f new <task> [--provider <id>]   provider: auto | <id> (default from routing)
   2f status
   2f open <id> [--run <n>]
   2f rerun <id> [--provider <id>]   run the same task again as a new run
   2f allow <id>     grant the permission a task is blocked on
   2f reject <id>    decline the requested change
   2f close <id>
+  2f providers      list execution providers (native + configured)
   2f ui [port]
 
-Providers: claude-code (default), deepseek-harness
+Providers: auto (routing), claude-code (default), deepseek-harness
+Configured: ACP/command providers from .work/providers/*.json
+Routing:    .work/routing.json (default: auto | <id>, prefer: [<ids>])
 `);
 }
 
@@ -88,11 +93,29 @@ async function openTask(id, base) {
   const blocked = detail.blockedOn;
   if (blocked?.type === "permission") {
     console.log("NEEDS YOU — Permission\n");
-    console.log(`Agent wants to modify:\n  ${relativeFile(base, blocked.file) ?? "?"}\n`);
-    if (blocked.plannedChange) {
-      console.log(`Planned change:\n  ${blocked.plannedChange}\n`);
+    if (blocked.live) {
+      // An interactive ACP permission request: the run's session is still
+      // alive, holding the request. Show only what the agent actually
+      // supplied — tool/action, path, description, options.
+      console.log("Agent requested permission:\n");
+      if (blocked.tool) console.log(`  action: ${blocked.tool}`);
+      if (blocked.file) console.log(`  path:   ${relativeFile(base, blocked.file)}`);
+      if (blocked.description && blocked.description !== blocked.tool) {
+        console.log(`  detail: ${blocked.description}`);
+      }
+      if (blocked.options?.length) {
+        console.log(`  options: ${blocked.options.map(o => `${o.name} (${o.kind})`).join(" · ")}`);
+      }
+      if (blocked.canAllow === false || blocked.canReject === false) {
+        console.log("  (some options cannot be mapped to ALLOW/REJECT — inspect above)");
+      }
+    } else {
+      console.log(`Agent wants to modify:\n  ${relativeFile(base, blocked.file) ?? "?"}\n`);
+      if (blocked.plannedChange) {
+        console.log(`Planned change:\n  ${blocked.plannedChange}\n`);
+      }
     }
-    console.log(`[2f allow ${detail.id}]  [2f reject ${detail.id}]`);
+    console.log(`\n[2f allow ${detail.id}]  [2f reject ${detail.id}]`);
     return;
   }
   if (blocked?.type === "decision") {
@@ -102,11 +125,21 @@ async function openTask(id, base) {
     return;
   }
 
-  console.log(`Status: ${detail.status}${detail.status === "working" ? ` · ${providerName(detail)}` : ""}\n`);
+  console.log(`Status: ${detail.status}${detail.status === "working" ? ` · ${providerName(detail, runtime.providers.getProvider)}` : ""}\n`);
 
   const execution = detail.execution ?? {};
   const model = execution.model ? ` · model ${execution.model}` : "";
-  console.log(`Execution: provider ${execution.provider ?? "?"} · node ${execution.node ?? "?"}${model}\n`);
+  console.log(`Execution: provider ${execution.provider ?? "?"} · node ${execution.node ?? "?"}${model}`);
+
+  // The AUTO routing decision for the current run — why 0x2F ran it here.
+  // Read from the persisted run record, never reconstructed from config.
+  const currentRun = detail.runs?.at(-1);
+  if (currentRun?.routing?.mode === "auto") {
+    console.log(
+      `Routing:   auto → ${currentRun.provider} (${currentRun.routing.reason})`
+    );
+  }
+  console.log("");
 
   // Run history: the same task through different providers, side by side.
   // Every task has at least one run (a legacy task reads as one historical
@@ -132,7 +165,7 @@ async function openTask(id, base) {
 async function openRun(id, runNumber, base) {
   const runtime = createRuntime(base);
   const run = await runtime.actions.getRun(id, runNumber);
-  const provider = providerName({ execution: { provider: run.provider } });
+  const provider = providerLabel(run.provider, runtime.providers.getProvider);
 
   console.log(`#${String(id).padStart(3, "0")} · RUN ${String(run.run).padStart(2, "0")} — ${provider}\n`);
 
@@ -147,7 +180,11 @@ async function openRun(id, runNumber, base) {
   console.log(`Duration     ${fmtRunDuration(run.durationMs)}`);
   console.log(`Outcome      ${outcome}`);
   console.log(`Session      ${run.externalSessionId ?? "—"}`);
-  console.log(`Attempts     ${run.attempts ?? 1}\n`);
+  console.log(`Attempts     ${run.attempts ?? 1}`);
+  if (run.requestedProvider === "auto" && run.routing) {
+    console.log(`Routed       auto → ${run.provider} (${run.routing.reason})`);
+  }
+  console.log("");
 
   if (run.result?.trim()) {
     console.log(run.result.trim());
@@ -184,10 +221,11 @@ async function main() {
     const { title, provider } = parseNewArgs(args);
     if (!title) throw new Error('Usage: 2f new "Investigate ..." [--provider <id>]');
 
-    const task = await createRuntime(base).actions.createWork({ title, provider });
+    const runtime = createRuntime(base);
+    const task = await runtime.actions.createWork({ title, provider });
 
     console.log(`Created #${String(task.id).padStart(3, "0")}: ${task.title}`);
-    console.log(`${providerName(task)} is running in the background.`);
+    console.log(`${providerName(task, runtime.providers.getProvider)} is running in the background.`);
     return;
   }
 
@@ -214,14 +252,15 @@ async function main() {
       throw new Error('Usage: 2f rerun <id> [--provider <id>]');
     }
 
-    const task = await createRuntime(base).actions.rerunWork(id, {
+    const runtime = createRuntime(base);
+    const task = await runtime.actions.rerunWork(id, {
       provider: flags.provider
     });
     const runNumber = task.runs?.at(-1)?.run ?? 1;
 
     console.log(`#${String(task.id).padStart(3, "0")} ${task.title}`);
     console.log(
-      `Run ${String(runNumber).padStart(2, "0")} started with ${providerName(task)} in the background.`
+      `Run ${String(runNumber).padStart(2, "0")} started with ${providerName(task, runtime.providers.getProvider)} in the background.`
     );
     return;
   }
@@ -234,11 +273,22 @@ async function main() {
     const task = await createRuntime(base).actions.resumeWork(id, command);
 
     console.log(`#${String(task.id).padStart(3, "0")} ${task.title}`);
-    console.log(
-      command === "allow"
-        ? "Permission granted — resuming the same session in the background."
-        : "Change declined — resuming the session with the request withdrawn."
-    );
+    if (task.live) {
+      // An interactive permission request: the run's process is still alive,
+      // holding the outstanding request; the grant is delivered in place and
+      // the SAME execution continues.
+      console.log(
+        command === "allow"
+          ? "Permission granted — continuing the run in the background."
+          : "Change declined — the agent continues with the request withdrawn."
+      );
+    } else {
+      console.log(
+        command === "allow"
+          ? "Permission granted — resuming the same session in the background."
+          : "Change declined — resuming the session with the request withdrawn."
+      );
+    }
     return;
   }
 
@@ -286,6 +336,13 @@ async function main() {
 
     await runtime.actions.closeWork(id);
     console.log(`Closed #${id}.`);
+    return;
+  }
+
+  if (command === "providers") {
+    await requireProject(base);
+    const runtime = createRuntime(base);
+    console.log(renderProviders(runtime.providers.listProviders(), runtime.providers));
     return;
   }
 

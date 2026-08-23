@@ -1,0 +1,6 @@
+{
+  "id": "codex",
+  "displayName": "Codex",
+  "transport": "acp",
+  "command": ["codex-acp"]
+}

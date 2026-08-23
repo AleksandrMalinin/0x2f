@@ -29,6 +29,7 @@ const EVENT_TYPES = [
   "tool.started",
   "file.changed",
   "needs_user",
+  "permission.resolved",
   "run.completed",
   "run.failed"
 ];
@@ -41,6 +42,7 @@ const STATE_EVENTS = new Set([
   "task.updated",
   "task.closed",
   "needs_user",
+  "permission.resolved",
   "run.completed",
   "run.failed"
 ]);
@@ -59,6 +61,7 @@ const state = {
   // the comparison. This is inspection, never evaluation.
   runSelection: [],
   runDetails: new Map(), // `${taskId}:${run}` -> { ...runRecord, result }
+  providers: [], // [{ id, displayName }] — for display names on run rows
   connected: false,
   width: window.innerWidth,
   base: "",
@@ -356,7 +359,9 @@ function renderRunRow(taskId, run, accent, selected) {
 // The RUNS instrument inside task detail. Compact by design; selecting a run
 // (or two) opens its factual detail below the strip.
 function renderRunsSection(detail, row, accent) {
-  const runs = projectRuns(detail.runs);
+  const providerNames = {};
+  for (const p of state.providers) providerNames[p.id] = p.displayName;
+  const runs = projectRuns(detail.runs, { providers: providerNames });
   if (runs.length < 2) return null;
   const taskId = row.id;
   const events = state.eventsByTask.get(taskId) ?? [];
@@ -480,12 +485,17 @@ function actionButton(label, key, cls, onClick, focusKey) {
 }
 
 function renderHalt(row, accent) {
-  const acts = [
-    actionButton("ALLOW", "A", "act-primary", e => {
-      e.stopPropagation();
-      allow(row.id);
-    }, "allow-" + row.id)
-  ];
+  const acts = [];
+  // Interactive ACP permissions may expose choices that cannot safely map to
+  // ALLOW/REJECT; only offer an action when the mapping is unambiguous.
+  if (row.permAllowable) {
+    acts.push(
+      actionButton("ALLOW", "A", "act-primary", e => {
+        e.stopPropagation();
+        allow(row.id);
+      }, "allow-" + row.id)
+    );
+  }
   if (row.permDetail) {
     acts.push(
       actionButton("INSPECT", "I", "act-outline", e => {
@@ -494,21 +504,37 @@ function renderHalt(row, accent) {
       }, "inspect-" + row.id)
     );
   }
-  acts.push(
-    actionButton("REJECT", "R", "act-quiet", e => {
-      e.stopPropagation();
-      reject(row.id);
-    }, "reject-" + row.id)
-  );
+  if (row.permRejectable) {
+    acts.push(
+      actionButton("REJECT", "R", "act-quiet", e => {
+        e.stopPropagation();
+        reject(row.id);
+      }, "reject-" + row.id)
+    );
+  }
+
+  const options =
+    row.permOptions.length && (!row.permAllowable || !row.permRejectable)
+      ? el(
+          "div",
+          { class: "halt-why", style: { color: COLORS.muted } },
+          ["choices: " + row.permOptions.map(o => o.name).join(" · ")]
+        )
+      : null;
 
   return el(
     "div",
     { class: "halt-card", style: { border: "1px solid " + accent } },
     [
       el("div", { class: "halt-kind", style: { color: accent }, text: row.permTitle }),
-      row.permPath ? el("div", { class: "halt-verb", text: "wants to modify" }) : null,
+      row.permLive
+        ? el("div", { class: "halt-verb", text: "agent requested permission" })
+        : row.permPath
+          ? el("div", { class: "halt-verb", text: "wants to modify" })
+          : null,
       row.permPath ? el("div", { class: "halt-path", text: row.permPath }) : null,
       row.permWhy ? el("div", { class: "halt-why", text: row.permWhy }) : null,
+      options,
       state.inspectId === row.id && row.permDetail
         ? el("div", { class: "halt-detail", text: row.permDetail })
         : null,
@@ -639,6 +665,14 @@ function renderRow(row, accent) {
         el("span", { class: "status-div" }),
         el("span", { class: "status-elapsed", text: row.elapsed })
       ]),
+      // The AUTO routing decision, quietly: why 0x2F ran this task here.
+      row.routed
+        ? el("div", { class: "routed-line" }, [
+            el("span", { class: "routed-k", text: "ROUTED" }),
+            el("span", { class: "routed-v", text: row.routed.provider + " / " + (row.node.split(" / ")[0] || "local") }),
+            el("span", { class: "routed-why", text: row.routed.reason })
+          ])
+        : null,
       row.halted ? renderHalt(row, accent) : null,
       renderBands(row),
       row.ready || row.failed || row.done ? renderResult(row, detail) : null,
@@ -784,18 +818,34 @@ function buildComposer() {
   ]);
 }
 
-// Populate the composer's provider select. The first entry is the runtime
-// default (claude-code today); a failure leaves the select empty and submits
-// fall back to the server default, so provider choice never blocks a task.
+// Populate the composer's provider select. AUTO is the first option (the
+// primary choice when routing is configured); the selected default follows
+// /api/routing (AUTO when configured, else the runtime default provider). A
+// failure leaves the select empty and submits fall back to the server
+// default, so provider choice never blocks a task.
 async function loadProviders() {
   if (!providerSelect) return;
   try {
     const providers = await api("/api/providers");
+    state.providers = providers;
+    let routing = null;
+    try {
+      routing = await api("/api/routing");
+    } catch {
+      /* server default applies */
+    }
     providerSelect.replaceChildren(
-      ...providers.map(p =>
-        el("option", { value: p.id, text: p.id.toUpperCase() })
-      )
+      el("option", { value: "auto", text: "AUTO" }),
+      ...providers.map(p => el("option", { value: p.id, text: p.id.toUpperCase() }))
     );
+    // Select the configured default when known; otherwise keep the first
+    // real provider (the runtime default) — never silently switch to AUTO.
+    const configured = routing?.default;
+    if (configured && (configured === "auto" || providers.some(p => p.id === configured))) {
+      providerSelect.value = configured;
+    } else if (providers.length) {
+      providerSelect.value = providers[0].id;
+    }
   } catch {
     /* server default applies */
   }

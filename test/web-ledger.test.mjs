@@ -414,3 +414,56 @@ test("projectRuns maps needs_you/working states into the ledger vocabulary", () 
   assert.equal(runs[0].stateColor, "#2f5fa8");
   assert.equal(runs[1].state, "WORKING");
 });
+
+test("an interactive ACP permission becomes a YOU step when resolved in place", () => {
+  const events = log([
+    ["tool.started", 1, { name: "Edit", input: { file_path: "a.ts" } }],
+    ["needs_user", 2, { reason: "permission", blockedOn: { type: "permission", live: true, tool: "Edit a.ts" } }],
+    ["permission.resolved", 5, { grant: "allow" }],
+    ["run.completed", 7, { status: "ready" }]
+  ]);
+  const steps = toSteps(task({ status: "ready" }), events).steps;
+  const humans = steps.filter(s => s.human);
+  assert.equal(humans.length, 1);
+  assert.equal(humans[0].verb, "YOU");
+  assert.match(humans[0].arg, /continuing the same run/);
+});
+
+test("projectRow exposes interactive permission options without inventing them", () => {
+  const blocked = task({
+    status: "needs_you",
+    blockedOn: {
+      type: "permission",
+      live: true,
+      tool: "Edit submit-capture.ts",
+      file: "/w/src/submit-capture.ts",
+      description: "Edit submit-capture.ts",
+      options: [{ optionId: "allow-once", name: "Allow once", kind: "allow_once" }],
+      canAllow: true,
+      canReject: false // no reject option supplied — ALLOW only, never guessed
+    }
+  });
+  const row = projectRow(blocked, [], { base: "/w", open: true });
+  assert.equal(row.permLive, true);
+  assert.equal(row.permAllowable, true);
+  assert.equal(row.permRejectable, false);
+  assert.equal(row.permOptions.length, 1);
+  assert.equal(row.permOptions[0].kind, "allow_once");
+  assert.equal(row.permPath, "src/submit-capture.ts");
+  assert.equal(row.permWhy, "Edit submit-capture.ts"); // description fallback
+});
+
+test("projectRow exposes the AUTO routing decision of the current run", () => {
+  const routed = task({
+    runs: [
+      { run: 1, provider: "alpha", outcome: "ready", routing: { mode: "auto", reason: "preferred compatible provider", considered: ["alpha", "beta"] } }
+    ]
+  });
+  const row = projectRow(routed, [], {});
+  assert.deepEqual(row.routed, { provider: "alpha", reason: "preferred compatible provider" });
+
+  // Manual runs and legacy tasks have no routing decision.
+  const manual = projectRow(task({ runs: [{ run: 1, provider: "alpha", outcome: "ready" }] }), [], {});
+  assert.equal(manual.routed, null);
+  assert.equal(projectRow(task(), [], {}).routed, null);
+});

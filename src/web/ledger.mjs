@@ -243,6 +243,22 @@ export function toSteps(task, events = [], opts = {}) {
         }
         break;
 
+      case "permission.resolved":
+        // An interactive ACP permission answered in place — the same run
+        // continues (no session restart, no new worker).
+        steps.push({
+          kind: "human",
+          verb: "YOU",
+          arg: event.grant === "allow"
+            ? "allowed the request · continuing the same run"
+            : "declined the request · continuing the same run",
+          phase,
+          at,
+          t,
+          human: true
+        });
+        break;
+
       case "run.failed":
         steps.push({
           kind: "fail",
@@ -683,8 +699,27 @@ export function projectRow(task, events, opts = {}) {
     sessionId,
     permTitle: blockedTitle(task.blockedOn),
     permPath: relativePath(base, task.blockedOn?.file) || task.blockedOn?.tool || "",
-    permWhy: task.blockedOn?.plannedChange || task.blockedOn?.text || "",
+    permWhy:
+      task.blockedOn?.plannedChange ||
+      task.blockedOn?.text ||
+      task.blockedOn?.description ||
+      "",
     permDetail: task.blockedOn?.raw ? JSON.stringify(task.blockedOn.raw, null, 2) : "",
+    // Interactive ACP permission: which actions can be offered without
+    // guessing, and the actual options the agent supplied.
+    permLive: task.blockedOn?.live === true,
+    permAllowable: task.blockedOn?.canAllow !== false,
+    permRejectable: task.blockedOn?.canReject !== false,
+    permOptions: task.blockedOn?.options ?? [],
+    // The AUTO routing decision of the current run — read from the persisted
+    // record, so "why did 0x2F run this here?" never depends on live config.
+    routed:
+      task.runs?.at(-1)?.routing?.mode === "auto"
+        ? {
+            provider: task.runs.at(-1).provider,
+            reason: task.runs.at(-1).routing.reason
+          }
+        : null,
     bands: bands(task, steps, accent),
     files,
     error: task.error ?? ""

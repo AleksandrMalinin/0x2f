@@ -4,7 +4,7 @@
 // terminal likes; the Web client renders its own way. Neither decides what a
 // status MEANS — that stays in core/lifecycle.mjs and core/actions.mjs.
 
-import { getProvider } from "./providers/index.mjs";
+import { getProvider as nativeGetProvider } from "./providers/index.mjs";
 
 export function blockedReasonLabel(task) {
   const blocked = task.blockedOn;
@@ -14,9 +14,82 @@ export function blockedReasonLabel(task) {
   return "Needs you";
 }
 
-export function providerName(task) {
-  const provider = getProvider(task.execution?.provider);
+// `lookup` is the runtime's provider registry lookup (native + configured);
+// it defaults to the native-only module view for backward compatibility.
+export function providerName(task, lookup = nativeGetProvider) {
+  const provider = lookup(task.execution?.provider);
   return provider?.displayName ?? task.execution?.provider ?? "unknown";
+}
+
+export function providerLabel(id, lookup = nativeGetProvider) {
+  const provider = lookup(id);
+  return provider?.displayName ?? id ?? "unknown";
+}
+
+// --- run history (CLI rendering) -------------------------------------------
+
+const RUN_STATE_LABELS = {
+  working: "WORKING",
+  needs_you: "NEEDS YOU",
+  ready: "READY",
+  failed: "FAILED"
+};
+
+// 48s / 4m12s / 1h02m — the terminal's run-clock, not the ledger's m:ss.
+export function fmtRunDuration(durationMs) {
+  if (
+    durationMs === null ||
+    durationMs === undefined ||
+    !Number.isFinite(durationMs)
+  ) {
+    return "—";
+  }
+  const total = Math.max(0, Math.round(durationMs / 1000));
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  if (h > 0) return `${h}h${String(m).padStart(2, "0")}m`;
+  if (m > 0) return s ? `${m}m${String(s).padStart(2, "0")}s` : `${m}m`;
+  return `${s}s`;
+}
+
+// `2f providers` — the registry as a table. Integration type is secondary
+// metadata; availability is a cheap, deterministic executable resolution.
+export function renderProviders(providers, registry) {
+  const out = [
+    "PROVIDER".padEnd(20) + "INTEGRATION".padEnd(14) + "AVAILABLE",
+    ""
+  ];
+  for (const provider of providers) {
+    const available = registry.available(provider.id) ? "yes" : "no";
+    out.push(
+      provider.id.padEnd(20) +
+        String(provider.integrationType).padEnd(14) +
+        available
+    );
+  }
+  return out.join("\n");
+}
+
+// The RUNS strip for `2f open`. Restrained by design: this is inspection,
+// not evaluation — no scores, no winners, no recommendations.
+export function renderRuns(runs) {
+  const out = ["RUNS", ""];
+  if (!runs.length) {
+    out.push("  (no runs recorded)");
+    out.push("");
+    return out.join("\n");
+  }
+  const width = Math.max(...runs.map(r => String(r.provider ?? "?").length));
+  for (const run of runs) {
+    const state =
+      RUN_STATE_LABELS[run.outcome] ?? String(run.outcome ?? "?").toUpperCase();
+    out.push(
+      `  ${String(run.run).padStart(2, "0")}   ${String(run.provider ?? "?").padEnd(width)}   ${fmtRunDuration(run.durationMs).padStart(6)}   ${state}`
+    );
+  }
+  out.push("");
+  return out.join("\n");
 }
 
 function age(task) {
@@ -53,53 +126,5 @@ export function renderTasks(tasks) {
   }
 
   if (!tasks.length) out.push("No tasks yet.");
-  return out.join("\n");
-}
-
-// --- run history (CLI rendering) -------------------------------------------
-
-const RUN_STATE_LABELS = {
-  working: "WORKING",
-  needs_you: "NEEDS YOU",
-  ready: "READY",
-  failed: "FAILED"
-};
-
-// 48s / 4m12s / 1h02m — the terminal's run-clock, not the ledger's m:ss.
-export function fmtRunDuration(durationMs) {
-  if (
-    durationMs === null ||
-    durationMs === undefined ||
-    !Number.isFinite(durationMs)
-  ) {
-    return "—";
-  }
-  const total = Math.max(0, Math.round(durationMs / 1000));
-  const h = Math.floor(total / 3600);
-  const m = Math.floor((total % 3600) / 60);
-  const s = total % 60;
-  if (h > 0) return `${h}h${String(m).padStart(2, "0")}m`;
-  if (m > 0) return s ? `${m}m${String(s).padStart(2, "0")}s` : `${m}m`;
-  return `${s}s`;
-}
-
-// The RUNS strip for `2f open`. Restrained by design: this is inspection,
-// not evaluation — no scores, no winners, no recommendations.
-export function renderRuns(runs) {
-  const out = ["RUNS", ""];
-  if (!runs.length) {
-    out.push("  (no runs recorded)");
-    out.push("");
-    return out.join("\n");
-  }
-  const width = Math.max(...runs.map(r => String(r.provider ?? "?").length));
-  for (const run of runs) {
-    const state =
-      RUN_STATE_LABELS[run.outcome] ?? String(run.outcome ?? "?").toUpperCase();
-    out.push(
-      `  ${String(run.run).padStart(2, "0")}   ${String(run.provider ?? "?").padEnd(width)}   ${fmtRunDuration(run.durationMs).padStart(6)}   ${state}`
-    );
-  }
-  out.push("");
   return out.join("\n");
 }

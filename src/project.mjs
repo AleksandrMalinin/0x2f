@@ -29,15 +29,46 @@ const RULES_TEMPLATE = `# Working rules
 - Cite concrete files and evidence in the final result.
 `;
 
+const PROVIDERS_README = `# Configured providers
+
+Drop one JSON file per execution provider here. Each manifest declares a
+harness that 0x2F did not ship — an ACP-compatible agent or a headless
+command — so adding a new harness needs no source changes:
+
+  {
+    "id": "gemini",
+    "displayName": "Gemini CLI",
+    "transport": "acp",
+    "command": ["gemini", "--acp"]
+  }
+
+  {
+    "id": "my-agent",
+    "displayName": "My Agent",
+    "transport": "command",
+    "command": ["my-agent", "--headless", "{prompt}"]
+  }
+
+Rules: id must be unique and lowercase; transport is "acp" or "command";
+command is an argv array (never a shell string); the only placeholders are
+{prompt} and {workspace}; built-in providers (claude-code, deepseek-harness)
+cannot be redefined. For ACP agents, "permissions" ("deny" default,
+"approve" opt-in) controls how tool permission requests are auto-resolved.
+Adding a provider grants 0x2F permission to execute that local command in
+this workspace.
+`;
+
 export async function initProject(base = process.cwd()) {
   const wd = path.join(base, ".work");
   await fs.mkdir(path.join(wd, "tasks"), { recursive: true });
+  await fs.mkdir(path.join(wd, "providers"), { recursive: true });
 
   const defaults = [
     ["project.md", PROJECT_TEMPLATE],
     ["rules.md", RULES_TEMPLATE],
     ["knowledge.md", "# Knowledge\n\n"],
-    ["decisions.md", "# Decisions\n\n"]
+    ["decisions.md", "# Decisions\n\n"],
+    [path.join("providers", "README.md"), PROVIDERS_README]
   ];
 
   for (const [name, value] of defaults) {

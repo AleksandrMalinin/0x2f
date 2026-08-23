@@ -17,7 +17,7 @@ import { createStore } from "./core/store.mjs";
 import { applyOutcome, beginResume } from "./core/lifecycle.mjs";
 import { workEvent } from "./core/events.mjs";
 import { updateRun } from "./core/runs.mjs";
-import { getProvider, defaultProviderId } from "./providers/index.mjs";
+import { createProviderRegistry } from "./providers/index.mjs";
 
 // argv: node worker.mjs <base> <slug> <run> [resume <grant>]
 // The run number is explicit (the node derives it from the task's run
@@ -36,7 +36,34 @@ const metaPath = path.join(dir, "task.json");
 const promptPath = path.join(dir, "prompt.md");
 const resultPath = path.join(dir, "result.md");
 
+// The provider registry for THIS workspace: native providers plus any
+// manifests under .work/providers/. A malformed manifest fails loudly here,
+// exactly as it does for the CLI/API — never silently.
+const providers = createProviderRegistry({ base });
+
+// The interactive-permission channel: the actions write the human's
+// ALLOW/REJECT here; a provider that holds an outstanding ACP permission
+// request polls this file and answers the ORIGINAL request in place, so the
+// same session/execution continues. A stale file from an interrupted run is
+// cleared before we start.
+const permissionDecisionFile = path.join(dir, "permission.json");
+await fs.rm(permissionDecisionFile, { force: true }).catch(() => {});
+
 const task = await store.readJson(metaPath);
+
+// Best-effort cancellation seam: the node's cancelExecution kills this
+// process; give the provider a chance to cancel its own run first (ACP sends
+// session/cancel, command providers just die with us).
+let currentProvider = null;
+let runSessionId = null; // the provider-surfaced session id, persisted on pause
+process.on("SIGTERM", () => {
+  try {
+    currentProvider?.cancel?.();
+  } catch {
+    /* best-effort */
+  }
+  process.exit(0);
+});
 
 function log(line) {
   process.stdout.write(`[${new Date().toISOString().slice(11, 19)}] ${line}\n`);
@@ -58,6 +85,16 @@ function record(type, data = {}) {
   );
   return recordChain;
 }
+
+// Serialize task.json read-modify-write operations. The interactive
+// permission handlers run fire-and-forget from the event stream, so their
+// writes must not interleave with finish()'s final write — a lost update
+// would leave the task stuck in an intermediate state.
+let stateChain = Promise.resolve();
+const withState = fn => {
+  stateChain = stateChain.then(fn);
+  return stateChain;
+};
 
 // Finalize the run record for THIS run: outcome, real timing, session,
 // attempts, and the failure/block details the outcome produced. The run's
@@ -83,10 +120,11 @@ function finalizeRun(current) {
   });
 }
 
-const onEvent = event => {
+const onEvent = async event => {
   switch (event.type) {
     case "run.started":
       record("run.started", { sessionId: event.sessionId ?? null });
+      if (event.sessionId) runSessionId = event.sessionId;
       log(`session started: ${event.sessionId ?? "unknown"}`);
       break;
     case "tool.started": {
@@ -110,20 +148,88 @@ const onEvent = event => {
         log(event.text.replace(/\s+/g, " ").trim().slice(0, 160));
       }
       break;
-    case "needs_user":
-      record("needs_user", {
+    case "needs_user": {
+      await record("needs_user", {
         reason: event.reason,
-        detail: event.detail ?? {}
+        detail: event.detail ?? {},
+        ...(event.blockedOn ? { blockedOn: event.blockedOn } : {})
       });
-      log(`needs user (${event.reason}): ${event.detail?.message ?? ""}`);
+      // An INTERACTIVE ACP permission request pauses the run for the human
+      // while the provider keeps the agent session alive. Persist the
+      // needs_you state so every surface sees the halt; the provider is
+      // waiting on the decision file and will continue the SAME run when the
+      // human decides.
+      if (event.blockedOn?.live) {
+        await withState(async () => {
+          const fresh = await store.readJson(metaPath);
+          const now = new Date().toISOString();
+          let paused = {
+            ...fresh,
+            status: "needs_you",
+            blockedOn: event.blockedOn,
+            updatedAt: now,
+            // The session id is real (surfaced at run.started); persist it so
+            // the paused run is inspectable while the human decides.
+            ...(runSessionId
+              ? { execution: { ...(fresh.execution ?? {}), externalSessionId: runSessionId } }
+              : {})
+          };
+          delete paused.error;
+          if (Array.isArray(paused.runs)) {
+            const record = paused.runs.find(r => r.run === runNumber);
+            const startedMs = record ? Date.parse(record.startedAt) : NaN;
+            paused = updateRun(paused, runNumber, {
+              outcome: "needs_you",
+              completedAt: now,
+              ...(Number.isFinite(startedMs)
+                ? { durationMs: Date.parse(now) - startedMs }
+                : {}),
+              externalSessionId: runSessionId ?? record?.externalSessionId,
+              blockedOn: event.blockedOn
+            });
+          }
+          await store.writeJson(metaPath, paused);
+        });
+        log(`needs user (permission): awaiting your decision`);
+      } else {
+        log(`needs user (${event.reason}): ${event.detail?.message ?? ""}`);
+      }
       break;
+    }
+    case "permission.resolved": {
+      // The human answered the outstanding permission request; the provider
+      // responded and the SAME run continues (no new session, no restart).
+      await record("permission.resolved", { grant: event.grant });
+      await withState(async () => {
+        const fresh = await store.readJson(metaPath);
+        const now = new Date().toISOString();
+        let resumed = { ...fresh, status: "working", updatedAt: now };
+        delete resumed.blockedOn;
+        if (Array.isArray(resumed.runs)) {
+          resumed = updateRun(resumed, runNumber, {
+            outcome: "working",
+            completedAt: undefined,
+            durationMs: undefined,
+            blockedOn: undefined
+          });
+        }
+        await store.writeJson(metaPath, resumed);
+      });
+      log(`permission ${event.grant} — continuing the same run`);
+      break;
+    }
   }
 };
 
 // Record the terminal run events + the resulting task state.
 async function finish(current, outcome) {
   current = finalizeRun(current);
-  await store.writeJson(metaPath, current);
+  // Write through the state chain: any interactive permission handler write
+  // (fire-and-forget from the event stream) must land BEFORE the terminal
+  // state, or a lost update could leave the task stuck mid-transition.
+  await withState(async () => {
+    await store.writeJson(metaPath, current);
+  });
 
   if (outcome.status === "failed") {
     await record("run.failed", { error: outcome.error ?? "Execution failed" });
@@ -142,7 +248,9 @@ async function finish(current, outcome) {
 }
 
 try {
-  const provider = getProvider(task.execution?.provider ?? defaultProviderId);
+  const provider = providers.getProvider(
+    task.execution?.provider ?? providers.defaultProviderId
+  );
   if (!provider) {
     let failed = applyOutcome(task, {
       status: "failed",
@@ -155,6 +263,7 @@ try {
     log("outcome: failed (no execution provider)");
     process.exit(1);
   }
+  currentProvider = provider;
 
   let current = task;
   let outcome;
@@ -202,7 +311,8 @@ try {
       cwd: base,
       externalSessionId: current.execution?.externalSessionId,
       grant,
-      onEvent
+      onEvent,
+      permission: { decisionFile: permissionDecisionFile }
     });
   } else {
     if (task.status !== "working") {
@@ -211,7 +321,12 @@ try {
     }
     const prompt = await fs.readFile(promptPath, "utf8");
     log(`launching ${provider.displayName} (${provider.id})`);
-    outcome = await provider.start({ cwd: base, prompt, onEvent });
+    outcome = await provider.start({
+      cwd: base,
+      prompt,
+      onEvent,
+      permission: { decisionFile: permissionDecisionFile }
+    });
   }
 
   current = applyOutcome(current, outcome);

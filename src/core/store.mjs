@@ -189,6 +189,16 @@ export function createStore(base = process.cwd()) {
     await fs.appendFile(p, JSON.stringify(event) + "\n", "utf8");
   }
 
+  // The interactive-permission channel: the human's ALLOW/REJECT for a live
+  // permission request. The running worker's provider polls this file and
+  // answers the outstanding request in place (the task dir's permission.json).
+  async function writePermissionDecision(task, decision) {
+    await writeJson(
+      path.join(taskDir(task.slug), "permission.json"),
+      decision
+    );
+  }
+
   return {
     base,
     workDir,
@@ -209,6 +219,7 @@ export function createStore(base = process.cwd()) {
     readTaskLog,
     readEventLog,
     readEvents,
-    appendEvent
+    appendEvent,
+    writePermissionDecision
   };
 }

@@ -1,0 +1,6 @@
+{
+  "id": "my-agent",
+  "displayName": "My Agent",
+  "transport": "command",
+  "command": ["my-agent", "--headless", "--task", "{prompt}", "--in", "{workspace}"]
+}

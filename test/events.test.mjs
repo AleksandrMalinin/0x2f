@@ -24,6 +24,7 @@ test("event model exposes exactly the normalized Work event types", () => {
     "tool.started",
     "file.changed",
     "needs_user",
+    "permission.resolved",
     "run.completed",
     "run.failed"
   ]);

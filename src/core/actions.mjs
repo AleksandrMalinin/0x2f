@@ -10,7 +10,10 @@
 //     store,        // persistence (core/store.mjs)
 //     node,         // execution node (nodes/local.mjs today)
 //     events,       // live event bus (core/events.mjs)
-//     providerId,   // default execution provider id
+//     providers,    // provider registry (providers/index.mjs) — native +
+//                   // configured (ACP/command manifest) providers
+//     router,       // AUTO routing (core/router.mjs) — resolves "auto" and
+//                   // the configured default provider request
 //     workspaceId,  // logical workspace id ("local" today)
 //     buildPrompt   // (title) -> prompt string
 //   }
@@ -18,11 +21,58 @@
 import { closeTask } from "./lifecycle.mjs";
 import { WorkError } from "./errors.mjs";
 import { workEvent } from "./events.mjs";
-import { getProvider, listProviders } from "../providers/index.mjs";
 import { makeRunRecord, taskRuns, legacyRun } from "./runs.mjs";
 
 export function createActions(ctx) {
-  const { store, node } = ctx;
+  const { store, node, providers, router } = ctx;
+
+  // The client-facing provider list: ids in registry order (native first).
+  function providerList() {
+    return providers.listProviders().map(p => p.id).join(", ");
+  }
+
+  function requireProvider(id) {
+    if (!providers.getProvider(id)) {
+      throw new WorkError(
+        `Unknown execution provider "${id}". Available: ${providerList()}.`
+      );
+    }
+  }
+
+  // Resolve what the user asked for into an execution target.
+  //
+  //   requested undefined -> the configured routing default (AUTO when
+  //                          .work/routing.json says so, else the runtime
+  //                          default provider)
+  //   requested "auto"    -> the deterministic routing decision
+  //   requested <id>      -> that provider (manual override)
+  //
+  // Returns { provider, node, requested, routing? } where `routing` is
+  // present only for AUTO decisions — the persisted answer to "why did 0x2F
+  // run this here?".
+  function resolveTarget(requested) {
+    const effective = requested ?? router.defaultRequestedProvider();
+    if (effective === "auto") {
+      const routed = router.route();
+      if (!routed.provider) {
+        throw new WorkError(
+          `AUTO routing: ${routed.reason}. No execution target could be selected.`
+        );
+      }
+      return {
+        provider: routed.provider,
+        node: routed.node,
+        requested: "auto",
+        routing: {
+          mode: "auto",
+          reason: routed.reason,
+          considered: routed.considered
+        }
+      };
+    }
+    requireProvider(effective);
+    return { provider: effective, node: node.id, requested: effective };
+  }
 
   // Record a normalized event to the task's event log. The API layer tails
   // this log and broadcasts to live clients, so every client observes the
@@ -63,44 +113,35 @@ export function createActions(ctx) {
   }
 
   // createWork({ title, provider?, model? }): create the task and start
-  // execution on the node. `provider` defaults to the runtime's default
-  // (claude-code); `model` is persisted only when reliably known. The task is
-  // the persistent system; the node + provider + session are execution
-  // infrastructure underneath it. The first run record is persisted with the
-  // task — the task/run distinction is real in the data model from the start.
+  // execution on the node. `provider` is the user's request: an explicit id,
+  // "auto" (the deterministic router), or undefined (the configured default —
+  // AUTO when .work/routing.json says so). The task is the persistent system;
+  // the node + provider + session are execution infrastructure underneath it.
   async function createWork({ title, provider, model } = {}) {
     if (!title || !title.trim()) {
       throw new WorkError("Task title is required.");
     }
     const clean = title.trim();
-    const providerId = provider ?? ctx.providerId;
-    if (provider) {
-      const found = getProvider(provider);
-      if (!found) {
-        throw new WorkError(
-          `Unknown execution provider "${provider}". Available: ${listProviders()
-            .map(p => p.id)
-            .join(", ")}.`
-        );
-      }
-    }
+    const target = resolveTarget(provider);
 
     const prompt = await ctx.buildPrompt(clean);
     const startedAt = new Date().toISOString();
 
     const task = await store.createTask(clean, prompt, {
-      provider: providerId,
-      node: node.id,
+      provider: target.provider,
+      node: target.node,
       workspace: ctx.workspaceId,
       ...(model ? { model } : {}),
       runs: [
         makeRunRecord({
           run: 1,
-          provider: providerId,
-          node: node.id,
+          provider: target.provider,
+          node: target.node,
           workspace: ctx.workspaceId,
           model,
-          startedAt
+          startedAt,
+          requestedProvider: target.requested,
+          routing: target.routing
         })
       ]
     });
@@ -130,17 +171,9 @@ export function createActions(ctx) {
         `Task #${id} is working — its current run is still executing. Runs of one task are sequential; wait for it to finish before starting another.`
       );
     }
-    const providerId = provider ?? task.execution?.provider ?? ctx.providerId;
-    if (provider) {
-      const found = getProvider(provider);
-      if (!found) {
-        throw new WorkError(
-          `Unknown execution provider "${provider}". Available: ${listProviders()
-            .map(p => p.id)
-            .join(", ")}.`
-        );
-      }
-    }
+    // Without an explicit request, a rerun is a retry of the task's current
+    // provider; `--provider auto` re-routes deterministically.
+    const target = resolveTarget(provider ?? task.execution?.provider);
 
     // Materialize run history for legacy tasks BEFORE replacing execution:
     // the legacy run's provider would otherwise be lost when execution is
@@ -161,18 +194,20 @@ export function createActions(ctx) {
         ...current.runs,
         makeRunRecord({
           run: runNumber,
-          provider: providerId,
-          node: node.id,
+          provider: target.provider,
+          node: target.node,
           workspace: ctx.workspaceId,
           model,
-          startedAt
+          startedAt,
+          requestedProvider: target.requested,
+          routing: target.routing
         })
       ],
       // The CURRENT run's execution state — fresh for the new run. The
       // previous run keeps its own provider/node/session in its run record.
       execution: {
-        provider: providerId,
-        node: node.id,
+        provider: target.provider,
+        node: target.node,
         workspace: ctx.workspaceId,
         ...(model ? { model } : {})
       }
@@ -195,6 +230,17 @@ export function createActions(ctx) {
   // then hand execution back to the node (which resumes the SAME provider
   // session). The needs_you -> working transition is applied by the worker
   // on the node, exactly as in v0.2.
+  //
+  // Two kinds of needs_you are handled:
+  //
+  //   blockedOn.live — an INTERACTIVE permission request: the run's process
+  //   is still alive, holding the outstanding request. The grant is delivered
+  //   through the per-task decision file; the running worker's provider
+  //   answers the ORIGINAL request and the same execution continues. No new
+  //   worker, no session restart.
+  //
+  //   otherwise — the run ended (provider session persisted); a fresh worker
+  //   resumes the same provider session (--resume / session/load).
   async function resumeWork(id, grant) {
     const task = await store.findTask(id);
     if (task.status !== "needs_you") {
@@ -202,7 +248,14 @@ export function createActions(ctx) {
         `Task #${id} is ${task.status}, not needs_you — nothing to ${grant}.`
       );
     }
-    const provider = getProvider(task.execution?.provider);
+    if (task.blockedOn?.live === true) {
+      await store.writePermissionDecision(task, {
+        grant,
+        at: new Date().toISOString()
+      });
+      return { ...task, status: "working", live: true };
+    }
+    const provider = providers.getProvider(task.execution?.provider);
     if (provider && provider.capabilities?.supportsResume === false) {
       // Real capability difference (e.g. DeepSeek Harness headless cannot
       // resume a session): refuse instead of faking a continuation.
