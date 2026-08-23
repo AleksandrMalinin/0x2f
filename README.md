@@ -93,9 +93,20 @@ Every command is a thin client of the **shared Work actions**
 
 ### `2f ui`
 
-Local-first Web UI at `http://127.0.0.1:4242`, bound to **localhost only**.
-The browser talks to 0x2F exclusively through the local HTTP/SSE API — it
-never spawns providers, reads provider sessions, or touches `.work/` files.
+**0x2F Web** — the graphical surface — at `http://127.0.0.1:4242`, bound to
+**localhost only**. The browser talks to 0x2F exclusively through the local
+HTTP/SSE API: it never spawns providers, reads provider sessions, or touches
+`.work/` files, and it holds no task store of its own.
+
+The ledger is the product surface. A task expands in place; the row that
+needs you opens itself. Everything on screen is real Work state — task
+status from the shared actions, activity from normalized Work events. There
+is no simulated agent activity and no chain-of-thought.
+
+Provider, node and session are **secondary metadata** on the expanded row
+(`local / claude-code`), never the headline. The same ledger renders a Codex,
+DeepSeek Harness or OpenCode run without a line changing: the client consumes
+only normalized events and `execution.*`.
 
 ## Architecture
 
@@ -133,9 +144,28 @@ never spawns providers, reads provider sessions, or touches `.work/` files.
   event bus for one workspace. CLI, server, and (later) TUI all build one.
 - `worker.mjs` — runs inside a node: provider `start`/`resume` → normalized
   outcome → task state → normalized events.
-- `server.mjs` — the local API (HTTP + SSE). A thin client of the actions.
+- `server.mjs` — the local API (HTTP + SSE) and the three static files of the
+  Web surface. A thin client of the actions.
 - `project.mjs` / `render.mjs` — workspace context (prompts, init) and CLI
   rendering. Rendering is a client concern; neither owns business logic.
+
+### Web surface (`src/web/`)
+
+The Web client is a client, exactly like the CLI: it renders state and
+invokes shared actions.
+
+- `index.html` — the shell and the design's styles. No inline UI logic.
+- `ledger.mjs` — the **pure** projection from normalized Work events to the
+  ledger view model: phase grouping, the travel-rule track, the activity
+  bands, state labels. It is the Web counterpart of `render.mjs` and it is
+  DOM-free and dependency-free, so the browser imports it over HTTP
+  (`/app/ledger.mjs`) *and* `test/web-ledger.test.mjs` imports it in Node —
+  one implementation of the rendering rules, tested directly.
+- `app.js` — the DOM layer and the transport (fetch + `EventSource`).
+
+Nothing here decides what a status means, when a task is resumable, or how a
+run is continued; that stays in `core/`. Zero dependencies, no build step:
+the files are served as-is.
 
 ### Task shape
 
@@ -174,7 +204,13 @@ POST /api/tasks/:id/allow        allowWork(id)
 POST /api/tasks/:id/reject       rejectWork(id)
 POST /api/tasks/:id/close        closeWork(id)
 GET  /api/events                 Server-Sent Events — live normalized events
+GET  /api/events/history         the persisted event log, per task
 ```
+
+`/api/events` only carries events from the moment a client connects, and the
+tailer never replays. `/api/events/history` reads the same append-only logs
+the worker and the CLI write, so a surface opened mid-run can draw the work
+it missed. It is a read-through of existing persistence, not a second store.
 
 The API returns normalized Work concepts, never provider shapes.
 
@@ -248,6 +284,15 @@ Provider-internal detail — see `src/providers/claude-code.mjs` and the
   question event that fits Work's flow yet. The state model supports it.
 - **Pause/resume mid-flight** — resume works once the provider process has
   exited with a persisted transcript.
+- **Sending a task back, or adding a note to a running one.** There is no
+  action for "continue this task with a correction": `resumeWork` only
+  applies to `needs_you`, and a free-text nudge would be a new product
+  feature with its own lifecycle. The 0x2F Web ledger therefore has no
+  "send back" or note field — an affordance that cannot act is worse than
+  none.
+- **Diff statistics on a result.** Work records *which* files a run changed
+  (`file.changed`), not how many lines. The result panel shows the files and
+  the written result, not `+28 −11`.
 
 ## Adding a second provider
 
@@ -326,7 +371,14 @@ is not exposed to the LAN.
   (including partial-line safety).
 - `test/node-local.test.mjs` — the node contract and its swappability.
 - `test/api.test.mjs` — HTTP routes map 1:1 onto actions; localhost binding;
-  SSE delivers `task.created` live.
+  SSE delivers `task.created` live; the Web shell and its module assets are
+  served from the allowlist and nothing else is reachable; the event history
+  route returns the persisted normalized log.
+- `test/web-ledger.test.mjs` — the Web projection driven by real normalized
+  events: provider-neutral phase classification, the travel rule (executed
+  work only — Work does not forecast), the interruption tear, Needs You from
+  `blockedOn`, the ready result from `file.changed`, compressed done rows,
+  and ledger ordering.
 
 ## What this intentionally does NOT do
 
