@@ -13,6 +13,7 @@
 //   POST /api/tasks/:id/reject     -> rejectWork(id)
 //   POST /api/tasks/:id/close      -> closeWork(id)
 //   GET  /api/events               -> Server-Sent Events (live normalized events)
+//   GET  /api/events/history       -> the persisted normalized event log per task
 //
 // Security (local-first): the server binds to 127.0.0.1 by default. Work is
 // deliberately not exposed to the LAN and has no auth in this iteration.
@@ -318,6 +319,31 @@ function makeReadLines(store) {
   };
 }
 
+// Newest MAX_HISTORY events per task. A long-running task can write a lot of
+// progress lines; a surface only ever draws recent work, and an unbounded
+// response would punish the client for the runtime's verbosity.
+const MAX_HISTORY = 1000;
+
+async function readHistory(store) {
+  const tasks = await store.listTasks();
+  const out = {};
+  for (const task of tasks) {
+    const text = await store.readEventLog(task.slug);
+    const events = [];
+    for (const line of text.split("\n")) {
+      if (!line.trim()) continue;
+      try {
+        const event = JSON.parse(line);
+        if (event && typeof event.type === "string") events.push(event);
+      } catch {
+        // not a Work event line — ignore, exactly as the tailer does
+      }
+    }
+    out[task.id] = events.slice(-MAX_HISTORY);
+  }
+  return out;
+}
+
 export async function startServer(base = process.cwd(), port = 4242, opts = {}) {
   const runtime = opts.runtime ?? createRuntime(base, opts);
   const { store, actions, events } = runtime;
@@ -354,6 +380,16 @@ export async function startServer(base = process.cwd(), port = 4242, opts = {}) 
         res.write(": connected\n\n");
         const unsubscribe = events.on(event => sendSse(res, event));
         req.on("close", () => unsubscribe());
+        return;
+      }
+
+      // The persisted history behind /api/events. SSE only carries deltas
+      // from the moment a client connects and the tailer never replays, so a
+      // client that connects mid-run needs the log it missed. These are the
+      // same normalized Work events, read from the same append-only logs the
+      // CLI and the worker write — not a second store.
+      if (req.method === "GET" && url.pathname === "/api/events/history") {
+        json(res, { base: store.base, events: await readHistory(store) });
         return;
       }
 

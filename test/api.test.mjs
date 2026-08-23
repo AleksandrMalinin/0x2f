@@ -229,3 +229,43 @@ test("SSE delivers normalized task.created when a task is created through the AP
     await fs.rm(base, { recursive: true, force: true });
   }
 });
+
+test("GET /api/events/history returns the persisted normalized log per task", async () => {
+  const { base, runtime, handle } = await startTestServer();
+  try {
+    const task = await runtime.actions.createWork({ title: "History" });
+    await runtime.store.appendEvent(task.slug, {
+      type: "tool.started",
+      taskId: task.id,
+      at: "2026-01-01T10:00:01.000Z",
+      name: "Read",
+      input: { file_path: "src/a.ts" }
+    });
+    await runtime.store.appendEvent(task.slug, "not json");
+
+    const history = await fetch(handle.url + "/api/events/history").then(r => r.json());
+    assert.equal(history.base, base);
+
+    const events = history.events[String(task.id)];
+    // task.created (written by the shared action) + the tool step; the
+    // unparseable line is skipped exactly as the live tailer skips it.
+    assert.deepEqual(events.map(e => e.type), ["task.created", "tool.started"]);
+    assert.equal(events[1].name, "Read");
+  } finally {
+    await handle.close();
+    await fs.rm(base, { recursive: true, force: true });
+  }
+});
+
+test("a task with no event log yet is still present in the history", async () => {
+  const { base, runtime, handle } = await startTestServer();
+  try {
+    const task = await runtime.actions.createWork({ title: "Quiet" });
+    await fs.rm(runtime.store.eventLogPath(task.slug), { force: true });
+    const history = await fetch(handle.url + "/api/events/history").then(r => r.json());
+    assert.deepEqual(history.events[String(task.id)], []);
+  } finally {
+    await handle.close();
+    await fs.rm(base, { recursive: true, force: true });
+  }
+});
