@@ -57,8 +57,10 @@ Zero-dependency Node.js. No build step.
 ## Requirements
 
 - Node.js 20+
-- Claude Code installed and authenticated (`claude`) — the only implemented
-  execution provider
+- At least one execution provider:
+  - **Claude Code** installed and authenticated (`claude`) — the default
+  - **DeepSeek Harness** (`dsh`) — optional; select it per task with
+    `--provider deepseek-harness`
 
 ## Install
 
@@ -78,7 +80,8 @@ Then, in any repository:
 
 ```bash
 2f init
-2f new "Long text overflow fix"
+2f new "Long text overflow fix"              # default provider (claude-code)
+2f new "Audit the auth flow" --provider deepseek-harness
 2f
 2f status
 2f open 1
@@ -90,6 +93,10 @@ Then, in any repository:
 
 Every command is a thin client of the **shared Work actions**
 (`src/core/actions.mjs`) — the same implementation the Web API calls.
+
+Provider selection is explicit and **secondary**: `2f new "…" --provider <id>`
+(default `claude-code`; `2f` lists providers in its help). The same task text
+can be run through any provider — the task, not the session, is what persists.
 
 ### `2f ui`
 
@@ -107,6 +114,11 @@ Provider, node and session are **secondary metadata** on the expanded row
 (`local / claude-code`), never the headline. The same ledger renders a Codex,
 DeepSeek Harness or OpenCode run without a line changing: the client consumes
 only normalized events and `execution.*`.
+
+The bottom composer offers provider selection as a quiet native select
+(populated from `GET /api/providers`, defaulting to the runtime default) —
+task-first: the input is the primary surface, the provider is one small
+control next to the caret.
 
 ## Architecture
 
@@ -294,19 +306,81 @@ Provider-internal detail — see `src/providers/claude-code.mjs` and the
   (`file.changed`), not how many lines. The result panel shows the files and
   the written result, not `+28 −11`.
 
-## Adding a second provider
+## Providers
+
+0x2F ships two real execution providers behind one contract. The contract is
+what Work Core, the worker, and every client see — nothing else:
+
+```js
+{
+  id: "deepseek-harness",          // stable provider id, stored on the task
+  displayName: "DeepSeek Harness", // human label
+  capabilities: {
+    supportsResume, supportsStructuredEvents,
+    supportsPermissionRequests, supportsSandbox, supportsStreaming
+  },
+  async start({ cwd, prompt, onEvent })                    -> outcome
+  async resume({ cwd, externalSessionId, grant, onEvent }) -> outcome  // if supportsResume
+}
+```
+
+Outcomes are normalized Work concepts (core/lifecycle.mjs):
+`{ status: "ready", result }`, `{ status: "needs_you", reason, blockedOn }`,
+`{ status: "failed", error }`. Live events (`onEvent`) are normalized Work
+events (`run.started`, `progress`, `tool.started`, `file.changed`,
+`needs_user`) — provider shapes stop at the provider boundary.
+
+### Capability differences
+
+| capability | claude-code | deepseek-harness |
+| --- | --- | --- |
+| `supportsResume` | yes (same-session `--resume`) | **no** (headless makes a fresh session per run) |
+| `supportsStructuredEvents` | yes (stream-json) | **no** (prints the final assistant text only) |
+| `supportsPermissionRequests` | yes (`permission_denials` → `needs_you`) | **no** (tools run without an approval prompt) |
+| `supportsStreaming` | yes | **no** |
+| `supportsSandbox` | no | no |
+| `needs_you / permission` | emitted | never |
+| `needs_you / decision` | parsed from `## Needs human decision` | same — it is a Work prompt convention, parsed in core |
+
+A `needs_you` task whose provider cannot resume is refused loudly at the
+action boundary ("does not support resuming sessions") instead of faking a
+continuation — the declared capability, not parity theatre.
+
+### DeepSeek Harness mapping
+
+`dsh --profile headless "<prompt>"` (verified against `dsh` 0.1.1-rc.2 source):
+one fresh persisted session per run, the final assistant text on stdout, exit
+0 on a completed turn, `dsh: <code>: <message>` on stderr otherwise.
+
+| DSH headless CLI | normalized Work |
+| --- | --- |
+| process spawns | `run.started` (no session id — DSH never surfaces it) |
+| exit 0 + stdout text | `run.completed` + `ready` |
+| `## Needs human decision` section | `needs_you / decision` |
+| exit 1 / stderr | `run.failed` + `failed` |
+| permission prompts | none exist in headless; `needs_user` never fires |
+
+Only events reliably derivable from DSH are emitted. DSH is developer
+preview and may change; all compatibility-sensitive code is isolated in
+`src/providers/deepseek-harness.mjs` (binary override: `DSH_BIN`, default
+`dsh` on PATH). The model DSH runs is its own settings concern
+(`agent-default-model` in `$DSH_HOME/settings.yaml`) — 0x2F never overrides
+it, so `execution.model` is only persisted when reliably known.
+
+### Adding another provider
 
 One file plus a registry line — nothing in core, CLI, worker, server, or UI
 changes (they consume only normalized outcomes and `execution.provider`):
 
 1. Create `src/providers/<name>.mjs` exporting a provider object with `id`,
    `displayName`, `capabilities`, and `start({ cwd, prompt, onEvent })` →
-   normalized outcome (plus `resume` if supported).
+   normalized outcome (plus `resume` if supported). Keep every vendor shape
+   inside this file.
 2. Register it in `src/providers/index.mjs`:
-   `const providers = { "claude-code": claudeCodeProvider, "<name>": … };`
-3. Providers declare capabilities (`supportsResume`,
-   `supportsStructuredEvents`, `supportsPermissionRequests`, …) so Work can
-   refuse flows the runtime can't do instead of faking them.
+   `const providers = { "claude-code": …, "deepseek-harness": …, "<name>": … };`
+3. Declare capabilities honestly (`supportsResume`,
+   `supportsStructuredEvents`, `supportsPermissionRequests`, …) so Work
+   refuses flows the runtime can't do instead of faking them.
 
 Models are a separate concern from providers: the same harness can run
 different models, and the same model can run under different harnesses. The
@@ -373,7 +447,15 @@ is not exposed to the LAN.
 - `test/api.test.mjs` — HTTP routes map 1:1 onto actions; localhost binding;
   SSE delivers `task.created` live; the Web shell and its module assets are
   served from the allowlist and nothing else is reachable; the event history
-  route returns the persisted normalized log.
+  route returns the persisted normalized log; `GET /api/providers`; provider
+  selection on task creation.
+- `test/deepseek-harness.test.mjs` — the DSH adapter driven through fake
+  `dsh` binaries: spawn + normalization, honest capabilities, clean failure
+  when DSH is absent.
+- `test/provider-equivalence.test.mjs` — the SAME task text through both
+  Claude Code and DeepSeek Harness (fake CLIs) normalizes to the same Work
+  outcome — the proof that the provider-neutral core hosts more than one
+  harness.
 - `test/web-ledger.test.mjs` — the Web projection driven by real normalized
   events: provider-neutral phase classification, the travel rule (executed
   work only — Work does not forecast), the interruption tear, Needs You from
