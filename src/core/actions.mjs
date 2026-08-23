@@ -39,6 +39,24 @@ export function createActions(ctx) {
     }
   }
 
+  // A provider that exists but cannot run on the execution node right now.
+  // Refuse BEFORE any work or run is persisted: a run against an unavailable
+  // provider is guaranteed to fail, so the refusal belongs at the action
+  // boundary — never as a doomed background run, and never by silently
+  // switching to another provider.
+  function requireAvailableProvider(id) {
+    if (providers.available(id)) return;
+    const provider = providers.getProvider(id);
+    const display = provider?.displayName ?? id;
+    const executable = providers.executable(id);
+    const lines = [
+      `Execution provider "${id}" is unavailable on this machine.`,
+      executable ? `Expected executable: ${executable}` : "",
+      `Install or configure ${display}, then retry.`
+    ].filter(Boolean);
+    throw new WorkError(lines.join("\n"));
+  }
+
   // Resolve what the user asked for into an execution target.
   //
   //   requested undefined -> the configured routing default (AUTO when
@@ -71,6 +89,16 @@ export function createActions(ctx) {
       };
     }
     requireProvider(effective);
+    // Availability is enforced at the action boundary for any EXPLICIT manual
+    // selection ("--provider <id>" / the API's provider field). AUTO already
+    // excludes unavailable providers, and an unspecified request (the
+    // configured/runtime default) is not a manual selection — it keeps its
+    // historical behavior. The check is a runtime/execution fact: `available`
+    // resolves the executable in the same environment the worker will spawn
+    // it in.
+    if (requested !== undefined && requested !== "auto") {
+      requireAvailableProvider(effective);
+    }
     return { provider: effective, node: node.id, requested: effective };
   }
 
@@ -231,7 +259,12 @@ export function createActions(ctx) {
   // session). The needs_you -> working transition is applied by the worker
   // on the node, exactly as in v0.2.
   //
-  // Two kinds of needs_you are handled:
+  // ALLOW / REJECT answer a PERMISSION: a concrete operation that needs
+  // authorization. They are NOT the interaction for a DECISION — a decision
+  // is answered (answerWork), never allowed or rejected. This guard keeps
+  // the two concepts separate at the action boundary.
+  //
+  // Two kinds of permission needs_you are handled:
   //
   //   blockedOn.live — an INTERACTIVE permission request: the run's process
   //   is still alive, holding the outstanding request. The grant is delivered
@@ -246,6 +279,11 @@ export function createActions(ctx) {
     if (task.status !== "needs_you") {
       throw new WorkError(
         `Task #${id} is ${task.status}, not needs_you — nothing to ${grant}.`
+      );
+    }
+    if (task.blockedOn?.type === "decision") {
+      throw new WorkError(
+        `Task #${id} is blocked on a decision, not a permission — answer the decision (2f answer) instead of allowing or rejecting it.`
       );
     }
     if (task.blockedOn?.live === true) {
@@ -272,6 +310,42 @@ export function createActions(ctx) {
     return { ...task, status: "working" };
   }
 
+  // answerWork(id, { answer }): the human's response to a needs_you/decision
+  // block. A decision is not a permission — it is not allowed or rejected; it
+  // is answered. The answer is persisted with the task (the task dir's
+  // answer.json) and recorded as a normalized event, so it is part of the
+  // run's history.
+  //
+  // Answering does NOT continue the run in place: whether a provider can
+  // consume the answer (resume a session with it) is a provider capability,
+  // and today no provider supports free-text decision continuation. The task
+  // stays needs_you after answering — the human decides next (close the work,
+  // or rerun with the answer as context once a continuation mechanism
+  // exists). The UI states this limitation rather than faking a resume.
+  async function answerWork(id, { answer } = {}) {
+    const task = await store.findTask(id);
+    if (task.status !== "needs_you") {
+      throw new WorkError(
+        `Task #${id} is ${task.status}, not needs_you — nothing to answer.`
+      );
+    }
+    if (task.blockedOn?.type !== "decision") {
+      throw new WorkError(
+        `Task #${id} is not blocked on a decision — there is nothing to answer.`
+      );
+    }
+    if (!answer || !answer.trim()) {
+      throw new WorkError("An answer is required.");
+    }
+    const clean = answer.trim();
+    await store.writeDecisionAnswer(task, {
+      answer: clean,
+      at: new Date().toISOString()
+    });
+    await record(task, "task.answered", { answer: clean });
+    return { ...task };
+  }
+
   // closeWork(id): user closes the task (any status -> done).
   async function closeWork(id) {
     const task = await store.findTask(id);
@@ -288,6 +362,7 @@ export function createActions(ctx) {
     createWork,
     rerunWork,
     resumeWork,
+    answerWork,
     closeWork,
     allowWork: id => resumeWork(id, "allow"),
     rejectWork: id => resumeWork(id, "reject")

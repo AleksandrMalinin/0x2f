@@ -17,7 +17,9 @@ import {
   eventsForRun,
   toSteps,
   fmtDuration,
-  two
+  two,
+  parseInline,
+  parseRich
 } from "/app/ledger.mjs";
 import { createSoundPolicy } from "/app/sound-policy.mjs";
 import { createSlashPlayer } from "/app/sound.mjs";
@@ -26,6 +28,7 @@ const EVENT_TYPES = [
   "task.created",
   "task.updated",
   "task.closed",
+  "task.answered",
   "run.started",
   "progress",
   "tool.started",
@@ -94,7 +97,10 @@ const state = {
   flash: null,
   soundOn: storedFlag(SOUND_KEY, true),
   notifyOn: storedFlag(NOTIFY_KEY, false),
-  pulse: null // { type: "ready"|"needs_you", at } — the slash's visual trace
+  pulse: null, // { type: "ready"|"needs_you", at } — the slash's visual trace
+  // Half-typed decision answers per task, kept across re-renders (any event
+  // re-renders the ledger; a re-render must never drop a half-typed answer).
+  answers: new Map()
 };
 
 // --- tiny DOM helper -------------------------------------------------------
@@ -127,6 +133,54 @@ function el(tag, attrs = {}, children = []) {
 
 function camelToKebab(value) {
   return value.replace(/[A-Z]/g, c => "-" + c.toLowerCase());
+}
+
+// --- rich prose (DOM side of the shared Markdown subset) -------------------
+//
+// ledger.mjs parses provider prose into a pure token/block AST; these two
+// builders turn that AST into DOM. Every leaf is created with textContent
+// (the `el` helper), so the subset can never carry arbitrary HTML — a token
+// is text, code or bold, nothing else.
+
+function inlineEls(tokens) {
+  return tokens.map(token => {
+    if (token.code !== undefined) {
+      return el("code", { class: "rich-code", text: token.code });
+    }
+    if (token.bold !== undefined) {
+      return el("strong", { class: "rich-bold" }, inlineEls(token.bold));
+    }
+    return el("span", { text: token.text });
+  });
+}
+
+function richBlock(block) {
+  if (block.type === "heading") {
+    return el("div", { class: "rich-h" + block.level }, inlineEls(block.inline));
+  }
+  if (block.type === "list") {
+    return el(
+      "div",
+      { class: "rich-list" },
+      block.items.map((item, index) =>
+        el("div", { class: "rich-li" }, [
+          el("span", {
+            class: "rich-li-mark",
+            text: block.ordered ? index + 1 + "." : "–"
+          }),
+          el("span", { class: "rich-li-body" }, inlineEls(item))
+        ])
+      )
+    );
+  }
+  if (block.type === "code") {
+    return el("pre", { class: "rich-pre" }, [el("code", { text: block.text })]);
+  }
+  return el("div", { class: "rich-p" }, inlineEls(block.inline));
+}
+
+function richBody(text) {
+  return el("div", { class: "rich" }, parseRich(text).map(richBlock));
 }
 
 // --- transport -------------------------------------------------------------
@@ -340,6 +394,32 @@ const accept = id =>
     if (state.openId === id) state.openId = null;
   });
 
+// CLOSE tells 0x2F this Work is no longer active — the same closeWork action
+// the ACCEPT button uses. It never touches the provider: no resume, no new
+// execution attempt, no permission interpretation. It is the escape hatch
+// for work that cannot continue (a non-resumable provider, a wrong NEEDS
+// YOU, a finished run the user no longer wants).
+const close = id => accept(id);
+
+// ANSWER responds to a needs_you/decision block. A decision is answered,
+// never allowed/rejected; the answer is persisted with the task.
+async function answerDecision(id) {
+  const answer = (state.answers.get(id) ?? "").trim();
+  if (!answer) return;
+  try {
+    await api("/api/tasks/" + id + "/answer", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ answer })
+    });
+  } catch (error) {
+    flash(error.message);
+    return;
+  }
+  state.answers.delete(id);
+  await reloadTasks();
+}
+
 function toggleOpen(id) {
   state.openId = state.openId === id ? null : id;
   state.selectedId = id;
@@ -476,7 +556,7 @@ function renderRunPanel(taskId, run, events, accent) {
     result
       ? el("div", { class: "run-result" }, [
           el("div", { class: "run-sub-k", text: "RESULT" }),
-          el("div", { class: "run-result-body", text: result })
+          el("div", { class: "run-result-body" }, [richBody(result)])
         ])
       : el("div", { class: "band-pending", style: { color: COLORS.muted }, text: "no written result" })
   ]);
@@ -627,7 +707,89 @@ function actionButton(label, key, cls, onClick, focusKey) {
   );
 }
 
+// CLOSE: tell 0x2F this Work is no longer active (the existing closeWork
+// action — never a provider call, never a new execution attempt).
+function closeButton(id) {
+  return actionButton("CLOSE", "X", "act-quiet", e => {
+    e.stopPropagation();
+    close(id);
+  }, "close-" + id);
+}
+
+// A needs_you/decision block: the agent cannot continue without the human's
+// judgment. The question is shown and the human ANSWERS — there is no
+// ALLOW/REJECT here, those verbs belong to permissions. When the provider
+// cannot resume sessions the limitation is stated plainly instead of faking
+// a continuation; CLOSE remains the way to remove the Work from attention.
+function renderDecisionCard(row, accent) {
+  const provider = state.providers.find(p => p.id === row.providerId);
+  const resumable = provider?.capabilities?.supportsResume === true;
+  const value = state.answers.get(row.id) ?? "";
+
+  const input = el("textarea", {
+    class: "decision-answer",
+    rows: 3,
+    placeholder: "your answer to the decision…"
+  });
+  input.value = value;
+
+  const submit = el("button", {
+    class: "act act-primary",
+    "data-focus-key": "answer-" + row.id,
+    text: "ANSWER"
+  });
+  submit.disabled = value.trim().length === 0;
+  submit.addEventListener("click", e => {
+    e.stopPropagation();
+    answerDecision(row.id);
+  });
+  input.addEventListener("input", () => {
+    state.answers.set(row.id, input.value);
+    submit.disabled = input.value.trim().length === 0;
+  });
+
+  const acts = [submit];
+  if (row.permDetail) {
+    acts.push(
+      actionButton("INSPECT", "I", "act-outline", e => {
+        e.stopPropagation();
+        toggleInspect(row.id);
+      }, "inspect-" + row.id)
+    );
+  }
+  acts.push(closeButton(row.id));
+
+  return el(
+    "div",
+    { class: "halt-card decision", style: { border: "1px solid " + accent } },
+    [
+      el("div", { class: "halt-kind", style: { color: accent }, text: "DECISION REQUIRED" }),
+      el("div", { class: "halt-verb", text: "the agent cannot continue without your answer" }),
+      row.permWhy
+        ? el("div", { class: "halt-path decision-question" }, inlineEls(parseInline(row.permWhy)))
+        : null,
+      !resumable
+        ? el("div", {
+            class: "decision-limitation",
+            text:
+              (provider?.displayName ?? "This provider") +
+              " cannot resume sessions — answering records your decision in this run's history. The task stays NEEDS YOU; close it to remove it from attention."
+          })
+        : null,
+      state.inspectId === row.id && row.permDetail
+        ? el("div", { class: "halt-detail", text: row.permDetail })
+        : null,
+      el("div", { class: "decision-answer-wrap" }, [input]),
+      el("div", { class: "acts" }, acts)
+    ]
+  );
+}
+
 function renderHalt(row, accent) {
+  if (row.permType === "decision") {
+    return renderDecisionCard(row, accent);
+  }
+
   const acts = [];
   // Interactive ACP permissions may expose choices that cannot safely map to
   // ALLOW/REJECT; only offer an action when the mapping is unambiguous.
@@ -655,6 +817,9 @@ function renderHalt(row, accent) {
       }, "reject-" + row.id)
     );
   }
+  // CLOSE is always available: removing a Work from active attention is not
+  // an answer to the agent, it is a statement about the Work.
+  acts.push(closeButton(row.id));
 
   const options =
     row.permOptions.length && (!row.permAllowable || !row.permRejectable)
@@ -738,9 +903,9 @@ function renderResult(row, detail) {
   );
 
   const body = detail && detail.result && detail.result.trim()
-    ? el("div", { class: "result-body", text: detail.result.trim() })
+    ? el("div", { class: "result-body" }, [richBody(detail.result.trim())])
     : row.error
-      ? el("div", { class: "result-body", style: { color: COLORS.fail }, text: row.error })
+      ? el("div", { class: "result-body", style: { color: COLORS.fail } }, [richBody(row.error)])
       : el("div", { class: "band-pending", style: { color: COLORS.muted }, text: "no written result" });
 
   const acts = row.ready
@@ -748,9 +913,12 @@ function renderResult(row, detail) {
         actionButton("ACCEPT", "A", "act-primary", e => {
           e.stopPropagation();
           accept(row.id);
-        }, "accept-" + row.id)
+        }, "accept-" + row.id),
+        closeButton(row.id)
       ])
-    : null;
+    : row.failed
+      ? el("div", { class: "acts" }, [closeButton(row.id)])
+      : null;
 
   return el("div", { class: "result" }, [
     el("div", {}, [
@@ -941,9 +1109,21 @@ function buildComposer() {
     if (event.key !== "Enter") return;
     const title = input.value.trim();
     if (!title) return;
+    const provider = providerSelect?.value || undefined;
+    // Convenience guard only — the action boundary (and therefore the API)
+    // enforces availability itself, so a stale select can never submit an
+    // unavailable provider. Refuse before clearing the field.
+    if (provider && provider !== "auto") {
+      const picked = state.providers.find(p => p.id === provider);
+      if (picked && !picked.available) {
+        flash(
+          `Execution provider "${provider}" is unavailable — install or configure it, then retry.`
+        );
+        return;
+      }
+    }
     input.value = "";
     input.dispatchEvent(new Event("input"));
-    const provider = providerSelect?.value || undefined;
     try {
       const task = await api("/api/tasks", {
         method: "POST",
@@ -977,6 +1157,7 @@ function buildComposer() {
         el("span", { text: "A ALLOW / ACCEPT" }),
         el("span", { text: "R REJECT" }),
         el("span", { text: "I INSPECT" }),
+        el("span", { text: "X CLOSE" }),
         el("span", { text: "/ SUBMIT" }),
         el("span", { text: "ESC COLLAPSE" }),
         adapterNode
@@ -987,9 +1168,11 @@ function buildComposer() {
 
 // Populate the composer's provider select. AUTO is the first option (the
 // primary choice when routing is configured); the selected default follows
-// /api/routing (AUTO when configured, else the runtime default provider). A
-// failure leaves the select empty and submits fall back to the server
-// default, so provider choice never blocks a task.
+// /api/routing (AUTO when configured, else the runtime default provider).
+// Providers that cannot run on this machine are shown as unavailable and
+// disabled — they cannot be submitted here, and the server enforces the same
+// fact at the action boundary. A failure leaves the select empty and submits
+// fall back to the server default, so provider choice never blocks a task.
 async function loadProviders() {
   if (!providerSelect) return;
   try {
@@ -1003,15 +1186,26 @@ async function loadProviders() {
     }
     providerSelect.replaceChildren(
       el("option", { value: "auto", text: "AUTO" }),
-      ...providers.map(p => el("option", { value: p.id, text: p.id.toUpperCase() }))
+      ...providers.map(p =>
+        el("option", {
+          value: p.id,
+          text: p.id.toUpperCase() + (p.available ? "" : " — UNAVAILABLE"),
+          disabled: p.available ? undefined : true
+        })
+      )
     );
-    // Select the configured default when known; otherwise keep the first
-    // real provider (the runtime default) — never silently switch to AUTO.
+    // Select the configured default when it can actually run; otherwise the
+    // first available provider — or AUTO when none can run. Never preselect
+    // a provider the server would refuse (the select must not look armed
+    // when its value cannot be submitted).
     const configured = routing?.default;
-    if (configured && (configured === "auto" || providers.some(p => p.id === configured))) {
+    if (configured === "auto") {
+      providerSelect.value = "auto";
+    } else if (configured && providers.some(p => p.id === configured && p.available)) {
       providerSelect.value = configured;
-    } else if (providers.length) {
-      providerSelect.value = providers[0].id;
+    } else {
+      const firstAvailable = providers.find(p => p.available);
+      providerSelect.value = firstAvailable ? firstAvailable.id : "auto";
     }
   } catch {
     /* server default applies */
@@ -1195,10 +1389,15 @@ function onKeyDown(event) {
   } else if (event.key === "i" || event.key === "I") {
     if (row?.halted && row.permDetail) toggleInspect(row.id);
   } else if (event.key === "a" || event.key === "A") {
-    if (row?.halted) allow(row.id);
+    // ALLOW/ACCEPT are permission and ready semantics — a decision is
+    // answered (in its card), never allowed.
+    if (row?.halted && row.permType !== "decision") allow(row.id);
     else if (row?.ready) accept(row.id);
   } else if (event.key === "r" || event.key === "R") {
-    if (row?.halted) reject(row.id);
+    if (row?.halted && row.permType !== "decision") reject(row.id);
+  } else if (event.key === "x" || event.key === "X") {
+    // CLOSE: remove the Work from active attention — never a provider call.
+    if (row?.halted || row?.ready || row?.failed) accept(row.id);
   }
 }
 

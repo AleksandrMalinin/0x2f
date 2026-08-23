@@ -19,6 +19,7 @@ test("event model exposes exactly the normalized Work event types", () => {
     "task.created",
     "task.updated",
     "task.closed",
+    "task.answered",
     "run.started",
     "progress",
     "tool.started",

@@ -105,7 +105,7 @@ rl.on("line", line => {
       return;
     }
     const chunks = behavior === "decision"
-      ? ["## Result\\ninvestigated\\n", "\\n## Needs human decision\\nWhich backend?"]
+      ? ["## Result\\ninvestigated\\n", "\\n## Needs human decision\\nREQUIRED: yes\\nQUESTION: Which backend?"]
       : ["The root cause is ", "a reset of the retry window."];
     for (const text of chunks) {
       send({ jsonrpc: "2.0", method: "session/update", params: {

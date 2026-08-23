@@ -241,6 +241,45 @@ test("projectRow renders a decision block, not just permissions", () => {
   assert.equal(row.permTitle, "DECISION REQUIRED");
   assert.equal(row.permWhy, "two viable approaches");
   assert.equal(row.permPath, "");
+  // The interaction surface must keep the two kinds of halt apart: a
+  // decision is answered, never allowed/rejected.
+  assert.equal(row.permType, "decision");
+  assert.equal(row.providerId, "claude-code");
+});
+
+test("projectRow distinguishes permission from decision for the interaction surface", () => {
+  const permission = task({
+    status: "needs_you",
+    blockedOn: { type: "permission", tool: "Edit", file: "src/a.ts" }
+  });
+  const decision = task({
+    status: "needs_you",
+    blockedOn: { type: "decision", text: "which backend?" }
+  });
+  assert.equal(projectRow(permission, [], { open: true }).permType, "permission");
+  assert.equal(projectRow(decision, [], { open: true }).permType, "decision");
+  assert.equal(projectRow(task({ status: "ready" }), [], { open: true }).permType, null);
+  assert.equal(projectRow(decision, [], { open: true }).providerId, "claude-code");
+});
+
+test("an answered decision becomes a YOU step in the ledger", () => {
+  const events = log([
+    ["tool.started", 1, { name: "Read", input: { file_path: "a.ts" } }],
+    ["needs_user", 2, { reason: "decision", blockedOn: { type: "decision", text: "X or Y?" } }],
+    ["task.answered", 5, { answer: "Choose X, because it is the narrower change." }]
+  ]);
+  const steps = toSteps(task({ status: "needs_you" }), events).steps;
+  const humans = steps.filter(s => s.human);
+  assert.equal(humans.length, 1);
+  assert.equal(humans[0].verb, "YOU");
+  assert.match(humans[0].arg, /answered the decision/);
+  assert.match(humans[0].arg, /Choose X, because it is the narrower change/);
+  // A long answer is shown short in the step line, never dropped entirely.
+  const longAnswer = "x".repeat(300);
+  const longSteps = toSteps(task({ status: "needs_you" }), log([
+    ["task.answered", 1, { answer: longAnswer }]
+  ])).steps;
+  assert.ok(longSteps[0].arg.length < longAnswer.length);
 });
 
 test("projectRow renders the ready result from the files the run actually changed", () => {
@@ -451,6 +490,57 @@ test("projectRow exposes interactive permission options without inventing them",
   assert.equal(row.permOptions[0].kind, "allow_once");
   assert.equal(row.permPath, "src/submit-capture.ts");
   assert.equal(row.permWhy, "Edit submit-capture.ts"); // description fallback
+});
+
+test("a long intent keeps the expanded heading proportionate (smallest typography adjustment)", () => {
+  const long =
+    "Inspect the current CLI output for '2f providers'. Find one small usability improvement that would make provider availability or integration type easier to scan. Do not modify code yet.";
+  const short = task().title;
+  assert.ok(long.length > 90, "the fixture should exceed the long-title threshold");
+  assert.ok(short.length <= 90, "the default fixture should stay a short title");
+
+  // Long intents drop to the narrow heading size at any width.
+  assert.equal(projectRow(task({ title: long }), [], { open: true, mid: true }).titleSize, "24px");
+  assert.equal(projectRow(task({ title: long }), [], { open: true, mid: false }).titleSize, "24px");
+  // Short intents keep the current treatment exactly.
+  assert.equal(projectRow(task(), [], { open: true, mid: true }).titleSize, "31px");
+  assert.equal(projectRow(task(), [], { open: true, mid: false }).titleSize, "24px");
+  // A long halted intent is proportionate too.
+  const halted = task({ title: long, status: "needs_you", blockedOn: { type: "permission" } });
+  assert.equal(projectRow(halted, [], { open: true, mid: true }).titleSize, "26px");
+  assert.equal(projectRow(task({ status: "needs_you", blockedOn: { type: "permission" } }), [], { open: true, mid: true }).titleSize, "34px");
+
+  // Collapsed rows keep the compact size regardless of intent length.
+  assert.equal(projectRow(task({ title: long }), [], { open: false }).titleSize, "17.5px");
+  // The persisted intent is never truncated by the projection.
+  assert.equal(projectRow(task({ title: long }), [], { open: true }).title, long);
+});
+
+test("after a terminal failure, downstream bands read as not reached, not awaiting", () => {
+  const events = log([
+    ["tool.started", 1, { name: "Read", input: { file_path: "a.ts" } }],
+    ["run.failed", 2, { error: "spawn dsh ENOENT" }]
+  ]);
+  const failed = task({ status: "failed", error: "spawn dsh ENOENT" });
+  const { steps } = toSteps(failed, events);
+  const [investigation, change, verification] = bands(failed, steps);
+
+  // The phase that was standing when the run failed keeps its steps; the
+  // phases that can no longer execute say so instead of "awaiting".
+  assert.ok(investigation.items.length >= 1);
+  assert.equal(change.pendingText, "not reached");
+  assert.equal(change.meta, "not reached");
+  assert.equal(verification.pendingText, "not reached");
+
+  // A task closed from a failure reads the same way (existing state — the
+  // error survives close — never a new lifecycle state).
+  const closedFromFailure = bands(task({ status: "done", error: "spawn dsh ENOENT" }), steps);
+  assert.equal(closedFromFailure[1].pendingText, "not reached");
+
+  // Live and completed runs keep the historical wording; only the terminal
+  // failure presentation changed.
+  assert.equal(bands(task(), steps)[1].pendingText, "awaiting investigation");
+  assert.equal(bands(task({ status: "ready" }), steps)[1].pendingText, "awaiting investigation");
 });
 
 test("projectRow exposes the AUTO routing decision of the current run", () => {

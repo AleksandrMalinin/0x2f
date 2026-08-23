@@ -130,7 +130,7 @@ test("command provider: a missing executable fails cleanly", async () => {
 test("command provider: the Work decision convention maps stdout to needs_you/decision", async () => {
   const { dir } = await makeProvider(["/placeholder"]);
   const exe = await fakeExecutable({
-    stdout: "## Result\ninvestigated\n## Needs human decision\nWhich backend?",
+    stdout: "## Result\ninvestigated\n## Needs human decision\nREQUIRED: yes\nQUESTION: Which backend?",
     code: 0
   });
   const provider = createCommandProvider({
@@ -161,7 +161,7 @@ test("normalizeCommandRun: exit 0 / non-zero / empty stderr", () => {
   assert.match(withStderr.error, /boom/);
   const decision = normalizeCommandRun({
     code: 0,
-    stdout: "## Result\nx\n## Needs human decision\npick"
+    stdout: "## Result\nx\n## Needs human decision\nREQUIRED: yes\nQUESTION: pick"
   });
   assert.equal(decision.status, "needs_you");
 });

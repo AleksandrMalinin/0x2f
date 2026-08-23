@@ -22,6 +22,7 @@ export const EVENT_TYPES = Object.freeze([
   "task.created",
   "task.updated",
   "task.closed",
+  "task.answered",
   "run.started",
   "progress",
   "tool.started",

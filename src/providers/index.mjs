@@ -72,6 +72,14 @@ function nativeExecutable(provider, env) {
   return null;
 }
 
+// Which executable a provider would run, for diagnostics. Native providers
+// resolve their binary; configured (ACP/command) providers run command[0].
+export function providerExecutable(provider, env = process.env) {
+  if (!provider) return null;
+  if (provider.integrationType === "native") return nativeExecutable(provider, env);
+  return provider.command?.[0] ?? null;
+}
+
 // Build the registry for one workspace. Loads manifests from
 // <base>/.work/providers/ (throwing loudly on invalid configuration),
 // then merges any `extra` providers (the plugin seam).
@@ -117,15 +125,15 @@ export function createProviderRegistry({ base = process.cwd(), extra = [], env =
     },
     // Whether the provider's executable can be resolved — the only
     // availability signal: configured provider's command[0] or the native
-    // provider's binary. Never spawns.
+    // provider's binary. Never spawns. Uses the registry's own map directly
+    // (not the module-level legacy getProvider, which only knows natives).
     available(id) {
-      const provider = providers[id];
-      if (!provider) return false;
-      const executable =
-        provider.integrationType === "native"
-          ? nativeExecutable(provider, env)
-          : provider.command?.[0];
-      return executableAvailable(executable, env);
+      return executableAvailable(providerExecutable(providers[id], env), env);
+    },
+    // The executable a provider would run, for user-facing diagnostics
+    // ("Expected executable: dsh"). Null when unknown.
+    executable(id) {
+      return providerExecutable(providers[id], env);
     },
     defaultProviderId
   };

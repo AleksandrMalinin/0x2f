@@ -110,10 +110,11 @@ test("result text with a real decision section -> needs_you/decision", () => {
   const outcome = normalizeOutcome({
     is_error: false,
     result:
-      "## Result\ninvestigated\n\n## Needs human decision\nWhich backend should we standardize on?"
+      "## Result\ninvestigated\n\n## Needs human decision\nREQUIRED: yes\nQUESTION: Which backend should we standardize on?"
   });
   assert.equal(outcome.status, "needs_you");
   assert.equal(outcome.blockedOn.type, "decision");
+  assert.match(outcome.blockedOn.text, /Which backend should we standardize on/);
 });
 
 test("result text with 'None' decision section -> ready", () => {

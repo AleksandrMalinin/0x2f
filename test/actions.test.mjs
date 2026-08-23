@@ -17,6 +17,7 @@ import path from "node:path";
 import { createRuntime } from "../src/runtime.mjs";
 import { createStore } from "../src/core/store.mjs";
 import { applyOutcome } from "../src/core/lifecycle.mjs";
+import { withFakeBin } from "./helpers.mjs";
 
 function fakeNode() {
   const calls = [];
@@ -268,10 +269,14 @@ test("CLI and HTTP API are the same actions: the runtime factory both use produc
 test("createWork selects the execution provider explicitly", async () => {
   const runtime = await makeRuntime();
   try {
-    const task = await runtime.actions.createWork({
-      title: "Run on DSH",
-      provider: "deepseek-harness"
-    });
+    // The provider must be available for the selection to be accepted —
+    // availability is a runtime fact enforced at the action boundary.
+    const task = await withFakeBin("DSH_BIN", "dsh", () =>
+      runtime.actions.createWork({
+        title: "Run on DSH",
+        provider: "deepseek-harness"
+      })
+    );
     assert.equal(task.execution.provider, "deepseek-harness");
     assert.equal((await runtime.store.findTask(task.id)).execution.provider, "deepseek-harness");
   } finally {
@@ -305,11 +310,13 @@ test("createWork rejects an unknown provider with the shared error", async () =>
 test("createWork persists model when reliably known (separate concern from provider)", async () => {
   const runtime = await makeRuntime();
   try {
-    const task = await runtime.actions.createWork({
-      title: "With model",
-      provider: "deepseek-harness",
-      model: "deepseek-v4-flash"
-    });
+    const task = await withFakeBin("DSH_BIN", "dsh", () =>
+      runtime.actions.createWork({
+        title: "With model",
+        provider: "deepseek-harness",
+        model: "deepseek-v4-flash"
+      })
+    );
     assert.equal(task.execution.model, "deepseek-v4-flash");
     assert.equal(task.execution.provider, "deepseek-harness");
     assert.equal(task.execution.node, "fake-node");
@@ -320,21 +327,182 @@ test("createWork persists model when reliably known (separate concern from provi
   }
 });
 
-test("resumeWork refuses a provider that cannot resume (capability, not parity faking)", async () => {
+test("resumeWork refuses a decision block: decisions are answered, not allowed/rejected", async () => {
   const runtime = await makeRuntime();
   try {
-    // DSH headless never produces permission blocks, but a decision block is
-    // possible; if one ever lands, allow/reject must refuse loudly rather
-    // than pretend a new run is a continuation.
-    const task = await runtime.actions.createWork({
-      title: "DSH decision",
-      provider: "deepseek-harness"
-    });
+    // A decision is NOT a permission. ALLOW/REJECT are the wrong interaction
+    // even for a resumable provider — the decision guard fires before any
+    // capability check, so no resume attempt is made.
+    const task = await withFakeBin("DSH_BIN", "dsh", () =>
+      runtime.actions.createWork({
+        title: "DSH decision",
+        provider: "deepseek-harness"
+      })
+    );
     const blocked = applyOutcome(task, {
       status: "needs_you",
       reason: "decision",
       blockedOn: { type: "decision", text: "pick a backend" }
     });
+    await runtime.store.writeJson(
+      path.join(runtime.store.taskDir(task.slug), "task.json"),
+      blocked
+    );
+
+    await assert.rejects(
+      () => runtime.actions.allowWork(task.id),
+      /blocked on a decision, not a permission — answer the decision/
+    );
+    await assert.rejects(
+      () => runtime.actions.rejectWork(task.id),
+      /blocked on a decision, not a permission/
+    );
+    assert.deepEqual(runtime.node.calls, [["start", task.slug]]); // no resume attempt
+  } finally {
+    await fs.rm(runtime.base, { recursive: true, force: true });
+  }
+});
+
+test("answerWork records the human's answer to a decision; the task stays needs_you", async () => {
+  const runtime = await makeRuntime();
+  try {
+    const task = await withFakeBin("DSH_BIN", "dsh", () =>
+      runtime.actions.createWork({
+        title: "DSH decision",
+        provider: "deepseek-harness"
+      })
+    );
+    const blocked = applyOutcome(task, {
+      status: "needs_you",
+      reason: "decision",
+      blockedOn: { type: "decision", text: "Keep the CLI plain?" }
+    });
+    await runtime.store.writeJson(
+      path.join(runtime.store.taskDir(task.slug), "task.json"),
+      blocked
+    );
+
+    const answered = await runtime.actions.answerWork(task.id, {
+      answer: "TTY-only glyphs"
+    });
+    // The answer is persisted with the task (answer.json) and normalized
+    // into the event log; the task itself stays needs_you — answering is not
+    // a continuation, and the provider was never invoked.
+    const answer = await runtime.store.readJson(
+      path.join(runtime.store.taskDir(task.slug), "answer.json")
+    );
+    assert.equal(answer.answer, "TTY-only glyphs");
+    const events = (await runtime.store.readEventLog(task.slug))
+      .trim()
+      .split("\n")
+      .map(line => JSON.parse(line));
+    const answeredEvent = events.find(e => e.type === "task.answered");
+    assert.ok(answeredEvent, "a task.answered event was recorded");
+    assert.equal(answeredEvent.answer, "TTY-only glyphs");
+    assert.equal(answered.status, "needs_you");
+    assert.equal((await runtime.store.findTask(task.id)).status, "needs_you");
+    assert.deepEqual(runtime.node.calls, [["start", task.slug]]); // no provider call
+  } finally {
+    await fs.rm(runtime.base, { recursive: true, force: true });
+  }
+});
+
+test("answerWork validates: needs_you decision only, non-empty answer", async () => {
+  const runtime = await makeRuntime();
+  try {
+    const task = await runtime.actions.createWork({ title: "Working" });
+    await assert.rejects(
+      () => runtime.actions.answerWork(task.id, { answer: "x" }),
+      /working, not needs_you — nothing to answer/
+    );
+
+    // A decision block requires a non-empty answer.
+    const decision = applyOutcome(task, {
+      status: "needs_you",
+      reason: "decision",
+      blockedOn: { type: "decision", text: "X or Y?" }
+    });
+    await runtime.store.writeJson(
+      path.join(runtime.store.taskDir(task.slug), "task.json"),
+      decision
+    );
+    await assert.rejects(
+      () => runtime.actions.answerWork(task.id, { answer: "   " }),
+      /An answer is required/
+    );
+
+    // A permission block is not answered — it is allowed/rejected.
+    const blocked = applyOutcome(task, {
+      status: "needs_you",
+      reason: "permission",
+      externalSessionId: "sess-1",
+      blockedOn: { type: "permission", tool: "Edit", file: "src/a.ts" }
+    });
+    blocked.execution = { ...(blocked.execution ?? {}), externalSessionId: "sess-1" };
+    await runtime.store.writeJson(
+      path.join(runtime.store.taskDir(task.slug), "task.json"),
+      blocked
+    );
+    await assert.rejects(
+      () => runtime.actions.answerWork(task.id, { answer: "x" }),
+      /not blocked on a decision — there is nothing to answer/
+    );
+    assert.deepEqual(runtime.node.calls, [["start", task.slug]]);
+  } finally {
+    await fs.rm(runtime.base, { recursive: true, force: true });
+  }
+});
+
+test("a non-resumable NEEDS YOU task can still be closed without invoking the provider", async () => {
+  const runtime = await makeRuntime();
+  try {
+    // The exact dead end from the dogfood run: a deepseek-harness decision
+    // block (cannot resume) that was produced incorrectly. CLOSE must work —
+    // closeWork never resumes the provider and never starts a new attempt.
+    const task = await withFakeBin("DSH_BIN", "dsh", () =>
+      runtime.actions.createWork({
+        title: "DSH decision",
+        provider: "deepseek-harness"
+      })
+    );
+    const blocked = applyOutcome(task, {
+      status: "needs_you",
+      reason: "decision",
+      blockedOn: { type: "decision", text: "pick a backend" }
+    });
+    await runtime.store.writeJson(
+      path.join(runtime.store.taskDir(task.slug), "task.json"),
+      blocked
+    );
+
+    const closed = await runtime.actions.closeWork(task.id);
+    assert.equal(closed.status, "done");
+    assert.equal((await runtime.store.findTask(task.id)).status, "done");
+    // The node saw only the original start — no resume, no second execution.
+    assert.deepEqual(runtime.node.calls, [["start", task.slug]]);
+  } finally {
+    await fs.rm(runtime.base, { recursive: true, force: true });
+  }
+});
+
+test("resumeWork refuses a permission block on a provider that cannot resume (capability, not parity faking)", async () => {
+  const runtime = await makeRuntime();
+  try {
+    // A permission block on a non-resumable provider: refusing loudly is
+    // better than pretending a new run is a continuation of the same session.
+    const task = await withFakeBin("DSH_BIN", "dsh", () =>
+      runtime.actions.createWork({
+        title: "DSH permission",
+        provider: "deepseek-harness"
+      })
+    );
+    const blocked = applyOutcome(task, {
+      status: "needs_you",
+      reason: "permission",
+      externalSessionId: "sess-1",
+      blockedOn: { type: "permission", tool: "Edit", file: "src/a.ts" }
+    });
+    blocked.execution = { ...(blocked.execution ?? {}), externalSessionId: "sess-1" };
     await runtime.store.writeJson(
       path.join(runtime.store.taskDir(task.slug), "task.json"),
       blocked

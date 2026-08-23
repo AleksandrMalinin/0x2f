@@ -11,6 +11,7 @@ import path from "node:path";
 import { startServer } from "../src/server.mjs";
 import { createRuntime } from "../src/runtime.mjs";
 import { applyOutcome } from "../src/core/lifecycle.mjs";
+import { withFakeBin } from "./helpers.mjs";
 
 function fakeNode() {
   const calls = [];
@@ -337,10 +338,14 @@ test("GET /api/providers lists the registry (default first) with normalized desc
 test("POST /api/tasks creates through the selected provider", async () => {
   const { base, node, handle } = await startTestServer();
   try {
-    const res = await postJson(handle.url + "/api/tasks", {
-      title: "DSH task",
-      provider: "deepseek-harness"
-    });
+    // The provider must be available for the selection to be accepted — the
+    // action boundary enforces availability, not just the UI.
+    const res = await withFakeBin("DSH_BIN", "dsh", () =>
+      postJson(handle.url + "/api/tasks", {
+        title: "DSH task",
+        provider: "deepseek-harness"
+      })
+    );
     assert.equal(res.status, 201);
     const task = await res.json();
     assert.equal(task.execution.provider, "deepseek-harness");
@@ -392,9 +397,11 @@ test("POST /api/tasks/:id/rerun starts a second run under the same task through 
       done
     );
 
-    const res = await postJson(handle.url + "/api/tasks/" + task.id + "/rerun", {
-      provider: "deepseek-harness"
-    });
+    const res = await withFakeBin("DSH_BIN", "dsh", () =>
+      postJson(handle.url + "/api/tasks/" + task.id + "/rerun", {
+        provider: "deepseek-harness"
+      })
+    );
     assert.equal(res.status, 201);
     const rerun = await res.json();
     assert.equal(rerun.id, task.id);
@@ -449,6 +456,102 @@ test("GET /api/tasks/:id includes the projected run history", async () => {
     assert.equal(detail.runs.length, 1);
     assert.equal(detail.runs[0].run, 1);
     assert.equal(detail.runs[0].provider, "claude-code");
+  } finally {
+    await handle.close();
+    await fs.rm(base, { recursive: true, force: true });
+  }
+});
+
+// --- decision vs permission over the API ------------------------------------
+
+async function makeDecisionTask(runtime) {
+  const task = await withFakeBin("DSH_BIN", "dsh", () =>
+    runtime.actions.createWork({
+      title: "Decision",
+      provider: "deepseek-harness"
+    })
+  );
+  const blocked = applyOutcome(task, {
+    status: "needs_you",
+    reason: "decision",
+    blockedOn: { type: "decision", text: "Keep the CLI plain?" }
+  });
+  await runtime.store.writeJson(
+    path.join(runtime.store.taskDir(task.slug), "task.json"),
+    blocked
+  );
+  return blocked;
+}
+
+test("POST /api/tasks/:id/answer records the human's decision answer", async () => {
+  const { base, node, runtime, handle } = await startTestServer();
+  try {
+    const task = await makeDecisionTask(runtime);
+
+    const res = await postJson(handle.url + "/api/tasks/" + task.id + "/answer", {
+      answer: "TTY-only glyphs"
+    });
+    assert.equal(res.status, 202);
+    const body = await res.json();
+    assert.equal(body.status, "needs_you"); // answering is not a continuation
+
+    const answer = await runtime.store.readJson(
+      path.join(runtime.store.taskDir(task.slug), "answer.json")
+    );
+    assert.equal(answer.answer, "TTY-only glyphs");
+    const events = await runtime.store.readEvents(task.slug);
+    assert.ok(events.some(e => e.type === "task.answered" && e.answer === "TTY-only glyphs"));
+    // The provider was never invoked: no resume, no second execution.
+    assert.deepEqual(node.calls, [["start", task.slug]]);
+  } finally {
+    await handle.close();
+    await fs.rm(base, { recursive: true, force: true });
+  }
+});
+
+test("ALLOW on a decision is refused over the API; ANSWER on a permission is refused", async () => {
+  const { base, runtime, handle } = await startTestServer();
+  try {
+    const decision = await makeDecisionTask(runtime);
+    const allowRes = await postJson(handle.url + "/api/tasks/" + decision.id + "/allow");
+    assert.equal(allowRes.status, 400);
+    assert.match((await allowRes.json()).error, /blocked on a decision, not a permission/);
+
+    // A permission block is answered? No — it is allowed/rejected.
+    const permTask = await runtime.actions.createWork({ title: "Perm" });
+    const blocked = applyOutcome(permTask, {
+      status: "needs_you",
+      reason: "permission",
+      externalSessionId: "sess-1",
+      blockedOn: { type: "permission", tool: "Edit", file: "src/a.ts" }
+    });
+    blocked.execution = { ...(blocked.execution ?? {}), externalSessionId: "sess-1" };
+    await runtime.store.writeJson(
+      path.join(runtime.store.taskDir(permTask.slug), "task.json"),
+      blocked
+    );
+    const answerRes = await postJson(handle.url + "/api/tasks/" + permTask.id + "/answer", {
+      answer: "x"
+    });
+    assert.equal(answerRes.status, 400);
+    assert.match((await answerRes.json()).error, /not blocked on a decision/);
+  } finally {
+    await handle.close();
+    await fs.rm(base, { recursive: true, force: true });
+  }
+});
+
+test("a non-resumable NEEDS YOU task can be closed over the API without invoking the provider", async () => {
+  const { base, node, runtime, handle } = await startTestServer();
+  try {
+    const task = await makeDecisionTask(runtime);
+    const res = await postJson(handle.url + "/api/tasks/" + task.id + "/close");
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).status, "done");
+    assert.equal((await runtime.store.findTask(task.id)).status, "done");
+    // No resume, no new execution attempt — closeWork is not an answer to
+    // the agent, it is a statement about the Work.
+    assert.deepEqual(node.calls, [["start", task.slug]]);
   } finally {
     await handle.close();
     await fs.rm(base, { recursive: true, force: true });

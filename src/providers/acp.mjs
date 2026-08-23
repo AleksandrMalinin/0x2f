@@ -58,17 +58,20 @@ const RESUME_PROMPTS = {
     "The user reviewed your last message and granted the requested permission.\n" +
     "Continue the task and complete the remaining work.\n\n" +
     "When you finish, return the same markdown sections as the original task:\n" +
-    "## Result, ## Evidence, ## Changes, ## Verification, ## Needs human decision",
+    "## Result, ## Evidence, ## Changes, ## Verification, ## Needs human decision\n" +
+    "(## Needs human decision uses the REQUIRED: yes / REQUIRED: no protocol.)",
   reject:
     "The user reviewed your last message and rejected the requested change.\n" +
     "Do not attempt it again. Complete whatever part of the task you can\n" +
     "responsibly finish without it, or explain what remains blocked.\n\n" +
     "When you finish, return the same markdown sections as the original task:\n" +
-    "## Result, ## Evidence, ## Changes, ## Verification, ## Needs human decision",
+    "## Result, ## Evidence, ## Changes, ## Verification, ## Needs human decision\n" +
+    "(## Needs human decision uses the REQUIRED: yes / REQUIRED: no protocol.)",
   continue:
     "Continue the task from where you left off.\n\n" +
     "When you finish, return the same markdown sections as the original task:\n" +
-    "## Result, ## Evidence, ## Changes, ## Verification, ## Needs human decision"
+    "## Result, ## Evidence, ## Changes, ## Verification, ## Needs human decision\n" +
+    "(## Needs human decision uses the REQUIRED: yes / REQUIRED: no protocol.)"
 };
 
 export function createAcpProvider(manifest) {

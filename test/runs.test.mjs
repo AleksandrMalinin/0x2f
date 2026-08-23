@@ -28,6 +28,7 @@ import {
   currentRunNumber
 } from "../src/core/runs.mjs";
 import { eventsForRun } from "../src/web/ledger.mjs";
+import { withFakeBin } from "./helpers.mjs";
 
 // --- fixtures ---------------------------------------------------------------
 
@@ -252,9 +253,11 @@ test("rerunWork appends a second run under the SAME task without overwriting the
       "first result"
     );
 
-    const rerun = await runtime.actions.rerunWork(task.id, {
-      provider: "deepseek-harness"
-    });
+    const rerun = await withFakeBin("DSH_BIN", "dsh", () =>
+      runtime.actions.rerunWork(task.id, {
+        provider: "deepseek-harness"
+      })
+    );
 
     assert.equal(rerun.runs.length, 2);
     // The first run is untouched: its provider, outcome and result survive.
@@ -287,13 +290,19 @@ test("rerunWork appends a second run under the SAME task without overwriting the
 test("rerunWork without a provider retries through the task's current provider", async () => {
   const runtime = await makeRuntime();
   try {
-    const task = await runtime.actions.createWork({
-      title: "Retry",
-      provider: "deepseek-harness"
-    });
+    // Availability is enforced at the action boundary: the provider must be
+    // resolvable for creation AND for the retry through its current provider.
+    const task = await withFakeBin("DSH_BIN", "dsh", () =>
+      runtime.actions.createWork({
+        title: "Retry",
+        provider: "deepseek-harness"
+      })
+    );
     await applyWorkerOutcome(runtime, task, { status: "failed", error: "boom" });
 
-    const rerun = await runtime.actions.rerunWork(task.id);
+    const rerun = await withFakeBin("DSH_BIN", "dsh", () =>
+      runtime.actions.rerunWork(task.id)
+    );
     assert.equal(rerun.runs[1].provider, "deepseek-harness");
     assert.equal(rerun.execution.provider, "deepseek-harness");
   } finally {
@@ -348,7 +357,9 @@ test("rerunWork materializes a legacy task's history before appending the new ru
     const node = fakeNode();
     const runtime = createRuntime(base, { node });
 
-    const task = await runtime.actions.rerunWork(1, { provider: "deepseek-harness" });
+    const task = await withFakeBin("DSH_BIN", "dsh", () =>
+      runtime.actions.rerunWork(1, { provider: "deepseek-harness" })
+    );
 
     assert.equal(task.runs.length, 2);
     assert.equal(task.runs[0].run, 1);
@@ -653,7 +664,7 @@ test("DOGFOODING: a needs_you run is preserved in history with its block", async
   const base = await fs.mkdtemp(path.join(os.tmpdir(), "work-e2e-"));
   try {
     const dshDecision = await fakeDshBin({
-      stdout: "## Result\ninvestigated\n## Needs human decision\nWhich backend?"
+      stdout: "## Result\ninvestigated\n## Needs human decision\nREQUIRED: yes\nQUESTION: Which backend?"
     });
     await withEnv("DSH_BIN", dshDecision, async () => {
       const runtime = createRuntime(base);

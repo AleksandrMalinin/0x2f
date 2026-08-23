@@ -111,7 +111,7 @@ test("the same task through both providers -> ready with the same result", async
 test("a decision block normalizes identically through both providers", async () => {
   const result =
     "## Result\nInvestigated.\n" +
-    "## Needs human decision\nWhich backend should we standardize on?";
+    "## Needs human decision\nREQUIRED: yes\nQUESTION: Which backend should we standardize on?";
 
   const claude = await fakeClaude({ result });
   const dsh = await fakeDsh({ stdout: result });

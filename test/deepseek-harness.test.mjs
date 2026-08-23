@@ -59,10 +59,10 @@ test("normalizeDshRun: exit 0 -> ready with the final assistant text", () => {
   assert.equal(outcome.result, "## Result\nfixed it");
 });
 
-test("normalizeDshRun: exit 0 + decision section -> needs_you/decision (shared Work convention)", () => {
+test("normalizeDshRun: exit 0 + explicit decision protocol -> needs_you/decision (shared Work convention)", () => {
   const outcome = normalizeDshRun({
     code: 0,
-    stdout: "## Result\ninvestigated\n\n## Needs human decision\nWhich backend?"
+    stdout: "## Result\ninvestigated\n\n## Needs human decision\nREQUIRED: yes\nQUESTION: Which backend?"
   });
   assert.equal(outcome.status, "needs_you");
   assert.equal(outcome.reason, "decision");

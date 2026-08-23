@@ -199,6 +199,14 @@ export function createStore(base = process.cwd()) {
     );
   }
 
+  // A decision answer: the human's response to a needs_you/decision block.
+  // Persisted per-task so it is part of the task's history and available to
+  // any future continuation; the run itself cannot continue in place when
+  // the provider does not support resuming sessions.
+  async function writeDecisionAnswer(task, answer) {
+    await writeJson(path.join(taskDir(task.slug), "answer.json"), answer);
+  }
+
   return {
     base,
     workDir,
@@ -220,6 +228,7 @@ export function createStore(base = process.cwd()) {
     readEventLog,
     readEvents,
     appendEvent,
-    writePermissionDecision
+    writePermissionDecision,
+    writeDecisionAnswer
   };
 }

@@ -13,6 +13,7 @@
 //   GET  /api/tasks/:id/runs/:n    -> getRun(id, n)      ({ ...runRecord, result })
 //   POST /api/tasks/:id/allow      -> allowWork(id)
 //   POST /api/tasks/:id/reject     -> rejectWork(id)
+//   POST /api/tasks/:id/answer     -> answerWork(id, { answer })
 //   POST /api/tasks/:id/close      -> closeWork(id)
 //   GET  /api/providers            -> [{ id, displayName, integrationType,
 //                                      capabilities, available }]
@@ -263,6 +264,19 @@ export async function startServer(base = process.cwd(), port = 4242, opts = {}) 
         return;
       }
 
+      // Answer a needs_you/decision block: the human's response to a question
+      // (a decision is answered, never allowed/rejected — allow/reject are
+      // for permissions). The answer is persisted with the task.
+      const answerMatch = url.pathname.match(/^\/api\/tasks\/(\d+)\/answer$/);
+      if (req.method === "POST" && answerMatch) {
+        const body = JSON.parse(await readBody(req));
+        const task = await actions.answerWork(Number(answerMatch[1]), {
+          answer: body.answer
+        });
+        json(res, task, 202);
+        return;
+      }
+
       const closeMatch = url.pathname.match(/^\/api\/tasks\/(\d+)\/close$/);
       if (req.method === "POST" && closeMatch) {
         json(res, await actions.closeWork(Number(closeMatch[1])));
@@ -284,7 +298,31 @@ export async function startServer(base = process.cwd(), port = 4242, opts = {}) 
     }
   });
 
-  await new Promise(resolve => server.listen(port, host, resolve));
+  // Bind. On failure (e.g. EADDRINUSE) reject with a clear error instead of
+  // leaving an unhandled 'error' event — the CLI and `2f ui` distinguish "0x2F
+  // already running" from "another process owns the port" from this signal.
+  // The tailer must stop on failure too: a rejected startServer is not a
+  // server, and a running interval would keep the process alive forever.
+  await new Promise((resolve, reject) => {
+    const onError = error => {
+      server.off("error", onError);
+      tailer.stop();
+      if (error?.code === "EADDRINUSE") {
+        const wrapped = new Error(
+          `Port ${port} is already in use — another process is listening on ${host}:${port}.`
+        );
+        wrapped.code = "EADDRINUSE";
+        reject(wrapped);
+      } else {
+        reject(error);
+      }
+    };
+    server.once("error", onError);
+    server.listen(port, host, () => {
+      server.off("error", onError);
+      resolve();
+    });
+  });
   const actualPort = server.address().port;
   const url = `http://${host}:${actualPort}`;
   console.log(`0x2F UI: ${url}`);

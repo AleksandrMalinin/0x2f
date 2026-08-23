@@ -21,6 +21,11 @@
 // not a lifecycle state: Work Core has no notion of phases.
 export const PHASES = ["inspect", "act", "verify"];
 
+// Above this length an intent is a paragraph, not a title: the expanded
+// heading drops to the narrow-width size so a long engineering prompt reads
+// as a heading, not a wall of type. A rendering read, never a data rule.
+export const LONG_TITLE_CHARS = 90;
+
 export const PHASE_LABELS = {
   inspect: "INVESTIGATION",
   act: "CHANGE",
@@ -114,12 +119,142 @@ function ms(value) {
   return Number.isFinite(t) ? t : null;
 }
 
+// --- rich text (a small safe Markdown subset) ------------------------------
+//
+// Provider-authored prose (a written result, a failure, a decision question)
+// renders through a deliberately small subset: headings, paragraphs, lists,
+// bold, inline code and fenced code blocks. Nothing else — no links, images,
+// blockquotes, tables or raw HTML. The parser is pure (no DOM) so it can run
+// in Node tests and in the browser from the same file; it emits only text
+// tokens, so the DOM layer can build every node with textContent and never
+// touch innerHTML.
+//
+// Token shapes (inline): { text } | { code } | { bold: [token, ...] }
+// Block shapes:            { type: "heading", level: 1..3, inline: [token, ...] }
+//                          { type: "paragraph", inline: [token, ...] }
+//                          { type: "list", ordered: bool, items: [[token, ...], ...] }
+//                          { type: "code", lang: string|null, text: string }
+
+const BOLD_RE = /\*\*([^*]+)\*\*/;
+const CODE_RE = /`([^`]+)`/;
+const FENCE_RE = /^```(\S*)\s*$/;
+const HEADING_RE = /^(#{1,6})\s+(.+)$/;
+const BULLET_RE = /^\s*[-*+]\s+(.+)$/;
+const ORDERED_RE = /^\s*\d+[.)]\s+(.+)$/;
+
+// Inline pass: balanced **bold** and `code` spans, earliest construct first.
+// Code content is verbatim — it never re-enters inline parsing. Anything
+// unbalanced (`**` or a lone backtick) stays literal text, so a stray marker
+// in prose is shown as-is instead of being swallowed or turned into markup.
+export function parseInline(text) {
+  const tokens = [];
+  let rest = String(text);
+  while (rest) {
+    const bold = rest.match(BOLD_RE);
+    const code = rest.match(CODE_RE);
+    const pickBold = bold && (!code || bold.index < code.index);
+    const chosen = pickBold ? bold : code;
+    if (!chosen) {
+      if (rest) tokens.push({ text: rest });
+      break;
+    }
+    if (chosen.index > 0) tokens.push({ text: rest.slice(0, chosen.index) });
+    if (pickBold) {
+      tokens.push({ bold: parseInline(chosen[1]) });
+    } else {
+      tokens.push({ code: chosen[1] });
+    }
+    rest = rest.slice(chosen.index + chosen[0].length);
+  }
+  return tokens;
+}
+
+// Block pass: fenced code, ATX headings (1–6, styled as 1–3), bullet and
+// ordered lists, paragraphs. Fence content is kept verbatim (newlines and
+// long lines included — layout keeps it inside the Ledger width). Paragraph
+// soft breaks collapse to spaces, the way Markdown prose reads.
+export function parseRich(text) {
+  const lines = String(text ?? "").replace(/\r\n?/g, "\n").split("\n");
+  const blocks = [];
+  let i = 0;
+
+  while (i < lines.length) {
+    const line = lines[i];
+    const fence = line.match(FENCE_RE);
+    if (fence) {
+      const lang = fence[1] || null;
+      const code = [];
+      i++;
+      while (i < lines.length && !FENCE_RE.test(lines[i].trim())) {
+        code.push(lines[i]);
+        i++;
+      }
+      if (i < lines.length) i++; // closing fence
+      blocks.push({ type: "code", lang, text: code.join("\n") });
+      continue;
+    }
+
+    const heading = line.match(HEADING_RE);
+    if (heading) {
+      blocks.push({
+        type: "heading",
+        level: Math.min(heading[1].length, 3),
+        inline: parseInline(heading[2].trim())
+      });
+      i++;
+      continue;
+    }
+
+    if (BULLET_RE.test(line) || ORDERED_RE.test(line)) {
+      const ordered = ORDERED_RE.test(line);
+      const items = [];
+      while (i < lines.length) {
+        const item = (ordered ? ORDERED_RE : BULLET_RE).exec(lines[i]);
+        if (!item) break;
+        items.push(parseInline(item[1].trim()));
+        i++;
+      }
+      blocks.push({ type: "list", ordered, items });
+      continue;
+    }
+
+    if (!line.trim()) {
+      i++;
+      continue;
+    }
+
+    const para = [];
+    while (i < lines.length) {
+      const t = lines[i].trim();
+      if (
+        !t ||
+        FENCE_RE.test(t) ||
+        HEADING_RE.test(t) ||
+        BULLET_RE.test(t) ||
+        ORDERED_RE.test(t)
+      ) {
+        break;
+      }
+      para.push(t);
+      i++;
+    }
+    blocks.push({ type: "paragraph", inline: parseInline(para.join(" ")) });
+  }
+
+  return blocks;
+}
+
 // --- step extraction -------------------------------------------------------
+
+// A short, single-line rendering of long text (an answer, a question).
+function snippet(value, max = 140) {
+  const s = String(value).replace(/\s+/g, " ").trim();
+  return s.length > max ? s.slice(0, max) + "…" : s;
+}
 
 // The argument a step operated on, in provider-neutral terms: whatever the
 // tool input names as its target. Falls back to nothing rather than guessing.
-export function stepArgument(input = {}) {
-  const candidates = [
+export function stepArgument(input = {}) {  const candidates = [
     input.file_path,
     input.path,
     input.notebook_path,
@@ -220,6 +355,26 @@ export function toSteps(task, events = [], opts = {}) {
           at,
           t,
           human: false
+        });
+        break;
+      }
+
+      case "task.answered": {
+        // The human answered a needs_you/decision block. A decision is
+        // answered, never allowed/rejected — the ledger shows it as a human
+        // step so the answer is part of the run's story.
+        const answer =
+          typeof event.answer === "string" && event.answer.trim()
+            ? event.answer.replace(/\s+/g, " ").trim()
+            : "";
+        steps.push({
+          kind: "human",
+          verb: "YOU",
+          arg: answer ? "answered the decision · " + snippet(answer, 140) : "answered the decision",
+          phase,
+          at,
+          t,
+          human: true
         });
         break;
       }
@@ -444,6 +599,11 @@ export function bands(task, steps, accent = COLORS.accent) {
   const currentPhase = steps.length ? steps[steps.length - 1].phase : "inspect";
   const halted = task.status === "needs_you";
   const running = task.status === "working";
+  // A terminal failure (or a task closed from one) means downstream phases
+  // can never execute — they are NOT REACHED, not still waiting. This is
+  // read from existing lifecycle state, never a new lifecycle state.
+  const terminal =
+    task.status === "failed" || (task.status === "done" && !!task.error);
 
   return PHASES.map(key => {
     const items = steps.filter(s => s.phase === key && s.kind !== "halt");
@@ -457,7 +617,9 @@ export function bands(task, steps, accent = COLORS.accent) {
       ? "waiting on you"
       : active
         ? "running"
-        : PHASE_PENDING[key];
+        : terminal
+          ? "not reached"
+          : PHASE_PENDING[key];
 
     return {
       key,
@@ -616,6 +778,10 @@ export function projectRow(task, events, opts = {}) {
 
   const last = steps.filter(s => s.kind === "tool").slice(-1)[0];
   const currentPhase = steps.length ? steps[steps.length - 1].phase : "inspect";
+  // A long intent is a paragraph, not a heading: keep the expanded title at
+  // the narrow-width size so it stays proportionate at any width. Collapsed
+  // rows are unaffected — the intent is summarized there by design.
+  const longTitle = open && task.title.length > LONG_TITLE_CHARS;
 
   const stateLabel = STATE_LABELS[task.status] ?? String(task.status).toUpperCase();
   const stateColor = halted ? accent : failed ? COLORS.fail : done ? COLORS.muted : COLORS.ink;
@@ -666,9 +832,9 @@ export function projectRow(task, events, opts = {}) {
     stateLabel,
     stateColor,
     titleSize: open
-      ? halted
-        ? mid ? "34px" : "26px"
-        : mid ? "31px" : "24px"
+      ? longTitle
+        ? halted ? "26px" : "24px"
+        : mid ? (halted ? "34px" : "31px") : (halted ? "26px" : "24px")
       : done ? "15px" : "17.5px",
     titleWeight: done ? 400 : 500,
     titleColor: done ? COLORS.muted : COLORS.ink,
@@ -697,6 +863,11 @@ export function projectRow(task, events, opts = {}) {
       .filter(Boolean)
       .join(" / "),
     sessionId,
+    // What kind of halt this is: a permission (ALLOW/REJECT) or a decision
+    // (ANSWER). The interaction surface must keep them separate — a decision
+    // is answered, never allowed/rejected.
+    permType: task.blockedOn?.type ?? null,
+    providerId: task.execution?.provider ?? null,
     permTitle: blockedTitle(task.blockedOn),
     permPath: relativePath(base, task.blockedOn?.file) || task.blockedOn?.tool || "",
     permWhy:

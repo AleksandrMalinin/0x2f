@@ -55,8 +55,33 @@ NEEDS YOU ── 2f allow | 2f reject ──→ WORKING
 ```
 
 A task that hits a permission or a decision the agent cannot make alone
-becomes **NEEDS YOU**. `2f open <id>` shows what it is asking for;
-`2f allow <id>` (or `2f reject <id>`) answers it and the same run continues.
+becomes **NEEDS YOU**. `2f open <id>` shows what it is asking for. The two
+are distinct interactions:
+
+- **PERMISSION** — a concrete operation needing authorization (an edit, a
+  command). `2f allow <id>` / `2f reject <id>` answers it and the same run
+  continues.
+- **DECISION** — the agent cannot continue without your judgment.
+  `2f answer <id> "<your answer>"` records your answer with the task. A
+  decision is never allow/rejected.
+
+`2f close <id>` (or **CLOSE** in the Web UI) removes any Work from active
+attention — a non-resumable NEEDS YOU, a wrong NEEDS YOU, a FAILED or READY
+run you no longer want. It never resumes the provider and never starts a new
+execution.
+
+The decision request itself is a machine-read protocol, not prose. Agents
+signal one by ending with:
+
+```text
+## Needs human decision
+REQUIRED: yes
+QUESTION: <the concrete question a human must answer>
+```
+
+Anything else — a bare heading, "None", "No decision required", or any prose —
+is treated as **no** decision, so a finished run completes READY instead of
+interrupting you for work that did not need you.
 
 Tasks persist. Each execution is recorded as a **run** under the task, so the
 same task can be run again — through a different harness, for comparison:
@@ -133,14 +158,22 @@ placeholder. Commands are spawned as argv arrays, never through a shell.
 ## Web
 
 ```bash
-2f ui                      # or: 2f ui <port>
+2f ui                      # or: 2f ui <port>, 2f ui --no-browser
 ```
 
-serves the Web surface at `http://127.0.0.1:4242` (localhost only). The CLI
-and the Web are two surfaces over the same Work core: the browser calls the
-same shared actions over a local HTTP/SSE API, subscribes to the same
-normalized events, and never touches provider processes or `.work/` files
-itself.
+`2f ui` behaves like opening a local application. If a 0x2F runtime is
+already healthy on `http://127.0.0.1:4242` (localhost only) it reuses it —
+no second runtime is started, the existing UI opens in your default browser.
+Otherwise it starts the runtime in the background, waits until it is
+healthy, and opens the UI. Runtime output lands in `.work/ui.log`. If another
+process owns the port, `2f ui` says so instead of failing with an opaque
+EADDRINUSE. `--no-browser` keeps the server-only path (start or reuse the
+runtime, print the URL, open nothing) for development and automation.
+
+The CLI and the Web are two surfaces over the same Work core: the browser
+calls the same shared actions over a local HTTP/SSE API, subscribes to the
+same normalized events, and never touches provider processes or `.work/`
+files itself.
 
 ## Architecture
 
@@ -179,6 +212,8 @@ src/
   runtime.mjs         composes store + node + providers + router + actions
   worker.mjs          detached background worker: runs one task execution
   server.mjs          local HTTP/SSE API; serves the Web surface
+  server-entry.mjs    detached UI runtime: `2f ui` spawns this in the background
+  ui.mjs              `2f ui` launcher: probe, spawn, wait, open the browser
   project.mjs         workspace context (.work files, prompt assembly)
   render.mjs          CLI rendering
   core/

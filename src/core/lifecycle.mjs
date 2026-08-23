@@ -29,7 +29,28 @@ export const BLOCKED_REASONS = ["permission", "decision", "question"];
 // Work's shared prompt (project.mjs) asks every agent to end with a
 // `## Needs human decision` section. This parser is a Work convention — not a
 // vendor feature — so every provider that returns text normalizes it the same
-// way. A non-trivial section maps to needs_you (decision).
+// way.
+//
+// DECISION PROTOCOL (v0.3): the section is a machine-read contract, not prose.
+// The ONLY thing that can produce needs_you/decision is an explicit positive
+// signal:
+//
+//   ## Needs human decision
+//   REQUIRED: yes
+//   QUESTION: <the concrete question a human must answer>
+//
+// Invariant: NEEDS YOU means execution genuinely requires human input before
+// the Work can proceed. A bare heading, a mention of the convention, prose
+// such as "None." or "No decision required", or any other model-generated
+// text is NOT a decision — absence of the explicit positive signal means no
+// decision, no matter what the section contains. A false NEEDS YOU interrupts
+// the human for work that did not actually require them, so this parser is
+// deliberately strict: REQUIRED must be exactly "yes" (case-insensitive), and
+// a `REQUIRED: yes` with no readable question is treated as malformed, not as
+// a decision.
+//
+// The human-readable question is preserved: the `QUESTION:` field when
+// present, otherwise the rest of the block after the REQUIRED line.
 export function decisionSection(result) {
   const marker = "## Needs human decision";
   const index = result.toLowerCase().indexOf(marker.toLowerCase());
@@ -37,10 +58,29 @@ export function decisionSection(result) {
 
   const tail = result.slice(index + marker.length);
   const nextHeading = tail.search(/\n##\s+/);
-  const body = (nextHeading >= 0 ? tail.slice(0, nextHeading) : tail).trim();
+  const block = (nextHeading >= 0 ? tail.slice(0, nextHeading) : tail).trim();
 
-  if (!body || /^(none|n\/a|no)[.!]?$/i.test(body)) return null;
-  return snippet(body, 400);
+  // The ONLY positive signal: REQUIRED: yes. Missing, "no", "maybe", prose —
+  // anything else means no decision is required.
+  const required = block.match(/^\s*REQUIRED\s*:\s*(.+)$/im)?.[1]?.trim();
+  if (required === null || required === undefined || required.toLowerCase() !== "yes") {
+    return null;
+  }
+
+  // The question: the QUESTION: field when present, else the block's
+  // remaining non-field text. A REQUIRED: yes with nothing readable is
+  // malformed/incomplete — never manufacture a decision from it.
+  let question = block.match(/^\s*QUESTION\s*:\s*(.+)$/im)?.[1]?.trim() ?? "";
+  if (!question) {
+    question = block
+      .split("\n")
+      .map(line => line.trim())
+      .filter(line => line && !/^(REQUIRED|QUESTION)\s*:/i.test(line))
+      .join(" ")
+      .trim();
+  }
+  if (!question) return null;
+  return snippet(question, 400);
 }
 
 // Backward-compatible name (v0 exported this from lib).

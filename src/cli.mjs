@@ -18,7 +18,7 @@ import {
   renderRuns,
   renderProviders
 } from "./render.mjs";
-import { startServer } from "./server.mjs";
+import { launchUi } from "./ui.mjs";
 
 function help() {
   console.log(`2f — task-native coding-agent wrapper
@@ -32,9 +32,11 @@ Commands:
   2f rerun <id> [--provider <id>]   run the same task again as a new run
   2f allow <id>     grant the permission a task is blocked on
   2f reject <id>    decline the requested change
-  2f close <id>
+  2f answer <id> <answer>   answer a NEEDS YOU decision (not allow/reject)
+  2f close <id>      stop working on a task; moves it to DONE
   2f providers      list execution providers (native + configured)
-  2f ui [port]
+  2f ui [port]      open the Web UI (start the runtime if needed; --no-browser
+                    starts it without opening a browser)
 
 Providers: auto (routing), claude-code (default), deepseek-harness
 Configured: ACP/command providers from .work/providers/*.json
@@ -42,9 +44,9 @@ Routing:    .work/routing.json (default: auto | <id>, prefer: [<ids>])
 `);
 }
 
-// Parse `--provider <id>` / `--run <n>` (and `=value` forms) out of command
-// args; the rest is positional. Provider selection is secondary — tasks are
-// first.
+// Parse `--provider <id>` / `--run <n>` / `--no-browser` (and `=value`
+// forms) out of command args; the rest is positional. Provider selection is
+// secondary — tasks are first.
 function parseFlags(args) {
   const rest = [];
   const flags = {};
@@ -60,6 +62,8 @@ function parseFlags(args) {
       i++;
     } else if (typeof arg === "string" && arg.startsWith("--run=")) {
       flags.run = arg.slice("--run=".length);
+    } else if (arg === "--no-browser") {
+      flags.noBrowser = true;
     } else {
       rest.push(arg);
     }
@@ -115,13 +119,15 @@ async function openTask(id, base) {
         console.log(`Planned change:\n  ${blocked.plannedChange}\n`);
       }
     }
-    console.log(`\n[2f allow ${detail.id}]  [2f reject ${detail.id}]`);
+    console.log(`\n[2f allow ${detail.id}]  [2f reject ${detail.id}]  [2f close ${detail.id}]`);
     return;
   }
   if (blocked?.type === "decision") {
     console.log(`NEEDS YOU — Decision\n`);
     if (blocked.text) console.log(`${blocked.text}\n`);
-    console.log(`[2f allow ${detail.id}]  [2f reject ${detail.id}]`);
+    // A decision is answered, not allowed/rejected — and CLOSE is always the
+    // way to remove a Work from active attention.
+    console.log(`[2f answer ${detail.id} "<your answer>"]  [2f close ${detail.id}]`);
     return;
   }
 
@@ -271,7 +277,6 @@ async function main() {
     if (!Number.isFinite(id)) throw new Error(`Usage: 2f ${command} <id>`);
 
     const task = await createRuntime(base).actions.resumeWork(id, command);
-
     console.log(`#${String(task.id).padStart(3, "0")} ${task.title}`);
     if (task.live) {
       // An interactive permission request: the run's process is still alive,
@@ -289,6 +294,26 @@ async function main() {
           : "Change declined — resuming the session with the request withdrawn."
       );
     }
+    return;
+  }
+
+  // `2f answer <id> "<text>"` — respond to a NEEDS YOU decision. A decision
+  // is answered, never allowed/rejected; the answer is persisted with the
+  // task. It does not continue the run in place (no provider supports
+  // free-text decision continuation yet); the task stays NEEDS YOU until the
+  // user closes it or reruns it.
+  if (command === "answer") {
+    await requireProject(base);
+    const id = Number(args[0]);
+    const answer = args.slice(1).join(" ").trim();
+    if (!Number.isFinite(id) || !answer) {
+      throw new Error('Usage: 2f answer <id> "<your answer>"');
+    }
+
+    const task = await createRuntime(base).actions.answerWork(id, { answer });
+    console.log(`#${String(task.id).padStart(3, "0")} ${task.title}`);
+    console.log("Answer recorded for the open decision.");
+    console.log("The task stays NEEDS YOU — close it, or rerun it when a continuation mechanism exists.");
     return;
   }
 
@@ -348,8 +373,25 @@ async function main() {
 
   if (command === "ui") {
     await requireProject(base);
-    const port = args[0] ? Number(args[0]) : 4242;
-    await startServer(base, port);
+    const { rest, flags } = parseFlags(args);
+    const port = rest[0] ? Number(rest[0]) : 4242;
+    if (!Number.isFinite(port)) {
+      throw new Error('Usage: 2f ui [port] [--no-browser]');
+    }
+    // App launcher: reuse a running 0x2F runtime, otherwise start it in the
+    // background, wait until healthy, and open the UI in the default browser.
+    // --no-browser keeps the server-only path for development/automation.
+    const result = await launchUi({
+      base,
+      port,
+      open: !flags.noBrowser
+    });
+    console.log(
+      `0x2F UI: ${result.url}${result.status === "reused" ? " (already running)" : ""}`
+    );
+    if (!result.opened) {
+      console.log(`Open ${result.url} in your browser.`);
+    }
     return;
   }
 

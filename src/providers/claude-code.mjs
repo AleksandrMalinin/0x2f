@@ -68,19 +68,22 @@ const ALLOW_PROMPT = `The user reviewed your last message and granted the reques
 Continue the task and complete the remaining work.
 
 When you finish, return the same markdown sections as the original task:
-## Result, ## Evidence, ## Changes, ## Verification, ## Needs human decision`;
+## Result, ## Evidence, ## Changes, ## Verification, ## Needs human decision
+(## Needs human decision uses the REQUIRED: yes / REQUIRED: no protocol.)`;
 
 const REJECT_PROMPT = `The user reviewed your last message and rejected the requested change.
 Do not attempt it again. Complete whatever part of the task you can
 responsibly finish without it, or explain what remains blocked.
 
 When you finish, return the same markdown sections as the original task:
-## Result, ## Evidence, ## Changes, ## Verification, ## Needs human decision`;
+## Result, ## Evidence, ## Changes, ## Verification, ## Needs human decision
+(## Needs human decision uses the REQUIRED: yes / REQUIRED: no protocol.)`;
 
 const CONTINUE_PROMPT = `Continue the task from where you left off.
 
 When you finish, return the same markdown sections as the original task:
-## Result, ## Evidence, ## Changes, ## Verification, ## Needs human decision`;
+## Result, ## Evidence, ## Changes, ## Verification, ## Needs human decision
+(## Needs human decision uses the REQUIRED: yes / REQUIRED: no protocol.)`;
 
 export const claudeCodeProvider = {
   id: "claude-code",
