@@ -118,6 +118,19 @@ try {
   let outcome;
 
   if (mode === "resume") {
+    if (provider.capabilities?.supportsResume === false) {
+      // Declared capability difference: the provider cannot continue a
+      // session. Fail loudly instead of pretending a new run is a resume.
+      const failed = applyOutcome(task, {
+        status: "failed",
+        error: `Provider "${provider.id}" does not support resuming sessions.`
+      });
+      await store.writeJson(metaPath, failed);
+      await record("run.failed", { error: failed.error });
+      await record("task.updated", { status: failed.status });
+      log("outcome: failed (provider does not support resume)");
+      process.exit(1);
+    }
     if (task.status !== "needs_you") {
       log(`outcome: skipped — task is ${task.status}, not needs_you`);
       process.exit(0);

@@ -30,6 +30,7 @@
 // may be.
 
 import { spawn } from "node:child_process";
+import { decisionSection } from "../core/lifecycle.mjs";
 
 // ---------------------------------------------------------------------------
 // Claude Code provider (v0.2 — the only functional provider)
@@ -124,11 +125,16 @@ export const claudeCodeProvider = {
 // Stream handling
 // ---------------------------------------------------------------------------
 
+// Injectable for tests and non-PATH installs; defaults to `claude` on PATH.
+export function claudeBin() {
+  return process.env.CLAUDE_BIN ?? "claude";
+}
+
 function runClaude({ cwd, args, onEvent }) {
   return new Promise((resolve, reject) => {
     let child;
     try {
-      child = spawn("claude", args, { cwd, stdio: ["ignore", "pipe", "pipe"] });
+      child = spawn(claudeBin(), args, { cwd, stdio: ["ignore", "pipe", "pipe"] });
     } catch (error) {
       reject(error);
       return;
@@ -319,19 +325,7 @@ function describeChange(tool, input) {
 }
 
 // Work's prompt asks the agent to end with a `## Needs human decision`
-// section. A non-trivial section normalizes to needs_you (decision).
-export function decisionSection(result) {
-  const marker = "## Needs human decision";
-  const index = result.toLowerCase().indexOf(marker.toLowerCase());
-  if (index < 0) return null;
-
-  const tail = result.slice(index + marker.length);
-  const nextHeading = tail.search(/\n##\s+/);
-  const body = (nextHeading >= 0 ? tail.slice(0, nextHeading) : tail).trim();
-
-  if (!body || /^(none|n\/a|no)[.!]?$/i.test(body)) return null;
-  return snippet(body, 400);
-}
-
-// Backward-compatible name (v0 exported this from lib).
-export const hasHumanDecision = result => decisionSection(result) !== null;
+// section. That parsing is a Work convention, so it lives in core and is
+// shared by every provider; this module only re-exports it for backward
+// compatibility.
+export { decisionSection, hasHumanDecision } from "../core/lifecycle.mjs";

@@ -86,6 +86,7 @@ export function createStore(base = process.cwd()) {
     const provider = opts.provider ?? defaultProviderId;
     const node = opts.node ?? "local";
     const workspace = opts.workspace ?? "local";
+    const model = opts.model;
 
     const all = await listTasks();
     const id = all.reduce((max, t) => Math.max(max, t.id), 0) + 1;
@@ -99,7 +100,15 @@ export function createStore(base = process.cwd()) {
       slug,
       title,
       status: "working",
-      execution: { provider, node, workspace },
+      execution: {
+        provider,
+        node,
+        workspace,
+        // Model is a separate concern from provider/harness. Only persisted
+        // when reliably known (e.g. an explicit selection); providers that
+        // don't surface their model leave it absent.
+        ...(model ? { model } : {})
+      },
       createdAt: now,
       updatedAt: now
     };

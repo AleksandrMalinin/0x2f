@@ -18,6 +18,7 @@
 import { closeTask } from "./lifecycle.mjs";
 import { WorkError } from "./errors.mjs";
 import { workEvent } from "./events.mjs";
+import { getProvider, listProviders } from "../providers/index.mjs";
 
 export function createActions(ctx) {
   const { store, node } = ctx;
@@ -41,20 +42,34 @@ export function createActions(ctx) {
     return { ...task, result };
   }
 
-  // createWork({ title }): create the task and start execution on the node.
-  // The task is the persistent system; the node + provider + session are
-  // execution infrastructure underneath it.
-  async function createWork({ title } = {}) {
+  // createWork({ title, provider?, model? }): create the task and start
+  // execution on the node. `provider` defaults to the runtime's default
+  // (claude-code); `model` is persisted only when reliably known. The task is
+  // the persistent system; the node + provider + session are execution
+  // infrastructure underneath it.
+  async function createWork({ title, provider, model } = {}) {
     if (!title || !title.trim()) {
       throw new WorkError("Task title is required.");
     }
     const clean = title.trim();
+    if (provider) {
+      const found = getProvider(provider);
+      if (!found) {
+        throw new WorkError(
+          `Unknown execution provider "${provider}". Available: ${listProviders()
+            .map(p => p.id)
+            .join(", ")}.`
+        );
+      }
+    }
+
     const prompt = await ctx.buildPrompt(clean);
 
     const task = await store.createTask(clean, prompt, {
-      provider: ctx.providerId,
+      provider: provider ?? ctx.providerId,
       node: node.id,
-      workspace: ctx.workspaceId
+      workspace: ctx.workspaceId,
+      ...(model ? { model } : {})
     });
 
     const pid = await node.startExecution({ task });
@@ -73,6 +88,14 @@ export function createActions(ctx) {
     if (task.status !== "needs_you") {
       throw new WorkError(
         `Task #${id} is ${task.status}, not needs_you — nothing to ${grant}.`
+      );
+    }
+    const provider = getProvider(task.execution?.provider);
+    if (provider && provider.capabilities?.supportsResume === false) {
+      // Real capability difference (e.g. DeepSeek Harness headless cannot
+      // resume a session): refuse instead of faking a continuation.
+      throw new WorkError(
+        `Provider "${provider.id}" does not support resuming sessions — this task cannot be continued in place.`
       );
     }
     if (!task.execution?.externalSessionId) {
