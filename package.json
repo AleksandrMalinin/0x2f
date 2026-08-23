@@ -15,7 +15,7 @@
   },
   "scripts": {
     "start": "node src/cli.mjs",
-    "check": "find src test -name '*.mjs' -exec node --check {} \\;",
+    "check": "find src test \\( -name '*.mjs' -o -name '*.js' \\) -exec node --check {} \\;",
     "test": "node --test \"test/*.test.mjs\""
   }
 }

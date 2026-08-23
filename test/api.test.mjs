@@ -230,6 +230,37 @@ test("SSE delivers normalized task.created when a task is created through the AP
   }
 });
 
+test("GET / serves the 0x2F Web shell and its module assets", async () => {
+  const { base, handle } = await startTestServer();
+  try {
+    const page = await fetch(handle.url + "/");
+    assert.equal(page.status, 200);
+    assert.match(page.headers.get("content-type"), /text\/html/);
+    const html = await page.text();
+    // The shell is a shell: it loads the client module, it does not inline
+    // a copy of the UI.
+    assert.match(html, /<script type="module" src="\/app\/app.js">/);
+    assert.match(html, /0x2F/);
+
+    for (const path of ["/app/app.js", "/app/ledger.mjs"]) {
+      const asset = await fetch(handle.url + path);
+      assert.equal(asset.status, 200, path);
+      assert.match(asset.headers.get("content-type"), /javascript/);
+    }
+
+    // The browser imports the SAME projection module the tests import.
+    const ledger = await fetch(handle.url + "/app/ledger.mjs").then(r => r.text());
+    assert.match(ledger, /export function projectLedger/);
+
+    // Nothing outside the allowlist is reachable.
+    const escape = await fetch(handle.url + "/app/../server.mjs");
+    assert.equal(escape.status, 404);
+  } finally {
+    await handle.close();
+    await fs.rm(base, { recursive: true, force: true });
+  }
+});
+
 test("GET /api/events/history returns the persisted normalized log per task", async () => {
   const { base, runtime, handle } = await startTestServer();
   try {
@@ -241,7 +272,7 @@ test("GET /api/events/history returns the persisted normalized log per task", as
       name: "Read",
       input: { file_path: "src/a.ts" }
     });
-    await runtime.store.appendEvent(task.slug, "not json");
+    await runtime.store.appendEvent(task.slug, "not json\n".trim());
 
     const history = await fetch(handle.url + "/api/events/history").then(r => r.json());
     assert.equal(history.base, base);
