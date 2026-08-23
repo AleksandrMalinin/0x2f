@@ -357,3 +357,91 @@ test("POST /api/tasks with an unknown provider -> 400 from the shared action", a
     await fs.rm(base, { recursive: true, force: true });
   }
 });
+
+// --- run history ------------------------------------------------------------
+
+test("POST /api/tasks/:id/rerun starts a second run under the same task through the shared action", async () => {
+  const { base, node, runtime, handle } = await startTestServer();
+  try {
+    const task = await runtime.actions.createWork({ title: "Rerun via API" });
+    // Let run 1 finish (as the worker would) so rerun is allowed: apply the
+    // outcome and finalize the run record with real timing.
+    const { applyOutcome } = await import("../src/core/lifecycle.mjs");
+    const { updateRun } = await import("../src/core/runs.mjs");
+    let done = applyOutcome(task, { status: "ready", result: "one" });
+    const completedAt = new Date().toISOString();
+    done = updateRun(done, 1, {
+      outcome: "ready",
+      completedAt,
+      durationMs: 1000,
+      attempts: 1,
+      error: undefined,
+      blockedOn: undefined
+    });
+    await runtime.store.writeJson(
+      path.join(runtime.store.taskDir(task.slug), "task.json"),
+      done
+    );
+
+    const res = await postJson(handle.url + "/api/tasks/" + task.id + "/rerun", {
+      provider: "deepseek-harness"
+    });
+    assert.equal(res.status, 201);
+    const rerun = await res.json();
+    assert.equal(rerun.id, task.id);
+    assert.equal(rerun.title, "Rerun via API"); // the intent is unchanged
+    assert.equal(rerun.status, "working");
+    assert.equal(rerun.runs.length, 2);
+    assert.equal(rerun.runs[0].provider, "claude-code");
+    assert.equal(rerun.runs[0].outcome, "ready");
+    assert.equal(rerun.runs[1].provider, "deepseek-harness");
+    assert.equal(rerun.runs[1].outcome, "working");
+    assert.equal(rerun.execution.provider, "deepseek-harness");
+    // The node received the second execution request — the API never spawns.
+    assert.deepEqual(node.calls, [
+      ["start", task.slug],
+      ["start", task.slug]
+    ]);
+  } finally {
+    await handle.close();
+    await fs.rm(base, { recursive: true, force: true });
+  }
+});
+
+test("GET /api/tasks/:id/runs/:n returns one run with its own result; unknown run -> 404", async () => {
+  const { base, runtime, handle } = await startTestServer();
+  try {
+    const task = await runtime.actions.createWork({ title: "Run detail" });
+    await runtime.store.writeText(
+      path.join(runtime.store.taskDir(task.slug), "runs", "1", "result.md"),
+      "run one's own result"
+    );
+
+    const run = await fetch(handle.url + "/api/tasks/" + task.id + "/runs/1").then(r => r.json());
+    assert.equal(run.run, 1);
+    assert.equal(run.provider, "claude-code");
+    assert.equal(run.result, "run one's own result");
+    assert.equal(run.outcome, "working");
+
+    const missing = await fetch(handle.url + "/api/tasks/" + task.id + "/runs/9");
+    assert.equal(missing.status, 404);
+    assert.match((await missing.json()).error, /has no run 9/);
+  } finally {
+    await handle.close();
+    await fs.rm(base, { recursive: true, force: true });
+  }
+});
+
+test("GET /api/tasks/:id includes the projected run history", async () => {
+  const { base, runtime, handle } = await startTestServer();
+  try {
+    const task = await runtime.actions.createWork({ title: "With runs" });
+    const detail = await fetch(handle.url + "/api/tasks/" + task.id).then(r => r.json());
+    assert.equal(detail.runs.length, 1);
+    assert.equal(detail.runs[0].run, 1);
+    assert.equal(detail.runs[0].provider, "claude-code");
+  } finally {
+    await handle.close();
+    await fs.rm(base, { recursive: true, force: true });
+  }
+});

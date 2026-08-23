@@ -27,6 +27,7 @@
 import { spawn as defaultSpawn } from "node:child_process";
 import fsSync from "node:fs";
 import path from "node:path";
+import { currentRunNumber } from "../core/runs.mjs";
 
 export function createLocalNode({ workspace, spawn = defaultSpawn, kill = process.kill } = {}) {
   if (!workspace) throw new Error("createLocalNode requires a workspace path.");
@@ -37,7 +38,7 @@ export function createLocalNode({ workspace, spawn = defaultSpawn, kill = proces
     throw new Error(`Local execution node cannot resolve workspace "${workspaceId}".`);
   }
 
-  function spawnWorker({ base, slug, mode, grant }) {
+  function spawnWorker({ base, slug, run = 1, mode, grant }) {
     const worker = new URL("../worker.mjs", import.meta.url);
     const logPath = path.join(base, ".work", "tasks", slug, "run.log");
     // The node owns where this run's output goes; don't assume the task dir
@@ -45,7 +46,9 @@ export function createLocalNode({ workspace, spawn = defaultSpawn, kill = proces
     fsSync.mkdirSync(path.dirname(logPath), { recursive: true });
     const logFd = fsSync.openSync(logPath, "a");
 
-    const args = [worker.pathname, base, slug];
+    // The run number is explicit: the worker records it on events and uses it
+    // to finalize the right run record, never guessing which run it is.
+    const args = [worker.pathname, base, slug, String(run)];
     if (mode === "resume") args.push("resume", grant);
 
     const child = spawn(process.execPath, args, {
@@ -63,12 +66,18 @@ export function createLocalNode({ workspace, spawn = defaultSpawn, kill = proces
 
     async startExecution({ task }) {
       const base = resolveWorkspace(task.execution?.workspace);
-      return spawnWorker({ base, slug: task.slug });
+      return spawnWorker({ base, slug: task.slug, run: currentRunNumber(task) });
     },
 
     async resumeExecution({ task, grant }) {
       const base = resolveWorkspace(task.execution?.workspace);
-      return spawnWorker({ base, slug: task.slug, mode: "resume", grant });
+      return spawnWorker({
+        base,
+        slug: task.slug,
+        run: currentRunNumber(task),
+        mode: "resume",
+        grant
+      });
     },
 
     // Best-effort stop of the detached worker process. v0.3 does not expose

@@ -10,7 +10,12 @@ import readline from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import { createRuntime } from "./runtime.mjs";
 import { initProject, requireProject, appendProjectKnowledge } from "./project.mjs";
-import { renderTasks, providerName } from "./render.mjs";
+import {
+  renderTasks,
+  providerName,
+  fmtRunDuration,
+  renderRuns
+} from "./render.mjs";
 import { startServer } from "./server.mjs";
 
 function help() {
@@ -21,7 +26,8 @@ Commands:
   2f init
   2f new <task> [--provider <id>]
   2f status
-  2f open <id>
+  2f open <id> [--run <n>]
+  2f rerun <id> [--provider <id>]   run the same task again as a new run
   2f allow <id>     grant the permission a task is blocked on
   2f reject <id>    decline the requested change
   2f close <id>
@@ -31,23 +37,34 @@ Providers: claude-code (default), deepseek-harness
 `);
 }
 
-// Parse `--provider <id>` (and `--provider=<id>`) out of `2f new` args; the
-// rest is the task title. Provider selection is secondary — tasks are first.
-function parseNewArgs(args) {
+// Parse `--provider <id>` / `--run <n>` (and `=value` forms) out of command
+// args; the rest is positional. Provider selection is secondary — tasks are
+// first.
+function parseFlags(args) {
   const rest = [];
-  let provider;
+  const flags = {};
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     if (arg === "--provider") {
-      provider = args[i + 1];
+      flags.provider = args[i + 1];
       i++;
     } else if (typeof arg === "string" && arg.startsWith("--provider=")) {
-      provider = arg.slice("--provider=".length);
+      flags.provider = arg.slice("--provider=".length);
+    } else if (arg === "--run") {
+      flags.run = args[i + 1];
+      i++;
+    } else if (typeof arg === "string" && arg.startsWith("--run=")) {
+      flags.run = arg.slice("--run=".length);
     } else {
       rest.push(arg);
     }
   }
-  return { title: rest.join(" ").trim(), provider };
+  return { rest, flags };
+}
+
+function parseNewArgs(args) {
+  const { rest, flags } = parseFlags(args);
+  return { title: rest.join(" ").trim(), provider: flags.provider };
 }
 
 async function status(base) {
@@ -91,6 +108,11 @@ async function openTask(id, base) {
   const model = execution.model ? ` · model ${execution.model}` : "";
   console.log(`Execution: provider ${execution.provider ?? "?"} · node ${execution.node ?? "?"}${model}\n`);
 
+  // Run history: the same task through different providers, side by side.
+  // Every task has at least one run (a legacy task reads as one historical
+  // run); this is inspection, never evaluation.
+  console.log(renderRuns(detail.runs ?? []));
+
   if (detail.result.trim()) {
     console.log(detail.result.trim());
   } else if (detail.error) {
@@ -101,6 +123,38 @@ async function openTask(id, base) {
       console.log("\n--- run.log ---\n");
       console.log(log.trim());
     }
+  }
+}
+
+// `2f open <id> --run <n>`: one run's factual detail — provider, node, model,
+// timing, outcome, session, attempts, and its own written result. Missing
+// observability (a DeepSeek Harness run has no session id) shows as "—".
+async function openRun(id, runNumber, base) {
+  const runtime = createRuntime(base);
+  const run = await runtime.actions.getRun(id, runNumber);
+  const provider = providerName({ execution: { provider: run.provider } });
+
+  console.log(`#${String(id).padStart(3, "0")} · RUN ${String(run.run).padStart(2, "0")} — ${provider}\n`);
+
+  const outcome =
+    { working: "WORKING", needs_you: "NEEDS YOU", ready: "READY", failed: "FAILED" }[run.outcome] ??
+    String(run.outcome ?? "?").toUpperCase();
+  console.log(`Provider     ${provider}`);
+  console.log(`Node         ${run.node ?? "—"}`);
+  console.log(`Model        ${run.model ?? "—"}`);
+  console.log(`Started      ${run.startedAt ?? "—"}`);
+  console.log(`Completed    ${run.completedAt ?? "—"}`);
+  console.log(`Duration     ${fmtRunDuration(run.durationMs)}`);
+  console.log(`Outcome      ${outcome}`);
+  console.log(`Session      ${run.externalSessionId ?? "—"}`);
+  console.log(`Attempts     ${run.attempts ?? 1}\n`);
+
+  if (run.result?.trim()) {
+    console.log(run.result.trim());
+  } else if (run.error) {
+    console.log(run.error);
+  } else {
+    console.log("No written result for this run.");
   }
 }
 
@@ -139,9 +193,36 @@ async function main() {
 
   if (command === "open") {
     await requireProject(base);
-    const id = Number(args[0]);
-    if (!Number.isFinite(id)) throw new Error("Usage: 2f open <id>");
-    await openTask(id, base);
+    const { rest, flags } = parseFlags(args);
+    const id = Number(rest[0]);
+    if (!Number.isFinite(id)) throw new Error("Usage: 2f open <id> [--run <n>]");
+    if (flags.run !== undefined) {
+      const runNumber = Number(flags.run);
+      if (!Number.isFinite(runNumber)) throw new Error("Usage: 2f open <id> --run <n>");
+      await openRun(id, runNumber, base);
+    } else {
+      await openTask(id, base);
+    }
+    return;
+  }
+
+  if (command === "rerun") {
+    await requireProject(base);
+    const { rest, flags } = parseFlags(args);
+    const id = Number(rest[0]);
+    if (!Number.isFinite(id)) {
+      throw new Error('Usage: 2f rerun <id> [--provider <id>]');
+    }
+
+    const task = await createRuntime(base).actions.rerunWork(id, {
+      provider: flags.provider
+    });
+    const runNumber = task.runs?.at(-1)?.run ?? 1;
+
+    console.log(`#${String(task.id).padStart(3, "0")} ${task.title}`);
+    console.log(
+      `Run ${String(runNumber).padStart(2, "0")} started with ${providerName(task)} in the background.`
+    );
     return;
   }
 

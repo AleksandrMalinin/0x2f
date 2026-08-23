@@ -1,6 +1,6 @@
 # 0x2F
 
-A deliberately small, task-native wrapper around coding agents. (v0.3)
+A deliberately small, task-native wrapper around coding agents. (v0.4)
 
 The product thesis:
 
@@ -17,7 +17,7 @@ sessions, permissions, processes, and machines are infrastructure.
 **v0.2** proved the provider boundary: 0x2F manages Tasks, not agent sessions;
 Claude Code is the first *execution provider* behind a neutral contract.
 
-**v0.3** makes the architecture structurally honest without building anything
+**v0.3** made the architecture structurally honest without building anything
 new on top:
 
 ```
@@ -46,6 +46,10 @@ provider       provider
    │              │
 Claude/etc.    DeepSeek/etc.
 ```
+
+**v0.4** makes run history real: the same task can be executed more than once,
+through different providers, and both executions persist under the task —
+inspection, not evaluation.
 
 The key idea: **surface and execution location are separate**. A Web UI on the
 Mac may control execution on the same Mac today — and on a trusted mini-PC
@@ -85,6 +89,8 @@ Then, in any repository:
 2f
 2f status
 2f open 1
+2f open 1 --run 2          # one run's factual detail
+2f rerun 1 --provider deepseek-harness   # run the SAME task again as run 02
 2f allow 1     # grant the permission the task is blocked on
 2f reject 1    # decline the requested change
 2f close 1
@@ -97,6 +103,37 @@ Every command is a thin client of the **shared Work actions**
 Provider selection is explicit and **secondary**: `2f new "…" --provider <id>`
 (default `claude-code`; `2f` lists providers in its help). The same task text
 can be run through any provider — the task, not the session, is what persists.
+
+### `2f rerun <id> [--provider <id>]`
+
+Run the same task again as a **new run under the same task** — the dogfooding
+loop for comparing providers:
+
+```
+2f new "Investigate why retry state is lost"      # run 01 · claude-code
+2f rerun 1 --provider deepseek-harness            # run 02 · deepseek-harness
+2f open 1
+```
+
+```
+RUNS
+
+01   claude-code         4m12s   READY
+02   deepseek-harness    2m48s   READY
+```
+
+- The original task intent is unchanged; the previous run's result and
+  execution metadata are **never overwritten**.
+- Without `--provider`, rerun retries through the task's current provider.
+- Runs of one task are **strictly sequential**: rerun refuses while the task
+  is `working` (two runs of the same task would race against the same working
+  directory; isolated worktrees/sandboxes are future work, deliberately not
+  built here).
+- A blocked (`needs_you`) task can be rerun — the blocked run stays in
+  history and the new run starts fresh.
+- `2f open <id> --run <n>` shows one run's facts: provider, node, model (when
+  known), timing, outcome, session (when the provider surfaces one), attempts,
+  and its own written result. Fields a provider cannot supply show as `—`.
 
 ### `2f ui`
 
@@ -120,6 +157,29 @@ The bottom composer offers provider selection as a quiet native select
 task-first: the input is the primary surface, the provider is one small
 control next to the caret.
 
+#### Run history inside task detail
+
+A task with more than one run shows a compact `RUNS` strip inside its
+expanded detail — another instrument in the same machine, never a dashboard:
+
+```
+RUNS
+
+01   CLAUDE CODE        04:12   READY
+02   DEEPSEEK HARNESS   02:48   READY
+```
+
+Clicking a run selects it and opens its factual detail: provider, node, model
+(when known), timing, outcome, session (when the provider surfaces one),
+attempts, its structured steps (Claude Code), and its own written result. A
+DeepSeek Harness run shows only what it recorded — `started · completed` and
+the result — honestly and quietly, never with invented steps.
+
+Selecting a second run turns the detail into a **side-by-side comparison**:
+`RUN 01` and `RUN 02` with their facts, changed files (from the run's own
+`file.changed` events) and results. That is all the comparison does — no
+scores, no stars, no winner labels, no recommendations. You form the judgment.
+
 ## Architecture
 
 ### Work Core (`src/core/`)
@@ -127,12 +187,16 @@ control next to the caret.
 - `lifecycle.mjs` — the pure state machine: `working → needs_you → working →
   ready/failed → done`. Process completion ≠ task completion.
 - `actions.mjs` — the **single** implementation of Work's business rules:
-  `createWork`, `getWork`, `listWork`, `allowWork`, `rejectWork`, `closeWork`.
-  The CLI and the Web API call these and nothing else.
+  `createWork`, `getWork`, `listWork`, `rerunWork`, `getRun`, `allowWork`,
+  `rejectWork`, `closeWork`. The CLI and the Web API call these and nothing
+  else.
+- `runs.mjs` — the run record model (`Task └── Runs`): record shape,
+  creation, per-run finalization, the projection, and the legacy
+  interpretation (a task without run history reads as one historical run).
 - `events.mjs` — the normalized event model, the in-memory bus, and the event
   log tailer.
 - `store.mjs` — persistence under `.work/`; the only module that knows the
-  on-disk layout.
+  on-disk layout (including per-run result files).
 - `errors.mjs` — `WorkError` with HTTP status, shared by CLI and API.
 
 ### Providers (`src/providers/`)
@@ -181,21 +245,47 @@ the files are served as-is.
 
 ### Task shape
 
-A Work Task is persistent; an execution session is metadata under it:
+A Work Task is persistent; an execution session is metadata under it. Since
+v0.4 a task can carry several **runs** — one attempt to execute the task's
+intent through a provider:
 
 ```json
 {
   "id": 2,
   "title": "Long text overflow",
-  "status": "needs_you",
+  "status": "ready",
   "execution": {
-    "provider": "claude-code",
+    "provider": "deepseek-harness",
     "node": "local",
-    "workspace": "local",
-    "externalSessionId": "48e841bd-46a0-4735-bb28-38ec8844608c",
-    "attempts": 2
+    "workspace": "local"
   },
-  "blockedOn": { "type": "permission", "tool": "Edit", "file": "…", "plannedChange": "…" }
+  "runs": [
+    {
+      "run": 1,
+      "provider": "claude-code",
+      "node": "local",
+      "workspace": "local",
+      "startedAt": "2026-08-23T10:00:01.000Z",
+      "completedAt": "2026-08-23T10:04:13.000Z",
+      "durationMs": 252000,
+      "outcome": "ready",
+      "externalSessionId": "48e841bd-46a0-4735-bb28-38ec8844608c",
+      "attempts": 1
+    },
+    {
+      "run": 2,
+      "provider": "deepseek-harness",
+      "node": "local",
+      "workspace": "local",
+      "startedAt": "2026-08-23T11:00:01.000Z",
+      "completedAt": "2026-08-23T11:02:49.000Z",
+      "durationMs": 168000,
+      "outcome": "ready",
+      "attempts": 1
+    }
+  ],
+  "createdAt": "2026-08-23T10:00:00.000Z",
+  "updatedAt": "2026-08-23T11:02:49.000Z"
 }
 ```
 
@@ -204,17 +294,47 @@ A Work Task is persistent; an execution session is metadata under it:
 - `workspace` is a **logical** project id (`"local"` today). The node resolves
   it to its own filesystem — Work never assumes the UI path equals the
   execution path. A future node maps workspace ids to checkouts on its machine.
-- `externalSessionId` is provider-run state, not the task's identity.
+- `externalSessionId` is provider-run state, not the task's identity. A run
+  whose provider never surfaces a session id (DeepSeek Harness headless) has
+  no such field — capability differences are persisted honestly, never faked.
+- `model` is only persisted when reliably known.
+- `execution` mirrors the **current** run's live state (what resume and the
+  existing surfaces read); each past run keeps its own provider/node/session
+  in its run record.
+- Result text is not embedded in the record: each run's written result lives
+  at `.work/tasks/<slug>/runs/<n>/result.md`, and the current result also
+  lands in the legacy `result.md` so `getWork` is unchanged.
+
+**Run history is a Work concept** (`src/core/runs.mjs`): the run record model,
+the legacy interpretation, and the projection live in core; the worker
+finalizes run records; provider-specific behavior stays in providers;
+execution location stays a node concern; CLI and Web render the same data
+through the same actions.
+
+### Backward compatibility
+
+Tasks created before run history have no `runs` array. They are **interpreted
+as having one historical run** — provider/node/model/session come from
+`task.execution`, outcome from the task status (or the last terminal event in
+the log, when it exists), timing from the real `run.started`/terminal events.
+No historical file is rewritten. A `rerun` materializes that run before
+appending the new one (a rerun replaces `task.execution`, so the legacy run's
+provider would otherwise be lost).
 
 ### Local API
 
 ```
 GET  /api/tasks                  listWork()
-GET  /api/tasks/:id              getWork(id)          ({ ...task, result })
-POST /api/tasks                  createWork({ title })
+GET  /api/tasks/:id              getWork(id)          ({ ...task, runs, result })
+POST /api/tasks                  createWork({ title, provider? })
+POST /api/tasks/:id/rerun        rerunWork(id, { provider?, model? })
+GET  /api/tasks/:id/runs/:n      getRun(id, n)        ({ ...runRecord, result })
 POST /api/tasks/:id/allow        allowWork(id)
 POST /api/tasks/:id/reject       rejectWork(id)
 POST /api/tasks/:id/close        closeWork(id)
+GET  /api/providers              [{ id, displayName, capabilities }]
+                                     (default provider first — the registry
+                                     insertion order IS the default order)
 GET  /api/events                 Server-Sent Events — live normalized events
 GET  /api/events/history         the persisted event log, per task
 ```
@@ -224,7 +344,9 @@ tailer never replays. `/api/events/history` reads the same append-only logs
 the worker and the CLI write, so a surface opened mid-run can draw the work
 it missed. It is a read-through of existing persistence, not a second store.
 
-The API returns normalized Work concepts, never provider shapes.
+The API returns normalized Work concepts, never provider shapes. `getWork`
+projects the task's run history (a legacy task reads as one historical run);
+`getRun` returns one run's record plus its own written result.
 
 ### Event model
 
@@ -238,6 +360,11 @@ run.started    progress       tool.started   file.changed
 needs_user     run.completed  run.failed
 ```
 
+Run-level events (the worker's) carry the run number they belong to
+(`"run": 2`), so per-run history is read back from the single append-only
+log. Events written before run history existed carry no run number and belong
+to run 1 — the only run a legacy task ever had.
+
 The server tails each task's event log and broadcasts to every SSE connection,
 so events written by **other processes** reach all clients:
 
@@ -245,6 +372,7 @@ so events written by **other processes** reach all clients:
 task created in Web  ->  appears in TUI        (future)
 permission allowed in TUI -> Web updates       (future)
 task closed via CLI  ->  Web updates           (works today)
+rerun via CLI        ->  Web updates           (works today)
 ```
 
 ### Task lifecycle
@@ -305,6 +433,24 @@ Provider-internal detail — see `src/providers/claude-code.mjs` and the
 - **Diff statistics on a result.** Work records *which* files a run changed
   (`file.changed`), not how many lines. The result panel shows the files and
   the written result, not `+28 −11`.
+- **Per-run diffs.** Each run's changed *files* are recorded (`file.changed`,
+  attributed to the run); a run's actual *diff* (line-level changes) is not
+  stored anywhere. The run detail and comparison show changed files only —
+  never a diff reconstructed by guessing from the current repository state.
+- **Concurrent runs of one task.** Two runs of the same task would race
+  against the same working directory, so runs are strictly sequential
+  (`2f rerun` refuses while the task is working). Isolated worktrees or
+  sandboxed checkouts would be needed to parallelize — deliberately not built
+  in this iteration.
+- **Interactive ACP permission handling.** A headless worker cannot answer an
+  ACP `session/request_permission` mid-run, so ACP permission requests are
+  auto-resolved by manifest policy (declined by default) and recorded as
+  progress — never a `needs_you` halt. A real permission flow (pause, ask,
+  resume the same session) is future work.
+- **ACP tool/file fidelity.** `tool_call` updates are mapped only when the
+  agent actually reports them (`title`/`kind`/`locations`); generic updates
+  (plan, usage) are ignored rather than invented, and no `file.changed` is
+  guessed from prose.
 
 ## Providers
 
@@ -460,7 +606,19 @@ is not exposed to the LAN.
   events: provider-neutral phase classification, the travel rule (executed
   work only — Work does not forecast), the interruption tear, Needs You from
   `blockedOn`, the ready result from `file.changed`, compressed done rows,
-  and ledger ordering.
+  ledger ordering, and the run-history projection (`projectRuns`,
+  `eventsForRun`).
+- `test/runs.test.mjs` — the run model and lifecycle: legacy tasks read as one
+  historical run (timing from the real event log when it exists), first run at
+  creation, rerun appends a second run without overwriting the first, same
+  task / different providers, run outcome and timing persistence, the
+  sequential-run guard, per-run results, event run attribution — plus two
+  end-to-end dogfooding passes through the REAL worker and both provider
+  adapters (fake CLIs): one task through claude-code then deepseek-harness
+  persisting as two runs, and needs_you/failed runs preserved in history.
+- `test/cli-rerun.test.mjs` — the real CLI dogfooding loop: `2f new` →
+  `2f rerun 1 --provider deepseek-harness` → `2f open 1` (RUNS strip) →
+  `2f open 1 --run 2` (one run's facts), against fake CLIs.
 
 ## What this intentionally does NOT do
 
@@ -468,8 +626,8 @@ is not exposed to the LAN.
 - authentication/authorization infrastructure
 - TUI, desktop app, Slack, GitHub, Linear
 - multi-agent orchestration, automatic provider routing
-- cloud backend, vector databases, sophisticated memory
-
-This iteration is about the architectural boundary: Work is the persistent
-system, UI is a surface, providers are workers, machines are execution
-locations. Everything else can be added later without rebuilding 0x2F.
+- provider evaluation: no scores, stars, winner labels, quality percentages,
+  charts, leaderboards, token-cost estimates, AI judging, or automatic
+  recommendations — run history is for inspection, you form the judgment
+- concurrent runs of one task (sequential only, until isolated worktrees)
+- per-run diffs (changed files are recorded; line-level diffs are not)

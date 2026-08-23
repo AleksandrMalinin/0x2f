@@ -20,7 +20,9 @@ import {
   counts,
   fmtDuration,
   relativePath,
-  blockedTitle
+  blockedTitle,
+  eventsForRun,
+  projectRuns
 } from "../src/web/ledger.mjs";
 import { workEvent } from "../src/core/events.mjs";
 
@@ -347,4 +349,68 @@ test("a run measured in hours reads as hours, not as 479 minutes", () => {
   assert.equal(fmtDuration(59 * 60 + 59), "59:59");
   assert.equal(fmtDuration(60 * 60), "1:00:00");
   assert.equal(fmtDuration(8 * 3600 + 23 * 60 + 4), "8:23:04");
+});
+
+// --- run history ------------------------------------------------------------
+
+test("projectRuns formats run records into ledger rows without inventing fields", () => {
+  const providers = {
+    "claude-code": "Claude Code",
+    "deepseek-harness": "DeepSeek Harness"
+  };
+  const runs = projectRuns(
+    [
+      {
+        run: 1,
+        provider: "claude-code",
+        node: "local",
+        model: "claude-3-5",
+        startedAt: "2026-01-01T10:00:00.000Z",
+        completedAt: "2026-01-01T10:04:12.000Z",
+        durationMs: 252000,
+        outcome: "ready",
+        externalSessionId: "sess-1",
+        attempts: 2
+      },
+      {
+        run: 2,
+        provider: "deepseek-harness",
+        node: "local",
+        startedAt: "2026-01-01T11:00:00.000Z",
+        completedAt: "2026-01-01T11:02:48.000Z",
+        durationMs: 168000,
+        outcome: "ready",
+        attempts: 1
+      },
+      // A legacy run with no timing: duration stays absent, shown as "—".
+      { run: 3, provider: "codex", node: "mini", outcome: "failed", error: "boom", legacy: true }
+    ],
+    { providers }
+  );
+
+  assert.equal(runs[0].num, "01");
+  assert.equal(runs[0].provider, "CLAUDE CODE");
+  assert.equal(runs[0].duration, "4:12");
+  assert.equal(runs[0].state, "READY");
+  assert.equal(runs[0].model, "claude-3-5");
+  assert.equal(runs[0].attempts, 2);
+  assert.equal(runs[1].provider, "DEEPSEEK HARNESS");
+  assert.equal(runs[1].duration, "2:48");
+  assert.equal(runs[1].model, null); // DSH never surfaced a model — absent
+  // An unknown provider id falls back to the id itself.
+  assert.equal(runs[2].provider, "CODEX");
+  assert.equal(runs[2].duration, null);
+  assert.equal(runs[2].state, "FAILED");
+  assert.equal(runs[2].stateColor, "#b8532a");
+  assert.equal(runs[2].legacy, true);
+});
+
+test("projectRuns maps needs_you/working states into the ledger vocabulary", () => {
+  const runs = projectRuns([
+    { run: 1, provider: "claude-code", outcome: "needs_you", blockedOn: { type: "permission" } },
+    { run: 2, provider: "deepseek-harness", outcome: "working" }
+  ]);
+  assert.equal(runs[0].state, "NEEDS YOU");
+  assert.equal(runs[0].stateColor, "#2f5fa8");
+  assert.equal(runs[1].state, "WORKING");
 });

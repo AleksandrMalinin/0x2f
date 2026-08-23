@@ -87,6 +87,10 @@ export function createStore(base = process.cwd()) {
     const node = opts.node ?? "local";
     const workspace = opts.workspace ?? "local";
     const model = opts.model;
+    // The task's initial run records (core/runs.mjs shape). Written by the
+    // action, persisted here; a task created before run history simply has
+    // none and is interpreted as one historical run.
+    const runs = opts.runs;
 
     const all = await listTasks();
     const id = all.reduce((max, t) => Math.max(max, t.id), 0) + 1;
@@ -109,6 +113,10 @@ export function createStore(base = process.cwd()) {
         // don't surface their model leave it absent.
         ...(model ? { model } : {})
       },
+      // Run history is persisted data, not reconstructed from UI history.
+      // An existing task without this array is interpreted as one historical
+      // run (core/runs.mjs) and never rewritten unnecessarily.
+      ...(runs ? { runs } : {}),
       createdAt: now,
       updatedAt: now
     };
@@ -136,12 +144,40 @@ export function createStore(base = process.cwd()) {
     return readText(path.join(taskDir(task.slug), "result.md"));
   }
 
+  // One run's written result. Persisted runs keep their result in
+  // runs/<n>/result.md under the task dir; the synthesized legacy run (and
+  // any run without a per-run file) reads the task-level result.md, exactly
+  // as before runs existed.
+  async function readRunResult(task, runRecord) {
+    if (!runRecord || runRecord.legacy) return readTaskResult(task);
+    return readText(
+      path.join(taskDir(task.slug), "runs", String(runRecord.run), "result.md")
+    );
+  }
+
   async function readTaskLog(task) {
     return readText(path.join(taskDir(task.slug), "run.log"));
   }
 
   async function readEventLog(slug) {
     return readText(eventLogPath(slug));
+  }
+
+  // The task's normalized event log as parsed events (append-only JSON lines).
+  // Unparseable lines are skipped exactly as the live tailer skips them.
+  async function readEvents(slug) {
+    const text = await readEventLog(slug);
+    const events = [];
+    for (const line of text.split("\n")) {
+      if (!line.trim()) continue;
+      try {
+        const event = JSON.parse(line);
+        if (event && typeof event.type === "string") events.push(event);
+      } catch {
+        // not a Work event line — ignore
+      }
+    }
+    return events;
   }
 
   // Append one normalized Work event (see core/events.mjs) to the task's
@@ -169,8 +205,10 @@ export function createStore(base = process.cwd()) {
     findTask,
     updateTask,
     readTaskResult,
+    readRunResult,
     readTaskLog,
     readEventLog,
+    readEvents,
     appendEvent
   };
 }

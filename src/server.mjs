@@ -7,8 +7,10 @@
 // actions (core/actions.mjs) own all of that.
 //
 //   GET  /api/tasks                -> listWork()
-//   GET  /api/tasks/:id            -> getWork(id)        ({ ...task, result })
+//   GET  /api/tasks/:id            -> getWork(id)        ({ ...task, runs, result })
 //   POST /api/tasks                -> createWork({ title, provider? })
+//   POST /api/tasks/:id/rerun      -> rerunWork(id, { provider?, model? })
+//   GET  /api/tasks/:id/runs/:n    -> getRun(id, n)      ({ ...runRecord, result })
 //   POST /api/tasks/:id/allow      -> allowWork(id)
 //   POST /api/tasks/:id/reject     -> rejectWork(id)
 //   POST /api/tasks/:id/close      -> closeWork(id)
@@ -193,7 +195,8 @@ export async function startServer(base = process.cwd(), port = 4242, opts = {}) 
         const body = JSON.parse(await readBody(req));
         const task = await actions.createWork({
           title: body.title,
-          provider: body.provider
+          provider: body.provider,
+          model: body.model
         });
         json(res, task, 201);
         return;
@@ -202,6 +205,26 @@ export async function startServer(base = process.cwd(), port = 4242, opts = {}) 
       const taskMatch = url.pathname.match(/^\/api\/tasks\/(\d+)$/);
       if (req.method === "GET" && taskMatch) {
         json(res, await actions.getWork(Number(taskMatch[1])));
+        return;
+      }
+
+      // Run history: rerun the SAME task as a new run (same intent, another
+      // provider), and read one run's factual detail. Both are thin clients
+      // of the shared actions — the CLI offers the same two operations.
+      const rerunMatch = url.pathname.match(/^\/api\/tasks\/(\d+)\/rerun$/);
+      if (req.method === "POST" && rerunMatch) {
+        const body = JSON.parse(await readBody(req));
+        const task = await actions.rerunWork(Number(rerunMatch[1]), {
+          provider: body.provider,
+          model: body.model
+        });
+        json(res, task, 201);
+        return;
+      }
+
+      const runMatch = url.pathname.match(/^\/api\/tasks\/(\d+)\/runs\/(\d+)$/);
+      if (req.method === "GET" && runMatch) {
+        json(res, await actions.getRun(Number(runMatch[1]), Number(runMatch[2])));
         return;
       }
 

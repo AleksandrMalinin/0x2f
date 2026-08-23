@@ -141,6 +141,37 @@
   .result-file { display: flex; justify-content: space-between; gap: 20px; padding: 6px 0; font-size: 14px; letter-spacing: -.008em; color: #2f2f2f; overflow-wrap: anywhere; }
   .result-body { margin-top: 14px; font-size: 13.5px; line-height: 1.65; color: #2f2f2f; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 420px; overflow: auto; }
 
+  /* run history — an instrument inside task detail, never a dashboard */
+  .runs-section { margin-top: 30px; border-top: 1px solid #dbe2e7; padding-top: 20px; }
+  .runs-k { font-size: 10px; letter-spacing: .16em; color: #5c6771; font-weight: 600; }
+  .run-row { display: flex; align-items: baseline; gap: 22px; width: 100%; background: none; border: none; border-bottom: 1px solid #e4e8ec; padding: 10px 6px; font-family: inherit; font-size: 13px; cursor: pointer; text-align: left; }
+  .run-row:hover { background: #eef2f6; }
+  .run-row.selected { background: #e9eefb; }
+  .run-num { width: 30px; flex: none; font-variant-numeric: tabular-nums; }
+  .run-provider { flex: 1; font-size: 11px; letter-spacing: .14em; }
+  .run-duration { flex: none; color: #5c6771; font-variant-numeric: tabular-nums; }
+  .run-state { flex: none; width: 88px; text-align: right; font-size: 10px; letter-spacing: .15em; }
+  .run-panel { margin-top: 16px; border: 1px solid #dbe2e7; border-left: 2px solid; padding: 18px 20px 20px; background: #f6f8fa; }
+  .compare { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 16px; }
+  .compare .run-panel { margin-top: 0; }
+  .run-head { display: flex; align-items: baseline; gap: 16px; padding-bottom: 12px; border-bottom: 1px solid #e4e8ec; }
+  .run-head-num { font-size: 11px; letter-spacing: .16em; font-weight: 600; }
+  .run-head-provider { flex: 1; font-size: 11px; letter-spacing: .16em; }
+  .run-head-duration { font-variant-numeric: tabular-nums; font-size: 12px; color: #5c6771; }
+  .run-head-state { font-size: 10px; letter-spacing: .15em; }
+  .run-facts { display: flex; flex-wrap: wrap; gap: 6px 28px; padding: 12px 0 6px; }
+  .run-fact { display: flex; gap: 8px; font-size: 11.5px; }
+  .run-fact-k { color: #5c6771; }
+  .run-fact-v { color: #2f2f2f; overflow-wrap: anywhere; }
+  .run-sub-k { font-size: 10px; letter-spacing: .16em; color: #5c6771; margin-top: 12px; }
+  .run-step { display: flex; align-items: baseline; gap: 14px; padding: 5px 0; font-size: 12.5px; }
+  .run-step-verb { width: 64px; flex: none; font-size: 10px; letter-spacing: .14em; color: #37424c; font-weight: 500; }
+  .run-step-arg { flex: 1; color: #2f2f2f; overflow-wrap: anywhere; }
+  .run-step-t { flex: none; color: #5c6771; font-variant-numeric: tabular-nums; font-size: 11px; }
+  .run-step-quiet { padding: 6px 0; font-size: 12.5px; }
+  .run-file { padding: 4px 0; font-size: 12.5px; color: #2f2f2f; overflow-wrap: anywhere; }
+  .run-result-body { margin-top: 8px; font-size: 13px; line-height: 1.6; color: #2f2f2f; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 300px; overflow: auto; }
+
   /* composer */
   .composer { flex: none; background: #2f2f2f; box-shadow: inset 0 1px 0 rgba(255,255,255,.12), 0 -1px 0 rgba(21,21,21,.5); }
   .composer-inner { max-width: 1280px; margin: 0 auto; padding: 0 32px; display: flex; align-items: center; gap: 16px; height: 72px; }
@@ -176,6 +207,7 @@
   @media (max-width: 899px) {
     .head-exec, .compact-mini { display: none; }
     .counter.clock, .legend-adapter { display: none; }
+    .compare { grid-template-columns: 1fr; }
   }
 </style>
 </head>

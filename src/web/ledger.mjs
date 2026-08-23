@@ -64,6 +64,15 @@ export const STATE_LABELS = {
   done: "DONE"
 };
 
+// A run's outcome uses the Work status vocabulary (the provider contract
+// produces ready / needs_you / failed; "working" is the in-flight run).
+export const RUN_STATE_LABELS = {
+  working: "WORKING",
+  needs_you: "NEEDS YOU",
+  ready: "READY",
+  failed: "FAILED"
+};
+
 // Ledger order: what wants you first, then what is moving, then what is
 // finished. Newest first inside a state. Mirrors the CLI's grouping so both
 // surfaces present the same priority.
@@ -476,6 +485,68 @@ export function relativePath(base, file) {
   if (!base) return file;
   const prefix = base.endsWith("/") ? base : base + "/";
   return file.startsWith(prefix) ? file.slice(prefix.length) : file;
+}
+
+// --- run history ------------------------------------------------------------
+//
+// A task can hold several runs (same intent, different providers). Run-level
+// events in the task's log carry the run number; events written before run
+// history existed carry none and belong to run 1 — the only run a legacy task
+// ever had. Task lifecycle events (task.created/updated/closed) describe the
+// task, not a run, and are never part of any run's event list.
+
+export function eventsForRun(events, runNumber) {
+  const n = Number(runNumber);
+  return events.filter(e => {
+    if (typeof e.type === "string" && e.type.startsWith("task.")) return false;
+    if (e.run !== undefined && e.run !== null) return e.run === n;
+    return n === 1; // legacy events belong to the only run there was
+  });
+}
+
+// One run row for the RUNS strip: everything the DOM needs, already decided.
+// The API returns run records (core/runs.mjs projection); this formats them
+// in the ledger's visual language. Fields a provider never supplied stay
+// absent ("—") — missing observability is shown quietly, never invented.
+// `opts.providers` maps provider ids to display names (e.g. "Claude Code")
+// when the client knows them; unknown ids fall back to the id itself.
+export function projectRuns(runs = [], opts = {}) {
+  const names = opts.providers ?? {};
+  return runs.map(r => {
+    const started = ms(r.startedAt);
+    const completed = ms(r.completedAt);
+    const durationMs = Number.isFinite(r.durationMs)
+      ? r.durationMs
+      : started && completed
+        ? completed - started
+        : null;
+    return {
+      run: r.run,
+      num: two(r.run),
+      provider: String(names[r.provider] ?? r.provider ?? "?").toUpperCase(),
+      node: r.node ?? null,
+      model: r.model ?? null,
+      duration: durationMs !== null ? fmtDuration(durationMs / 1000) : null,
+      outcome: r.outcome ?? "working",
+      state:
+        RUN_STATE_LABELS[r.outcome] ?? String(r.outcome ?? "?").toUpperCase(),
+      stateColor:
+        r.outcome === "failed"
+          ? COLORS.fail
+          : r.outcome === "needs_you"
+            ? COLORS.accent
+            : r.outcome === "working"
+              ? COLORS.ink
+              : COLORS.muted,
+      legacy: r.legacy === true,
+      startedAt: r.startedAt ?? null,
+      completedAt: r.completedAt ?? null,
+      externalSessionId: r.externalSessionId ?? null,
+      attempts: r.attempts ?? 1,
+      error: r.error ?? "",
+      blockedOn: r.blockedOn ?? null
+    };
+  });
 }
 
 // One ledger row: everything the DOM layer needs, already decided.

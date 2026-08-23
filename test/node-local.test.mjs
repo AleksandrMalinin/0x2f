@@ -34,12 +34,28 @@ test("startExecution spawns the detached worker on this machine and returns its 
   const { cmd, args, opts } = spawner.calls[0];
   assert.equal(cmd, process.execPath);
   assert.ok(args[0].endsWith("worker.mjs"), `worker path: ${args[0]}`);
-  assert.deepEqual(args.slice(1), ["/tmp/proj", "003-x"]);
+  // The worker receives the run number explicitly (a legacy task without run
+  // records is run 1) so it never guesses which run it is executing.
+  assert.deepEqual(args.slice(1), ["/tmp/proj", "003-x", "1"]);
   assert.equal(opts.detached, true);
   // stdout/stderr go to the task's run.log (an fd the node opened).
   assert.equal(opts.stdio[0], "ignore");
   assert.equal(typeof opts.stdio[1], "number");
   assert.equal(opts.stdio[2], opts.stdio[1]);
+});
+
+test("startExecution passes the current run number to the worker", async () => {
+  const spawner = recordingSpawn();
+  const node = createLocalNode({ workspace: "/tmp/proj", spawn: spawner.spawn });
+
+  await node.startExecution({
+    task: {
+      slug: "003-x",
+      execution: { workspace: "local" },
+      runs: [{ run: 1, outcome: "ready" }, { run: 2, outcome: "working" }]
+    }
+  });
+  assert.deepEqual(spawner.calls[0].args.slice(1), ["/tmp/proj", "003-x", "2"]);
 });
 
 test("resumeExecution spawns the worker in resume mode with the grant", async () => {
@@ -48,7 +64,7 @@ test("resumeExecution spawns the worker in resume mode with the grant", async ()
 
   await node.resumeExecution({ task: task("003-x"), grant: "allow" });
   const { args } = spawner.calls[0];
-  assert.deepEqual(args.slice(1), ["/tmp/proj", "003-x", "resume", "allow"]);
+  assert.deepEqual(args.slice(1), ["/tmp/proj", "003-x", "1", "resume", "allow"]);
 });
 
 test("resolveWorkspace maps the logical 'local' workspace to the local path", () => {

@@ -13,6 +13,10 @@
 import {
   COLORS,
   projectLedger,
+  projectRuns,
+  eventsForRun,
+  toSteps,
+  fmtDuration,
   two
 } from "/app/ledger.mjs";
 
@@ -50,6 +54,11 @@ const state = {
   openId: null,
   selectedId: null,
   inspectId: null,
+  // Run history selection: up to two runs of one task, inspected side by
+  // side. [{ taskId, run }] — one selected shows that run's facts, two show
+  // the comparison. This is inspection, never evaluation.
+  runSelection: [],
+  runDetails: new Map(), // `${taskId}:${run}` -> { ...runRecord, result }
   connected: false,
   width: window.innerWidth,
   base: "",
@@ -148,6 +157,11 @@ async function loadAll() {
 async function reloadTasks() {
   state.tasks = await api("/api/tasks");
   render();
+  // State changed — re-read any selected runs so their details (outcome,
+  // result) track the task instead of going stale.
+  for (const sel of state.runSelection) {
+    ensureRunDetail(sel.taskId, sel.run, true);
+  }
 }
 
 // --- actions ---------------------------------------------------------------
@@ -190,6 +204,187 @@ function toggleOpen(id) {
 function toggleInspect(id) {
   state.inspectId = state.inspectId === id ? null : id;
   render();
+}
+
+// --- run history -----------------------------------------------------------
+
+// Select/deselect one run of a task. Selection is per-task and holds at most
+// two runs; a third click drops the oldest so the comparison stays legible.
+function selectRun(taskId, run) {
+  const index = state.runSelection.findIndex(
+    s => s.taskId === taskId && s.run === run
+  );
+  if (index >= 0) {
+    state.runSelection.splice(index, 1);
+  } else {
+    state.runSelection = state.runSelection.filter(s => s.taskId === taskId);
+    state.runSelection.push({ taskId, run });
+    if (state.runSelection.length > 2) state.runSelection.shift();
+    ensureRunDetail(taskId, run);
+  }
+  render();
+}
+
+// A run's result lives per-run on disk; fetch it lazily when the run is
+// selected, exactly like the task's own result is fetched for an open row.
+// `force` re-reads a cached detail — used when state events may have changed
+// it (a selected working run completing).
+async function ensureRunDetail(taskId, run, force = false) {
+  const key = taskId + ":" + run;
+  if (!force && state.runDetails.has(key)) return;
+  try {
+    const detail = await api("/api/tasks/" + taskId + "/runs/" + run);
+    state.runDetails.set(key, detail);
+    render();
+  } catch {
+    /* the task may have been closed underneath us */
+  }
+}
+
+function localTime(iso) {
+  if (!iso) return "—";
+  const date = new Date(iso);
+  return Number.isFinite(date.getTime())
+    ? date.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "medium" })
+    : "—";
+}
+
+function runFacts(run) {
+  const facts = [
+    ["node", run.node ?? "—"],
+    ["model", run.model ?? "—"],
+    ["started", localTime(run.startedAt)],
+    ["completed", localTime(run.completedAt)],
+    ["session", run.externalSessionId ?? "—"],
+    ["attempts", String(run.attempts)]
+  ];
+  return facts.map(([k, v]) =>
+    el("div", { class: "run-fact" }, [
+      el("span", { class: "run-fact-k", text: k }),
+      el("span", { class: "run-fact-v", text: v })
+    ])
+  );
+}
+
+function renderRunHead(run, accent) {
+  return el("div", { class: "run-head" }, [
+    el("span", { class: "run-head-num", style: { color: accent }, text: "RUN " + run.num }),
+    el("span", { class: "run-head-provider", text: run.provider }),
+    el("span", { class: "run-head-duration", text: run.duration ?? "—" }),
+    el("span", { class: "run-head-state", style: { color: run.stateColor }, text: run.state })
+  ]);
+}
+
+// The run's execution events. Structured steps when the provider recorded
+// them (Claude Code); otherwise the run's real event types, quietly — a
+// DeepSeek Harness run shows "started · completed", never invented steps.
+function renderRunSteps(run, steps, runEvents) {
+  if (steps.length) {
+    return el("div", { class: "run-steps" }, [
+      el("div", { class: "run-sub-k", text: "STEPS" }),
+      ...steps.map(step =>
+        el("div", { class: "run-step" }, [
+          el("span", { class: "run-step-verb", text: step.verb }),
+          el("span", { class: "run-step-arg", text: step.arg }),
+          el("span", { class: "run-step-t", text: fmtDuration(step.t) })
+        ])
+      )
+    ]);
+  }
+  const kinds = runEvents.map(e => e.type);
+  if (!kinds.length) return null;
+  const note =
+    "no structured steps — " +
+    kinds.map(k => k.replace("run.", "").replace("_", " ")).join(" · ");
+  return el("div", { class: "run-steps" }, [
+    el("div", { class: "run-sub-k", text: "EVENTS" }),
+    el("div", { class: "run-step-quiet", style: { color: COLORS.muted }, text: note })
+  ]);
+}
+
+// One run's factual detail: head, facts, events, changed files, result.
+function renderRunPanel(taskId, run, events, accent) {
+  const runEvents = eventsForRun(events, run.run);
+  const detail = state.runDetails.get(taskId + ":" + run.run) ?? null;
+  const steps = toSteps(
+    {
+      createdAt: run.startedAt ?? null,
+      execution: { externalSessionId: run.externalSessionId ?? null }
+    },
+    runEvents,
+    { base: state.base }
+  );
+  const files = steps.files;
+  const result = (detail?.result && detail.result.trim()) || run.error || "";
+
+  return el("div", { class: "run-panel", style: { borderLeftColor: accent } }, [
+    renderRunHead(run, accent),
+    el("div", { class: "run-facts" }, runFacts(run)),
+    renderRunSteps(run, steps.steps, runEvents),
+    files.length
+      ? el("div", { class: "run-files" }, [
+          el("div", { class: "run-sub-k", text: "FILES" }),
+          ...files.map(f => el("div", { class: "run-file", text: f }))
+        ])
+      : null,
+    result
+      ? el("div", { class: "run-result" }, [
+          el("div", { class: "run-sub-k", text: "RESULT" }),
+          el("div", { class: "run-result-body", text: result })
+        ])
+      : el("div", { class: "band-pending", style: { color: COLORS.muted }, text: "no written result" })
+  ]);
+}
+
+function renderRunRow(taskId, run, accent, selected) {
+  return el(
+    "button",
+    {
+      class: "run-row" + (selected ? " selected" : ""),
+      onClick: () => selectRun(taskId, run.run),
+      "data-focus-key": "run-" + taskId + "-" + run.run
+    },
+    [
+      el("span", { class: "run-num", style: selected ? { color: accent } : {}, text: run.num }),
+      el("span", { class: "run-provider", text: run.provider }),
+      el("span", { class: "run-duration", text: run.duration ?? "—" }),
+      el("span", { class: "run-state", style: { color: run.stateColor }, text: run.state })
+    ]
+  );
+}
+
+// The RUNS instrument inside task detail. Compact by design; selecting a run
+// (or two) opens its factual detail below the strip.
+function renderRunsSection(detail, row, accent) {
+  const runs = projectRuns(detail.runs);
+  if (runs.length < 2) return null;
+  const taskId = row.id;
+  const events = state.eventsByTask.get(taskId) ?? [];
+  const selected = state.runSelection.filter(s => s.taskId === taskId);
+
+  const strip = el("div", { class: "runs" }, [
+    el("div", { class: "runs-k", text: "RUNS" }),
+    ...runs.map(run =>
+      renderRunRow(taskId, run, accent, selected.some(s => s.run === run.run))
+    )
+  ]);
+
+  let panel = null;
+  if (selected.length === 2) {
+    panel = el(
+      "div",
+      { class: "compare" },
+      selected.map(sel => {
+        const run = runs.find(r => r.run === sel.run);
+        return run ? renderRunPanel(taskId, run, events, accent) : null;
+      })
+    );
+  } else if (selected.length === 1) {
+    const run = runs.find(r => r.run === selected[0].run);
+    if (run) panel = renderRunPanel(taskId, run, events, accent);
+  }
+
+  return el("div", { class: "runs-section" }, [strip, panel].filter(Boolean));
 }
 
 // --- ledger rendering ------------------------------------------------------
@@ -446,7 +641,10 @@ function renderRow(row, accent) {
       ]),
       row.halted ? renderHalt(row, accent) : null,
       renderBands(row),
-      row.ready || row.failed || row.done ? renderResult(row, detail) : null
+      row.ready || row.failed || row.done ? renderResult(row, detail) : null,
+      // Run history lives inside task detail: a compact RUNS strip, with
+      // per-run facts and side-by-side comparison behind selection.
+      detail && detail.runs ? renderRunsSection(detail, row, accent) : null
     ]);
   }
 
