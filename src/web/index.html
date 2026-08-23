@@ -147,6 +147,15 @@
   .composer-k { font-size: 11px; letter-spacing: .16em; color: #9aa6b0; flex: none; }
   .composer-caret { width: 9px; height: 19px; background: #2f5fa8; flex: none; box-shadow: 0 0 8px #2f5fa870; }
   .composer input { flex: 1; min-width: 0; border: none; background: transparent; outline: none; font-family: inherit; font-size: 18px; letter-spacing: -.02em; color: #f2f5f7; caret-color: #2f5fa8; }
+  /* Provider choice is secondary — a quiet native select next to the caret. */
+  .composer select {
+    flex: none; max-width: 170px; border: 1px solid rgba(255,255,255,.18);
+    background: #2f2f2f; color: #c3ccd3; font-family: inherit;
+    font-size: 10.5px; letter-spacing: .14em; padding: 6px 6px; outline: none;
+    cursor: pointer; border-radius: 0;
+  }
+  .composer select:hover { border-color: rgba(255,255,255,.34); }
+  .composer select option { background: #2f2f2f; color: #dde4e9; }
   .composer-hint { font-size: 10px; letter-spacing: .16em; flex: none; white-space: nowrap; color: #9aa6b0; }
   .composer-hint.armed { color: #2f5fa8; }
   .legend { border-top: 1px solid rgba(255,255,255,.12); }

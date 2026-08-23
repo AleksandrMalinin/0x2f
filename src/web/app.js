@@ -506,6 +506,7 @@ function renderChrome(ledger, accent) {
 let composerInput = null;
 let composerNode = null;
 let adapterNode = null;
+let providerSelect = null;
 
 // The composer is built ONCE and kept across renders: re-creating it would
 // reset the caret and drop a half-typed task every time an event lands.
@@ -516,6 +517,16 @@ function buildComposer() {
     spellcheck: "false"
   });
   const hint = el("span", { class: "composer-hint", text: "BACKGROUND JOB" });
+
+  // Provider selection is deliberately secondary: tasks are first. The
+  // select defaults to the runtime default provider and is populated from
+  // /api/providers, so adding a provider needs no client change.
+  const select = el("select", {
+    class: "composer-provider",
+    "aria-label": "execution provider",
+    title: "execution provider"
+  });
+  providerSelect = select;
 
   input.addEventListener("input", () => {
     const armed = input.value.trim().length > 0;
@@ -533,11 +544,12 @@ function buildComposer() {
     if (!title) return;
     input.value = "";
     input.dispatchEvent(new Event("input"));
+    const provider = providerSelect?.value || undefined;
     try {
       const task = await api("/api/tasks", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ title })
+        body: JSON.stringify({ title, ...(provider ? { provider } : {}) })
       });
       state.openId = task.id;
       state.selectedId = task.id;
@@ -555,6 +567,7 @@ function buildComposer() {
     el("div", { class: "composer-inner" }, [
       el("span", { class: "composer-k", text: "SUBMIT" }),
       el("span", { class: "composer-caret" }),
+      select,
       input,
       hint
     ]),
@@ -571,6 +584,23 @@ function buildComposer() {
       ])
     ])
   ]);
+}
+
+// Populate the composer's provider select. The first entry is the runtime
+// default (claude-code today); a failure leaves the select empty and submits
+// fall back to the server default, so provider choice never blocks a task.
+async function loadProviders() {
+  if (!providerSelect) return;
+  try {
+    const providers = await api("/api/providers");
+    providerSelect.replaceChildren(
+      ...providers.map(p =>
+        el("option", { value: p.id, text: p.id.toUpperCase() })
+      )
+    );
+  } catch {
+    /* server default applies */
+  }
 }
 
 // Which harness, on which machine — secondary metadata, read off the tasks
@@ -677,7 +707,11 @@ function visibleRows() {
 
 function onKeyDown(event) {
   const target = event.target;
-  const inField = target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA");
+  const inField =
+    target &&
+    (target.tagName === "INPUT" ||
+      target.tagName === "TEXTAREA" ||
+      target.tagName === "SELECT");
   if (inField) {
     if (event.key === "Escape") {
       target.blur();
@@ -783,3 +817,4 @@ loadAll()
     flash(error.message);
     connect();
   });
+loadProviders();

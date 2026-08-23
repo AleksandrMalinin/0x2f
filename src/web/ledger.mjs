@@ -603,9 +603,12 @@ export function projectRow(task, events, opts = {}) {
     phaseLabel,
     arg,
     elapsed: fmtDuration(elapsed / 1000),
-    // Secondary metadata: which harness, on which machine. Never the
-    // primary model — a Task is the product object, execution is under it.
-    node: [task.execution?.node, task.execution?.provider].filter(Boolean).join(" / "),
+    // Secondary metadata: which harness, on which machine, and (when
+    // reliably known) which model. Never the primary model — a Task is the
+    // product object, execution is under it.
+    node: [task.execution?.node, task.execution?.provider, task.execution?.model]
+      .filter(Boolean)
+      .join(" / "),
     sessionId,
     permTitle: blockedTitle(task.blockedOn),
     permPath: relativePath(base, task.blockedOn?.file) || task.blockedOn?.tool || "",
