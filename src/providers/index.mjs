@@ -7,11 +7,13 @@
 // do instead of faking them.
 
 import { claudeCodeProvider } from "./claude-code.mjs";
+import { deepseekHarnessProvider } from "./deepseek-harness.mjs";
 
 export const defaultProviderId = "claude-code";
 
 const providers = {
-  [claudeCodeProvider.id]: claudeCodeProvider
+  [claudeCodeProvider.id]: claudeCodeProvider,
+  [deepseekHarnessProvider.id]: deepseekHarnessProvider
 };
 
 export function getProvider(id) {
