@@ -1,0 +1,350 @@
+// The Web ledger projection: normalized Work events -> what the browser draws.
+//
+// This is the same module the browser imports (served at /app/ledger.mjs), so
+// these tests cover the production rendering path, not a copy of it. They
+// assert the DESIGN's behaviour — phases, the travel rule, Needs You, the
+// Ready result, compressed done rows — against REAL normalized events.
+
+import test from "node:test";
+import assert from "node:assert/strict";
+import {
+  PHASES,
+  classifyPhase,
+  stepArgument,
+  toSteps,
+  trace,
+  bands,
+  projectRow,
+  projectLedger,
+  sortTasks,
+  counts,
+  fmtDuration,
+  relativePath,
+  blockedTitle
+} from "../src/web/ledger.mjs";
+import { workEvent } from "../src/core/events.mjs";
+
+// Build an event log with controlled timestamps, the way the worker writes it.
+function log(entries, startMs = Date.parse("2026-01-01T10:00:00.000Z")) {
+  return entries.map(([type, seconds, data]) => ({
+    ...workEvent(type, 1, data ?? {}),
+    at: new Date(startMs + seconds * 1000).toISOString()
+  }));
+}
+
+const task = (over = {}) => ({
+  id: 1,
+  slug: "001-t",
+  title: "investigate the correction lifecycle",
+  status: "working",
+  execution: { provider: "claude-code", node: "local", workspace: "local" },
+  createdAt: "2026-01-01T10:00:00.000Z",
+  updatedAt: "2026-01-01T10:00:00.000Z",
+  ...over
+});
+
+test("phase classification is provider-neutral and never throws on unknown tools", () => {
+  assert.equal(classifyPhase("Read", "src/a.ts"), "inspect");
+  assert.equal(classifyPhase("Grep", "foo"), "inspect");
+  assert.equal(classifyPhase("Edit", "src/a.ts"), "act");
+  assert.equal(classifyPhase("write_file", "src/a.ts"), "act");
+  assert.equal(classifyPhase("Bash", "pnpm test capture"), "verify");
+  assert.equal(classifyPhase("shell", "npm run lint"), "verify");
+  assert.equal(classifyPhase("apply_patch", "src/a.ts"), "act");
+  // An unknown tool inherits the phase already in progress rather than
+  // inventing one — a future harness cannot break the ledger.
+  assert.equal(classifyPhase("quantum_thing", "", "act"), "act");
+  assert.equal(classifyPhase("quantum_thing", ""), "inspect");
+  assert.deepEqual(PHASES, ["inspect", "act", "verify"]);
+});
+
+test("stepArgument reads whatever the tool input names as its target", () => {
+  assert.equal(stepArgument({ file_path: "/w/src/a.ts" }), "/w/src/a.ts");
+  assert.equal(stepArgument({ command: "pnpm test" }), "pnpm test");
+  assert.equal(stepArgument({ pattern: "heldCaptures" }), "heldCaptures");
+  assert.equal(stepArgument({}), "");
+});
+
+test("toSteps turns a real event log into ordered steps, files and activity", () => {
+  const events = log([
+    ["run.started", 0, { sessionId: "sess-1" }],
+    ["tool.started", 2, { name: "Read", input: { file_path: "/w/src/a.ts" } }],
+    ["progress", 3, { text: "looking at   the retry window" }],
+    ["tool.started", 6, { name: "Edit", input: { file_path: "/w/src/a.ts" } }],
+    ["file.changed", 6, { path: "/w/src/a.ts" }],
+    ["tool.started", 9, { name: "Bash", input: { command: "npm test" } }]
+  ]);
+
+  const { steps, files, activity, sessionId } = toSteps(task(), events);
+
+  assert.deepEqual(steps.map(s => s.verb), ["READ", "EDIT", "BASH"]);
+  assert.deepEqual(steps.map(s => s.phase), ["inspect", "act", "verify"]);
+  assert.deepEqual(steps.map(s => Math.round(s.t)), [2, 6, 9]);
+  assert.deepEqual(files, ["/w/src/a.ts"]);
+  assert.equal(sessionId, "sess-1");
+  // The progress line is narration, not a step — it becomes the activity
+  // line and is cleared by the next real step.
+  assert.equal(activity, "");
+});
+
+test("the last progress line survives as the live activity when no step follows", () => {
+  const events = log([
+    ["run.started", 0, {}],
+    ["tool.started", 1, { name: "Read", input: { file_path: "a.ts" } }],
+    ["progress", 4, { text: "reconciling the retry window" }]
+  ]);
+  assert.equal(toSteps(task(), events).activity, "reconciling the retry window");
+});
+
+test("the worker's duplicated needs_user events collapse into one halt", () => {
+  const events = log([
+    ["tool.started", 1, { name: "Edit", input: { file_path: "a.ts" } }],
+    ["needs_user", 2, { reason: "permission", detail: {} }],
+    ["needs_user", 2, { reason: "permission", blockedOn: { type: "permission" } }]
+  ]);
+  const halts = toSteps(task(), events).steps.filter(s => s.kind === "halt");
+  assert.equal(halts.length, 1);
+  assert.equal(halts[0].reason, "permission");
+});
+
+test("a resume the human authorised becomes a YOU step", () => {
+  const events = log([
+    ["tool.started", 1, { name: "Edit", input: { file_path: "a.ts" } }],
+    ["needs_user", 2, { reason: "permission", blockedOn: { type: "permission" } }],
+    ["task.updated", 5, { status: "working", grant: "allow" }],
+    ["tool.started", 7, { name: "Edit", input: { file_path: "a.ts" } }]
+  ]);
+  const steps = toSteps(task(), events).steps;
+  const human = steps.filter(s => s.human);
+  assert.equal(human.length, 1);
+  assert.equal(human[0].verb, "YOU");
+  assert.match(human[0].arg, /granted the request/);
+
+  // A plain status update is not a human action.
+  const quiet = toSteps(task(), log([["task.updated", 1, { status: "ready" }]])).steps;
+  assert.equal(quiet.length, 0);
+});
+
+test("the travel rule draws executed work only — never scheduled work it cannot know", () => {
+  const events = log([
+    ["tool.started", 1, { name: "Read", input: { file_path: "a.ts" } }],
+    ["tool.started", 3, { name: "Edit", input: { file_path: "a.ts" } }]
+  ]);
+  const { steps } = toSteps(task(), events);
+  const laid = trace(steps, { live: true, halted: false, finished: false });
+
+  assert.deepEqual(laid.groups.map(g => g.label), ["INSPECT", "ACT"]);
+  // The point of execution is the luminous head, and it is the last cell.
+  const cells = laid.groups.flatMap(g => g.cells);
+  assert.equal(cells.filter(c => c.isHead).length, 1);
+  assert.equal(cells[cells.length - 1].isHead, true);
+  // Nothing faint/scheduled is drawn ahead of it.
+  assert.equal(cells.filter(c => c.c === "#c6cfd6").length, 0);
+});
+
+test("an interruption tears the track open instead of capping it", () => {
+  const events = log([
+    ["tool.started", 1, { name: "Edit", input: { file_path: "a.ts" } }],
+    ["needs_user", 2, { reason: "permission", blockedOn: { type: "permission" } }]
+  ]);
+  const { steps } = toSteps(task({ status: "needs_you" }), events);
+  const laid = trace(steps, { live: false, halted: true, finished: false });
+  const cells = laid.groups.flatMap(g => g.cells);
+  assert.equal(cells.filter(c => c.isHalt).length, 1);
+  assert.equal(cells.filter(c => c.isHead).length, 0);
+});
+
+test("a finished run's track is struck in graphite, with no head", () => {
+  const events = log([["tool.started", 1, { name: "Read", input: { file_path: "a.ts" } }]]);
+  const { steps } = toSteps(task({ status: "ready" }), events);
+  const cells = trace(steps, { live: false, halted: false, finished: true }).groups.flatMap(g => g.cells);
+  assert.ok(cells.length > 0);
+  assert.ok(cells.every(c => c.c === "#2f2f2f"));
+});
+
+test("a long run is strided down so the track stays one line wide", () => {
+  const many = [];
+  for (let i = 0; i < 400; i++) many.push(["tool.started", i, { name: "Read", input: { file_path: "a" + i } }]);
+  const { steps } = toSteps(task(), log(many));
+  const laid = trace(steps, { budget: 66, live: true });
+  const cells = laid.groups.flatMap(g => g.cells).length;
+  assert.ok(cells <= 70, "expected the track to stay bounded, got " + cells);
+});
+
+test("bands group the run into investigation / change / verification", () => {
+  const events = log([
+    ["tool.started", 1, { name: "Read", input: { file_path: "a.ts" } }],
+    ["tool.started", 3, { name: "Grep", input: { pattern: "heldCaptures" } }],
+    ["tool.started", 6, { name: "Edit", input: { file_path: "a.ts" } }],
+    ["tool.started", 9, { name: "Bash", input: { command: "npm test" } }]
+  ]);
+  const { steps } = toSteps(task(), events);
+  const [investigation, change, verification] = bands(task(), steps);
+
+  assert.equal(investigation.label, "INVESTIGATION");
+  assert.equal(investigation.items.length, 2);
+  assert.match(investigation.meta, /2 steps/);
+  assert.equal(change.items.length, 1);
+  assert.equal(verification.items.length, 1);
+  // The band the run is standing in is the one that reads as live.
+  assert.equal(verification.meta, "1 step · 0:00");
+  assert.equal(verification.rule, "2px solid #2f2f2f");
+});
+
+test("an empty band says what it is waiting for rather than showing nothing", () => {
+  const [investigation, change] = bands(task(), []);
+  assert.equal(investigation.pending, true);
+  assert.equal(change.pendingText, "awaiting investigation");
+});
+
+test("a halted band waits on you", () => {
+  const events = log([["tool.started", 1, { name: "Edit", input: { file_path: "a.ts" } }]]);
+  const { steps } = toSteps(task({ status: "needs_you" }), events);
+  const change = bands(task({ status: "needs_you" }), steps)[1];
+  assert.equal(change.meta, "1 step · 0:00");
+  assert.equal(change.rule, "2px solid #2f5fa8");
+});
+
+test("projectRow renders the Needs You state from the normalized blockedOn", () => {
+  const blocked = task({
+    status: "needs_you",
+    blockedOn: {
+      type: "permission",
+      tool: "Edit",
+      file: "/w/services/capture/submit-capture.ts",
+      plannedChange: "reconcile the retry window",
+      raw: { tool_name: "Edit" }
+    }
+  });
+  const events = log([["tool.started", 1, { name: "Edit", input: { file_path: "/w/services/capture/submit-capture.ts" } }]]);
+  const row = projectRow(blocked, events, { base: "/w", open: true });
+
+  assert.equal(row.stateLabel, "NEEDS YOU");
+  assert.equal(row.stateColor, "#2f5fa8");
+  assert.equal(row.permTitle, "PERMISSION REQUIRED");
+  assert.equal(row.permPath, "services/capture/submit-capture.ts");
+  assert.equal(row.permWhy, "reconcile the retry window");
+  assert.ok(row.permDetail.includes("Edit"));
+  assert.equal(row.phaseLabel, "HALTED AT");
+  assert.equal(row.halted, true);
+  assert.equal(row.num, "/01");
+});
+
+test("projectRow renders a decision block, not just permissions", () => {
+  const blocked = task({
+    status: "needs_you",
+    blockedOn: { type: "decision", text: "two viable approaches" }
+  });
+  const row = projectRow(blocked, [], { open: true });
+  assert.equal(row.permTitle, "DECISION REQUIRED");
+  assert.equal(row.permWhy, "two viable approaches");
+  assert.equal(row.permPath, "");
+});
+
+test("projectRow renders the ready result from the files the run actually changed", () => {
+  const events = log([
+    ["tool.started", 1, { name: "Edit", input: { file_path: "/w/src/a.ts" } }],
+    ["file.changed", 1, { path: "/w/src/a.ts" }],
+    ["tool.started", 4, { name: "Bash", input: { command: "npm test" } }],
+    ["run.completed", 5, { status: "ready" }]
+  ]);
+  const row = projectRow(task({ status: "ready" }), events, { base: "/w", open: true });
+  assert.equal(row.ready, true);
+  assert.equal(row.stateLabel, "READY");
+  assert.deepEqual(row.files, ["src/a.ts"]);
+  assert.equal(row.phaseLabel, "COMPLETE");
+  assert.equal(row.arg, "1 file changed");
+  // The clock measures the run (first event -> last event), not the wall
+  // time since the task was filed.
+  assert.equal(row.elapsed, "0:04");
+});
+
+test("projectRow compresses a done task and drops its mini track", () => {
+  const events = log([["tool.started", 1, { name: "Read", input: { file_path: "a.ts" } }]]);
+  const row = projectRow(task({ status: "done" }), events, {});
+  assert.equal(row.compact, true);
+  assert.equal(row.titleSize, "15px");
+  assert.equal(row.titleColor, "#5c6771");
+  assert.deepEqual(row.mini, []);
+  assert.match(row.sub, /^closed · /);
+});
+
+test("projectRow surfaces failure, a state the design does not draw", () => {
+  const row = projectRow(task({ status: "failed", error: "claude exited 1" }), [], { open: true });
+  assert.equal(row.stateLabel, "FAILED");
+  assert.equal(row.stateColor, "#b8532a");
+  assert.equal(row.phaseLabel, "FAILED AT");
+  assert.equal(row.arg, "claude exited 1");
+});
+
+test("execution metadata is secondary: node and provider, never the headline", () => {
+  const row = projectRow(task(), [], { open: true });
+  assert.equal(row.node, "local / claude-code");
+  assert.equal(row.title, "investigate the correction lifecycle");
+  // A different harness on a different node changes only that line.
+  const other = projectRow(
+    task({ execution: { provider: "codex", node: "mini", workspace: "local" } }),
+    [],
+    { open: true }
+  );
+  assert.equal(other.node, "mini / codex");
+  assert.equal(other.stateLabel, "WORKING");
+});
+
+test("the ledger orders by what wants you first and opens a halted task", () => {
+  const tasks = [
+    task({ id: 1, status: "done" }),
+    task({ id: 2, status: "ready" }),
+    task({ id: 3, status: "working" }),
+    task({ id: 4, status: "needs_you", blockedOn: { type: "permission" } }),
+    task({ id: 5, status: "working" })
+  ];
+  const ledger = projectLedger(tasks, {}, { selectedId: 3 });
+
+  assert.deepEqual(ledger.rows.map(r => r.id), [4, 5, 3, 2, 1]);
+  assert.equal(ledger.rows.find(r => r.id === 4).open, true);
+  assert.equal(ledger.rows.find(r => r.id === 3).selected, true);
+  assert.equal(ledger.countNeeds, "01");
+  assert.equal(ledger.countWorking, "02");
+  assert.equal(ledger.countReady, "01");
+});
+
+test("ledger helpers", () => {
+  assert.equal(fmtDuration(0), "0:00");
+  assert.equal(fmtDuration(95), "1:35");
+  assert.equal(relativePath("/w", "/w/src/a.ts"), "src/a.ts");
+  assert.equal(relativePath("/w", "/other/a.ts"), "/other/a.ts");
+  assert.equal(blockedTitle(null), "");
+  assert.deepEqual(counts([task({ status: "ready" }), task({ status: "ready" })]).ready, 2);
+  assert.deepEqual(
+    sortTasks([task({ id: 1, status: "working" }), task({ id: 2, status: "working" })]).map(t => t.id),
+    [2, 1]
+  );
+});
+
+test("step arguments and changed files are shown as project paths, not machine paths", () => {
+  const events = log([
+    ["tool.started", 1, { name: "Read", input: { file_path: "/w/services/capture/ingest.ts" } }],
+    ["tool.started", 2, { name: "Edit", input: { file_path: "/w/services/capture/ingest.ts" } }],
+    ["file.changed", 2, { path: "/w/services/capture/ingest.ts" }]
+  ]);
+  const { steps, files } = toSteps(task(), events, { base: "/w" });
+  assert.deepEqual(steps.map(s => s.arg), [
+    "services/capture/ingest.ts",
+    "services/capture/ingest.ts"
+  ]);
+  assert.deepEqual(files, ["services/capture/ingest.ts"]);
+
+  // A file outside the workspace keeps its absolute path — it is genuinely
+  // not a project path and pretending otherwise would mislead.
+  const outside = toSteps(task(), log([
+    ["tool.started", 1, { name: "Read", input: { file_path: "/etc/hosts" } }]
+  ]), { base: "/w" });
+  assert.equal(outside.steps[0].arg, "/etc/hosts");
+});
+
+test("a run measured in hours reads as hours, not as 479 minutes", () => {
+  assert.equal(fmtDuration(59 * 60 + 59), "59:59");
+  assert.equal(fmtDuration(60 * 60), "1:00:00");
+  assert.equal(fmtDuration(8 * 3600 + 23 * 60 + 4), "8:23:04");
+});
