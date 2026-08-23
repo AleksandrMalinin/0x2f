@@ -57,6 +57,7 @@ export const COLORS = {
   rule: "#dbe2e7",
   accent: "#2f5fa8",
   fail: "#b8532a",
+  unobserved: "#c6cfd6",
   trackPast: "#2f2f2f",
   trackLive: "#3d454c"
 };
@@ -82,6 +83,17 @@ export const RUN_STATE_LABELS = {
 // finished. Newest first inside a state. Mirrors the CLI's grouping so both
 // surfaces present the same priority.
 const STATE_RANK = { needs_you: 0, working: 1, ready: 2, failed: 3, done: 4 };
+
+// Progressive fidelity. Whether a run's internal shape can be drawn is a
+// declared provider capability (`supportsStructuredEvents`), never an
+// inference from "we saw no tool events". The difference matters: a rich
+// provider with no steps yet has NOT STARTED, a coarse provider will never
+// report steps at all, and showing "awaiting change" for the latter is a
+// lie. Unknown provider -> assume coarse; never claim more than is declared.
+export function isRichProvider(providerId, providers = {}) {
+  const entry = providers[providerId];
+  return entry?.capabilities?.supportsStructuredEvents === true;
+}
 
 export function stateRank(status) {
   return STATE_RANK[status] ?? 9;
@@ -468,6 +480,41 @@ export function trace(steps, opts = {}) {
   const cellGap = marks ? 2 : 1;
   const groupGap = marks ? 14 : 5;
 
+  // A provider that cannot report its steps still ran through a shape of
+  // work — Work just cannot see it. Draw the phase FRAME (so the ledger
+  // keeps its rhythm and the reader keeps their bearings) as a flat
+  // baseline that plainly is not activity. Every real marker below — the
+  // halt tear, the live head — is still placed, because those are known.
+  if (opts.coarse) {
+    // Each phase gets a third of the track the rich mode would use, so the
+    // frame keeps the design's rhythm and the phase labels have room to sit
+    // under their own span instead of colliding.
+    const per = Math.max(8, Math.round(budget / 3));
+    for (const phase of PHASES) {
+      const cells = [];
+      for (let k = 0; k < per; k++) {
+        cells.push({
+          w: w + "px",
+          // Dashed, uniform, hairline: a ruled frame nobody can mistake for
+          // the struck cells of real activity.
+          h: Math.max(2, Math.round(3 * scale)) + "px",
+          c: k % 2 === 0 ? COLORS.unobserved : "transparent",
+          past: false,
+          unobserved: true,
+          artifact: null
+        });
+      }
+      groups.push({
+        phase,
+        label: PHASE_TRACK_LABELS[phase],
+        cells,
+        done: false,
+        active: false,
+        unobserved: true
+      });
+    }
+  }
+
   // One punched cell per unit of WORK, and the unit is time — a step that
   // held the run for 40s is a longer strike than one that took 2s. Both the
   // step order and the gaps between step timestamps are real, so this is an
@@ -488,7 +535,7 @@ export function trace(steps, opts = {}) {
 
   let index = 0;
   let stepIndex = -1;
-  for (const step of shown) {
+  for (const step of opts.coarse ? [] : shown) {
     stepIndex++;
     const last = groups[groups.length - 1];
     const group =
@@ -521,8 +568,12 @@ export function trace(steps, opts = {}) {
   if (halted || live) {
     const phase = shown.length ? shown[shown.length - 1].phase : "inspect";
     const last = groups[groups.length - 1];
-    const group =
-      last && last.phase === phase
+    // On a coarse frame the marker rides at the end of the track: the run
+    // demonstrably stopped (or is moving), but which phase it stopped in is
+    // exactly what this provider cannot tell us — so do not pick one.
+    const group = opts.coarse
+      ? last
+      : last && last.phase === phase
         ? last
         : (groups.push({
             phase,
@@ -532,9 +583,11 @@ export function trace(steps, opts = {}) {
             active: false
           }),
           groups[groups.length - 1]);
-    group.active = true;
+    if (group) group.active = !opts.coarse;
 
-    if (halted) {
+    if (!group) {
+      // nothing to hang the marker on
+    } else if (halted) {
       if (marks) {
         group.cells.push({ w: "8px", h: "0px", c: "transparent" });
         group.cells.push({ w: "2px", h: "0px", c: "transparent", isHalt: true });
@@ -572,13 +625,15 @@ export function trace(steps, opts = {}) {
       if (cell.past) doneW = x;
     });
     group.w = Math.round(gw) + "px";
-    group.lc = group.active
-      ? halted
-        ? accent
-        : COLORS.ink
-      : group.done
-        ? COLORS.inkSoft
-        : COLORS.muted;
+    group.lc = group.unobserved
+      ? COLORS.muted
+      : group.active
+        ? halted
+          ? accent
+          : COLORS.ink
+        : group.done
+          ? COLORS.inkSoft
+          : COLORS.muted;
   });
 
   return {
@@ -608,7 +663,8 @@ export function artifactMarks(steps, laid, changedFiles, accent = COLORS.accent)
 
 // --- bands -----------------------------------------------------------------
 
-export function bands(task, steps, accent = COLORS.accent) {
+export function bands(task, steps, accent = COLORS.accent, opts = {}) {
+  const coarse = opts.coarse === true;
   const currentPhase = steps.length ? steps[steps.length - 1].phase : "inspect";
   const halted = task.status === "needs_you";
   const running = task.status === "working";
@@ -626,18 +682,25 @@ export function bands(task, steps, accent = COLORS.accent) {
     const span = items.length
       ? fmtDuration(items[items.length - 1].t - items[0].t)
       : "—";
+    // Order matters. What the human is doing beats what the run is doing;
+    // both beat a claim about a phase this provider never reports. Saying
+    // "awaiting change" about a finished coarse run is not a placeholder,
+    // it is wrong — the change may well have happened unobserved.
     const status = blocked
       ? "waiting on you"
       : active
         ? "running"
-        : terminal
-          ? "not reached"
-          : PHASE_PENDING[key];
+        : coarse
+          ? "not reported by this provider"
+          : terminal
+            ? "not reached"
+            : PHASE_PENDING[key];
 
     return {
       key,
       label: PHASE_LABELS[key],
       labelColor: items.length || here ? COLORS.ink : COLORS.muted,
+      unobserved: coarse && items.length === 0,
       labelWeight: here ? 600 : 500,
       rule: blocked
         ? "2px solid " + accent
@@ -749,10 +812,14 @@ export function projectRow(task, events, opts = {}) {
     wide = true,
     mid = true,
     accent = COLORS.accent,
-    base = ""
+    base = "",
+    providers = {}
   } = opts;
 
   const { origin, lastAt, steps, files, activity, sessionId } = toSteps(task, events, { base });
+  // Declared capability, not a guess from an empty event log.
+  const rich = isRichProvider(task.execution?.provider, providers);
+  const coarse = !rich;
 
   const halted = task.status === "needs_you";
   const running = task.status === "working";
@@ -771,6 +838,7 @@ export function projectRow(task, events, opts = {}) {
   const traceEnd = (running ? now : lastAt) - origin;
 
   const full = trace(steps, {
+    coarse,
     // Where the run currently stands, so the step in flight is measured
     // against now instead of collapsing to a minimum-width strike.
     endT: traceEnd / 1000,
@@ -785,9 +853,12 @@ export function projectRow(task, events, opts = {}) {
   });
   full.marks = artifactMarks(steps, full, files, accent);
 
+  // A closed task carries no trace: the ledger compresses it out of the way
+  // and the EXECUTION column belongs to work that is still live.
   const mini = done
     ? { groups: [] }
     : trace(steps, {
+        coarse,
         endT: traceEnd / 1000,
         budget: 40,
         w: 2,
@@ -818,12 +889,18 @@ export function projectRow(task, events, opts = {}) {
     phaseLabel = "COMPLETE";
     arg = files.length
       ? files.length + (files.length === 1 ? " file changed" : " files changed")
-      : "no files changed";
+      : coarse
+        ? "changed files not reported by this provider"
+        : "no files changed";
   } else if (done) {
     phaseLabel = "CLOSED";
-    arg = files.length
-      ? files.length + (files.length === 1 ? " file changed" : " files changed")
-      : "closed";
+    arg = task.error
+      ? task.error
+      : files.length
+        ? files.length + (files.length === 1 ? " file changed" : " files changed")
+        : coarse
+          ? "changed files not reported by this provider"
+          : "no files changed";
   } else if (failed) {
     phaseLabel = "FAILED AT";
     arg = task.error ?? "Execution failed";
@@ -891,6 +968,11 @@ export function projectRow(task, events, opts = {}) {
     // is answered, never allowed/rejected.
     permType: task.blockedOn?.type ?? null,
     providerId: task.execution?.provider ?? null,
+    // The Result panel and the track need to distinguish "zero" from
+    // "unobservable"; both read this rather than re-deriving it.
+    rich,
+    coarse,
+    filesReported: rich,
     permTitle: blockedTitle(task.blockedOn),
     permPath: relativePath(base, task.blockedOn?.file) || task.blockedOn?.tool || "",
     permWhy:
@@ -914,7 +996,7 @@ export function projectRow(task, events, opts = {}) {
             reason: task.runs.at(-1).routing.reason
           }
         : null,
-    bands: bands(task, steps, accent),
+    bands: bands(task, steps, accent, { coarse }),
     files,
     error: task.error ?? ""
   };

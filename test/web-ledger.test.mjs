@@ -22,7 +22,8 @@ import {
   relativePath,
   blockedTitle,
   eventsForRun,
-  projectRuns
+  projectRuns,
+  isRichProvider
 } from "../src/web/ledger.mjs";
 import { workEvent } from "../src/core/events.mjs";
 
@@ -558,6 +559,92 @@ test("projectRow exposes the AUTO routing decision of the current run", () => {
   assert.equal(projectRow(task(), [], {}).routed, null);
 });
 
+// --- progressive fidelity --------------------------------------------------
+//
+// How much of a run's shape can be drawn is a DECLARED provider capability,
+// never an inference from an empty event log. These pin the difference.
+
+const RICH = { "claude-code": { capabilities: { supportsStructuredEvents: true } } };
+const COARSE = { "deepseek-harness": { capabilities: { supportsStructuredEvents: false } } };
+const coarseTask = over => task({ execution: { provider: "deepseek-harness", node: "local", workspace: "local" }, ...over });
+
+test("observability comes from the declared capability, not from the events", () => {
+  assert.equal(isRichProvider("claude-code", RICH), true);
+  assert.equal(isRichProvider("deepseek-harness", COARSE), false);
+  // An unregistered or unknown provider is assumed coarse — never claim more
+  // than the provider declares.
+  assert.equal(isRichProvider("some-future-harness", RICH), false);
+  assert.equal(isRichProvider(undefined, RICH), false);
+});
+
+test("a coarse provider keeps the INSPECT/ACT/VERIFY frame instead of vanishing", () => {
+  const events = log([
+    ["run.started", 0, {}],
+    ["run.completed", 40, { status: "ready" }]
+  ]);
+  const row = projectRow(coarseTask({ status: "ready" }), events, { open: true, providers: COARSE });
+
+  assert.equal(row.coarse, true);
+  assert.deepEqual(row.groups.map(g => g.label), ["INSPECT", "ACT", "VERIFY"]);
+  const cells = row.groups.flatMap(g => g.cells);
+  assert.ok(cells.length > 0);
+  assert.ok(cells.every(c => c.unobserved === true));
+  assert.ok(cells.every(c => c.h === "3px"));
+});
+
+test("a coarse provider says 'not reported', never 'awaiting change'", () => {
+  const events = log([["run.completed", 40, { status: "ready" }]]);
+  const rowBands = projectRow(coarseTask({ status: "ready" }), events, {
+    open: true,
+    providers: COARSE
+  }).bands;
+  for (const band of rowBands) {
+    assert.equal(band.pendingText, "not reported by this provider", band.label);
+    assert.equal(band.unobserved, true, band.label);
+  }
+});
+
+test("a rich provider with no steps yet still reads as not started", () => {
+  const row = projectRow(task({ status: "working" }), log([["run.started", 0, {}]]), {
+    open: true,
+    providers: RICH
+  });
+  assert.equal(row.coarse, false);
+  // The phase in flight reads as running; the ones after it are genuinely
+  // still ahead — not "unreportable".
+  assert.equal(row.bands[0].pendingText, "running");
+  assert.equal(row.bands[1].pendingText, "awaiting investigation");
+  assert.equal(row.bands[2].pendingText, "awaiting change");
+  assert.ok(row.bands.every(b => b.unobserved === false));
+});
+
+test("a coarse result reports files as unknown rather than as zero", () => {
+  const coarse = projectRow(coarseTask({ status: "ready" }), [], { open: true, providers: COARSE });
+  assert.equal(coarse.filesReported, false);
+  assert.match(coarse.arg, /not reported by this provider/);
+
+  // A rich provider that genuinely changed nothing still says zero.
+  const rich = projectRow(task({ status: "ready" }), [], { open: true, providers: RICH });
+  assert.equal(rich.filesReported, true);
+  assert.equal(rich.arg, "no files changed");
+});
+
+test("a coarse frame carries the halt tear exactly once and invents no phase", () => {
+  const events = log([
+    ["run.started", 0, {}],
+    ["needs_user", 30, { reason: "decision", blockedOn: { type: "decision" } }]
+  ]);
+  const row = projectRow(
+    coarseTask({ status: "needs_you", blockedOn: { type: "decision", text: "which one?" } }),
+    events,
+    { open: true, providers: COARSE }
+  );
+  const cells = row.groups.flatMap(g => g.cells);
+  assert.equal(cells.filter(c => c.isHalt).length, 1);
+  assert.deepEqual(row.groups.map(g => g.label), ["INSPECT", "ACT", "VERIFY"]);
+  assert.equal(row.phaseLabel, "HALTED AT");
+});
+
 test("the track spends its cells on time, so a long step strikes wider", () => {
   // Two steps: the first held the run for 40s, the second for 4s.
   const events = log([
@@ -565,7 +652,7 @@ test("the track spends its cells on time, so a long step strikes wider", () => {
     ["tool.started", 40, { name: "Edit", input: { file_path: "a.ts" } }],
     ["run.completed", 44, { status: "ready" }]
   ]);
-  const row = projectRow(task({ status: "ready" }), events, { open: true });
+  const row = projectRow(task({ status: "ready" }), events, { open: true, providers: RICH });
   const [inspect, act] = row.groups;
   assert.equal(inspect.label, "INSPECT");
   assert.equal(act.label, "ACT");
@@ -585,6 +672,7 @@ test("time parked on a human is not counted as execution on the track", () => {
   // "now" is an hour after the halt: the HALTED-AT clock grows, the track does not.
   const row = projectRow(blocked, events, {
     open: true,
+    providers: RICH,
     now: Date.parse("2026-01-01T11:00:00.000Z")
   });
   const act = row.groups.find(g => g.label === "ACT");

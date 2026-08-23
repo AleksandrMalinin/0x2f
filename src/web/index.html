@@ -112,6 +112,9 @@
   .track-group { display: flex; align-items: flex-end; gap: 2px; flex: none; }
   .track-cell { height: 36px; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; flex: none; }
   .track-cell > .fill { width: 100%; }
+  /* Scaffolding for a provider that cannot report its steps: the phase frame
+     stays legible, but a flat hairline can never be mistaken for activity. */
+  .track-cell > .fill.unobserved { opacity: .75; }
   .track-head { height: 7px; margin-bottom: 5px; flex: none; animation: wk-live 1.8s ease-in-out infinite; }
   .track-halt { position: relative; width: 2px; height: 32px; flex: none; }
   .track-halt > span { position: absolute; bottom: 38px; left: 50%; transform: translateX(-50%); font-size: 20px; line-height: 1; animation: wk-halt 1.15s ease-in-out infinite; }
@@ -177,6 +180,7 @@
   .result { border-top: 1px solid #2f2f2f; padding: 24px 0 6px; display: grid; grid-template-columns: 148px 1fr; }
   .result-k { font-size: 10px; letter-spacing: .16em; color: #2f2f2f; font-weight: 600; }
   .result-n { font-size: 26px; letter-spacing: -.03em; color: #2f2f2f; font-variant-numeric: tabular-nums; margin-top: 15px; }
+  .result-n.unreported { color: #5c6771; }
   .result-n small { font-size: 11px; letter-spacing: .16em; color: #5c6771; display: block; margin-top: 6px; }
   .result-file { display: flex; justify-content: space-between; gap: 20px; padding: 6px 0; font-size: 14px; letter-spacing: -.008em; color: #2f2f2f; overflow-wrap: anywhere; }
   .result-body { margin-top: 14px; font-size: 13.5px; line-height: 1.65; color: #2f2f2f; overflow-wrap: anywhere; max-height: 420px; overflow: auto; }

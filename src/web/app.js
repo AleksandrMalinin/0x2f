@@ -639,7 +639,12 @@ function trackCell(cell, accent) {
       )
     );
   }
-  parts.push(el("div", { class: "fill", style: { height: cell.h, background: cell.c } }));
+  parts.push(
+    el("div", {
+      class: "fill" + (cell.unobserved ? " unobserved" : ""),
+      style: { height: cell.h, background: cell.c }
+    })
+  );
   return el("div", { class: "track-cell", style: { width: cell.w } }, parts);
 }
 
@@ -923,10 +928,18 @@ function renderResult(row, detail) {
   return el("div", { class: "result" }, [
     el("div", {}, [
       el("div", { class: "result-k", text: row.failed ? "FAILURE" : "RESULT" }),
-      el("div", { class: "result-n" }, [
-        two(row.files.length),
-        el("small", { text: row.files.length === 1 ? "FILE CHANGED" : "FILES CHANGED" })
-      ])
+      // "00 FILES CHANGED" would read as "it changed nothing". For a
+      // provider that never reports file changes the truth is that we do
+      // not know, so say that instead of printing a confident zero.
+      row.filesReported
+        ? el("div", { class: "result-n" }, [
+            two(row.files.length),
+            el("small", { text: row.files.length === 1 ? "FILE CHANGED" : "FILES CHANGED" })
+          ])
+        : el("div", { class: "result-n unreported" }, [
+            "\u2014",
+            el("small", { text: "FILES NOT REPORTED" })
+          ])
     ]),
     el("div", { class: "band-right" }, files.concat([body, acts].filter(Boolean)))
   ]);
@@ -1265,7 +1278,10 @@ function currentLedger() {
     wide: state.width >= 1180,
     mid: state.width >= 900,
     accent: COLORS.accent,
-    base: state.base
+    base: state.base,
+    // Declared provider capabilities drive progressive fidelity. Keyed by
+    // id so a new provider needs no client change.
+    providers: Object.fromEntries(state.providers.map(p => [p.id, p]))
   });
 }
 
