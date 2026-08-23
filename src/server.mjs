@@ -8,10 +8,13 @@
 //
 //   GET  /api/tasks                -> listWork()
 //   GET  /api/tasks/:id            -> getWork(id)        ({ ...task, result })
-//   POST /api/tasks                -> createWork({ title })
+//   POST /api/tasks                -> createWork({ title, provider? })
 //   POST /api/tasks/:id/allow      -> allowWork(id)
 //   POST /api/tasks/:id/reject     -> rejectWork(id)
 //   POST /api/tasks/:id/close      -> closeWork(id)
+//   GET  /api/providers            -> [{ id, displayName, capabilities }]
+//                                      (default provider first — the registry
+//                                      insertion order IS the default order)
 //   GET  /api/events               -> Server-Sent Events (live normalized events)
 //   GET  /api/events/history       -> the persisted normalized event log per task
 //
@@ -28,6 +31,7 @@ import { URL } from "node:url";
 import { createRuntime } from "./runtime.mjs";
 import { createTailer } from "./core/events.mjs";
 import { WorkError } from "./core/errors.mjs";
+import { listProviders } from "./providers/index.mjs";
 
 // The Web surface is served as three static files from src/web/:
 //
@@ -171,9 +175,26 @@ export async function startServer(base = process.cwd(), port = 4242, opts = {}) 
         return;
       }
 
+      // Provider registry for clients that need to offer a choice. The shape
+      // is normalized (id/displayName/capabilities) — never vendor internals.
+      if (req.method === "GET" && url.pathname === "/api/providers") {
+        json(
+          res,
+          listProviders().map(p => ({
+            id: p.id,
+            displayName: p.displayName,
+            capabilities: p.capabilities
+          }))
+        );
+        return;
+      }
+
       if (req.method === "POST" && url.pathname === "/api/tasks") {
         const body = JSON.parse(await readBody(req));
-        const task = await actions.createWork({ title: body.title });
+        const task = await actions.createWork({
+          title: body.title,
+          provider: body.provider
+        });
         json(res, task, 201);
         return;
       }
