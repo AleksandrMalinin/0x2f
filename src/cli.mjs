@@ -19,14 +19,35 @@ function help() {
 Commands:
   2f                list today's tasks
   2f init
-  2f new <task>
+  2f new <task> [--provider <id>]
   2f status
   2f open <id>
   2f allow <id>     grant the permission a task is blocked on
   2f reject <id>    decline the requested change
   2f close <id>
   2f ui [port]
+
+Providers: claude-code (default), deepseek-harness
 `);
+}
+
+// Parse `--provider <id>` (and `--provider=<id>`) out of `2f new` args; the
+// rest is the task title. Provider selection is secondary — tasks are first.
+function parseNewArgs(args) {
+  const rest = [];
+  let provider;
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === "--provider") {
+      provider = args[i + 1];
+      i++;
+    } else if (typeof arg === "string" && arg.startsWith("--provider=")) {
+      provider = arg.slice("--provider=".length);
+    } else {
+      rest.push(arg);
+    }
+  }
+  return { title: rest.join(" ").trim(), provider };
 }
 
 async function status(base) {
@@ -66,6 +87,10 @@ async function openTask(id, base) {
 
   console.log(`Status: ${detail.status}${detail.status === "working" ? ` · ${providerName(detail)}` : ""}\n`);
 
+  const execution = detail.execution ?? {};
+  const model = execution.model ? ` · model ${execution.model}` : "";
+  console.log(`Execution: provider ${execution.provider ?? "?"} · node ${execution.node ?? "?"}${model}\n`);
+
   if (detail.result.trim()) {
     console.log(detail.result.trim());
   } else if (detail.error) {
@@ -102,10 +127,10 @@ async function main() {
 
   if (command === "new") {
     await requireProject(base);
-    const title = args.join(" ").trim();
-    if (!title) throw new Error('Usage: 2f new "Investigate ..."');
+    const { title, provider } = parseNewArgs(args);
+    if (!title) throw new Error('Usage: 2f new "Investigate ..." [--provider <id>]');
 
-    const task = await createRuntime(base).actions.createWork({ title });
+    const task = await createRuntime(base).actions.createWork({ title, provider });
 
     console.log(`Created #${String(task.id).padStart(3, "0")}: ${task.title}`);
     console.log(`${providerName(task)} is running in the background.`);
