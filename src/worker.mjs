@@ -124,7 +124,10 @@ try {
     }
     current = beginResume(task, grant);
     await store.writeJson(metaPath, current);
-    await record("task.updated", { status: current.status });
+    // Carry the grant on the normalized event: `beginResume` already records
+    // it as execution.lastAction, so clients can show who unblocked the task
+    // without inferring it from a status change.
+    await record("task.updated", { status: current.status, grant });
     log(`resuming session ${current.execution?.externalSessionId ?? "?"} (${grant})`);
 
     outcome = await provider.resume({
