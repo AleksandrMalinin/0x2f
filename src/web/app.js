@@ -238,6 +238,11 @@ async function checkStatus() {
   }
   const remote = info?.mode === "relay";
   const macOnline = remote ? info?.mac === "online" : true;
+  // Remembers the moment the Mac went unreachable, purely for the mobile
+  // Attention Stack's "LAST KNOWN ..." labelling — it freezes elapsed clocks
+  // against this timestamp instead of the live one (see renderMobile).
+  if (remote && state.macOnline && !macOnline) mobile.offlineSince = Date.now();
+  if (macOnline) mobile.offlineSince = null;
   if (remote !== state.remote || macOnline !== state.macOnline) {
     state.remote = remote;
     state.macOnline = macOnline;
@@ -419,6 +424,9 @@ async function reloadTasks() {
   for (const sel of state.runSelection) {
     ensureRunDetail(sel.taskId, sel.run, true);
   }
+  // The mobile Task Detail screen keeps its own open-task id (state.openId
+  // is desktop's inline-expand); refresh its cached detail the same way.
+  if (mobile.screen === "detail" && mobile.detailId !== null) ensureDetail(mobile.detailId);
 }
 
 // --- actions ---------------------------------------------------------------
@@ -1642,10 +1650,18 @@ function buildComposer() {
 // fact at the action boundary. A failure leaves the select empty and submits
 // fall back to the server default, so provider choice never blocks a task.
 async function loadProviders() {
-  if (!providerSelect) return;
   try {
     const providers = await api("/api/providers");
     state.providers = providers;
+    // Declared capabilities drive progressive fidelity everywhere (desktop
+    // AND mobile) — re-render once they land, or every row stays classified
+    // "coarse" (the fidelity() default for an undeclared provider) until the
+    // next unrelated re-render happens to pick state.providers up.
+    render();
+    // The provider <select> only exists on desktop — the mobile Attention
+    // Stack never mounts the composer (task creation is out of scope for
+    // Remote Control v1).
+    if (!providerSelect) return;
     let routing = null;
     try {
       routing = await api("/api/routing");
@@ -1725,9 +1741,9 @@ function renderSoundDemo() {
 let scrollTop = 0;
 let clockNode = null;
 
-function currentLedger() {
+function currentLedger(now = Date.now()) {
   return projectLedger(state.tasks, Object.fromEntries(state.eventsByTask), {
-    now: Date.now(),
+    now,
     openId: state.openId,
     selectedId: state.selectedId,
     wide: state.width >= 1180,
@@ -1741,6 +1757,14 @@ function currentLedger() {
 }
 
 function render() {
+  // Below 640px this is the Attention Stack, not the desktop ledger narrowed
+  // — a different code path entirely (see "--- mobile: the Attention Stack
+  // ---" below). Desktop rendering below this line is untouched by it.
+  if (isMobileWidth()) {
+    renderMobile();
+    return;
+  }
+
   const shell = document.getElementById("shell");
   const accent = COLORS.accent;
   const ledger = currentLedger();
@@ -1936,6 +1960,876 @@ function connect() {
     });
   }
 }
+
+// --- mobile: the Attention Stack --------------------------------------------
+//
+// Below 640px this is not the desktop ledger narrowed — it is a different
+// surface (see the "Remote — Mobile Pass" handoff): a remote control for
+// work that is already running, used ten to thirty seconds at a time. One
+// Overview (glance -> understand -> intervene) and one Task Detail (context
+// you did not need) — no third screen. It reuses the same row projection
+// ledger.mjs already computes and the same actions the desktop ledger calls;
+// it only lays them out differently. Task creation is out of scope for
+// Remote Control v1 — the composer never mounts at this width.
+
+function isMobileWidth() {
+  return state.width <= 640;
+}
+
+const mobile = {
+  screen: "overview", // "overview" | "detail"
+  detailId: null,
+  closing: false, // Task Detail is mid slide-out (see closeMobileDetail)
+  correctionId: null, // task id whose CORRECTION / ADD A CONSTRAINT sheet is open
+  offlineSince: null, // Date.now() captured the moment the Mac went unreachable
+  resultExpanded: new Set() // task ids whose READY result is shown in full
+};
+
+function prefersReducedMotion() {
+  try {
+    return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  } catch {
+    return false;
+  }
+}
+
+function hhmm(ts) {
+  const d = new Date(ts);
+  return two(d.getHours()) + ":" + two(d.getMinutes());
+}
+
+// Task Detail is a real navigation, not a toggle: it plays its 220ms push
+// enter animation once per visit. `mobileDetailMounted` remembers which task
+// id already played it so a live re-render (the elapsed clock, an incoming
+// event) never replays it — the same problem `onScreen` solves for row entry.
+let mobileDetailMounted = null;
+
+function openMobileDetail(id) {
+  mobile.screen = "detail";
+  mobile.detailId = id;
+  ensureDetail(id);
+  render();
+}
+
+// Back is an edge swipe or the ‹ ALL WORK line — both call this. It plays a
+// real 180ms slide-out before the Overview takes over. The timer runs
+// independent of the DOM node itself (`mobile.closing` drives the class in
+// renderMobileDetail): the elapsed clock's 1s tick re-renders the whole tree
+// while a task is working, which would otherwise replace the mid-animation
+// node and strand an `animationend` listener on a detached element. Reduced
+// motion skips straight there.
+function closeMobileDetail() {
+  if (mobile.screen !== "detail" || mobile.closing) return;
+  mobileDetailMounted = null;
+  if (prefersReducedMotion()) {
+    mobile.screen = "overview";
+    mobile.detailId = null;
+    render();
+    return;
+  }
+  mobile.closing = true;
+  render();
+  setTimeout(() => {
+    mobile.screen = "overview";
+    mobile.detailId = null;
+    mobile.closing = false;
+    render();
+  }, 180);
+}
+
+function openCorrection(id) {
+  mobile.correctionId = id;
+  render();
+}
+function closeCorrection() {
+  mobile.correctionId = null;
+  render();
+}
+
+// ANSWER & CONTINUE composes the two existing actions: persist the answer
+// (the same /answer call SAVE ONLY makes), then rerun through SEND BACK so
+// the next run carries it in context — a decision is not resumable in
+// place, so "continue" genuinely means starting the next run.
+async function answerAndContinue(id) {
+  if (remoteBlocked()) return;
+  const answer = (state.answers.get(id) ?? "").trim();
+  if (!answer) return;
+  await answerDecision(id);
+  await sendBack(id);
+}
+
+// The CORRECTION / ADD A CONSTRAINT sheet shares the desktop NOTE action and
+// its half-typed-text map: the constraint sticks to the Task, not the run.
+// `rerun` mirrors CORRECTION's SEND BACK (a new run starts with it in
+// context); its absence mirrors ADD A CONSTRAINT (recorded without stopping
+// the live run).
+async function submitCorrection(id, { rerun } = {}) {
+  if (remoteBlocked()) return;
+  const note = (noteInputs.get(id) ?? "").trim();
+  if (!note) return;
+  try {
+    await api("/api/tasks/" + id + "/note", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ note })
+    });
+    noteInputs.delete(id);
+  } catch (error) {
+    flash(error.message);
+    return;
+  }
+  closeCorrection();
+  if (rerun) await sendBack(id);
+  else await reloadTasks();
+}
+
+// A small static trace: the same cells ledger.mjs already computed for this
+// row (mini/trace/provenance geometry, ambient marks included), just laid
+// out inline. `frozen` (Mac unreachable) strips the live head/halt-tear
+// treatment and mutes every mark to graphite — nothing here is awaiting you.
+function mobileTraceEls(cells, frozen) {
+  return (cells ?? []).map(cell => {
+    if (frozen) {
+      const h = cell.isHead || cell.isTear ? "6px" : cell.h;
+      return el("span", { style: { width: cell.w, height: h, background: "#b3bcc4", flex: "none" } });
+    }
+    if (cell.isHead) {
+      return el("span", {
+        class: "m-thead",
+        style: { width: cell.w, height: "12px", background: COLORS.accent, flex: "none" }
+      });
+    }
+    if (cell.isHalt) {
+      return el("span", {
+        style: { width: cell.w, height: "13px", background: COLORS.accent, flex: "none" }
+      });
+    }
+    return el("span", { style: { width: cell.w, height: cell.h, background: cell.c, flex: "none" } });
+  });
+}
+
+// --- mobile chrome -----------------------------------------------------------
+
+function renderMobileBar(frozen) {
+  return el("div", { class: "m-bar" }, [
+    el("div", { class: "m-bar-inner" }, [
+      el("span", { class: "m-mark", text: "0x2F" }),
+      el("span", { class: "m-slash", text: "/" }),
+      el("span", { class: "m-bar-spacer" }),
+      el("span", { class: "m-dot" + (frozen ? " off" : "") }),
+      el("span", { class: "m-host" + (frozen ? " dim" : ""), text: location.host })
+    ])
+  ]);
+}
+
+function renderMobileOfflineBar() {
+  if (!(state.remote && !state.macOnline)) return null;
+  const since = mobile.offlineSince;
+  const label = since
+    ? "MAC OFFLINE · LAST KNOWN " + hhmm(since) + " · " + Math.max(0, Math.round((Date.now() - since) / 60000)) + " MIN AGO"
+    : "MAC OFFLINE · LAST KNOWN STATE";
+  return el("div", { class: "m-offline-bar", text: label });
+}
+
+function renderMobileOverviewToolbar(ledger, frozen) {
+  const c = ledger.counts;
+  const items = [];
+  if (c.needs_you) {
+    items.push(el("span", { class: "m-count-needs" + (frozen ? " frozen" : ""), text: "NEEDS YOU " + c.needs_you }));
+  }
+  if (c.working) items.push(el("span", { class: "m-count", text: "WORKING " + c.working }));
+  if (c.ready) items.push(el("span", { class: "m-count", text: "READY " + c.ready }));
+  if (c.failed) items.push(el("span", { class: "m-count", text: "FAILED " + c.failed }));
+  const children = [...items];
+  if (frozen) {
+    children.push(el("span", { class: "m-toolbar-fill" }));
+    children.push(el("span", { class: "m-toolbar-asof", text: "AS OF " + hhmm(mobile.offlineSince ?? Date.now()) }));
+  }
+  return el("div", { class: "m-toolbar" }, children);
+}
+
+// The Task Detail nav bar: back on the left, a quiet "N NEEDS YOU" badge on
+// the right when something else needs you (never on the ask's own screen —
+// there the tint carries that fact already).
+function renderMobileDetailToolbar(row, ledger, frozen) {
+  const blue = row.halted;
+  const children = [
+    el("span", { class: "m-back", onClick: closeMobileDetail, text: "‹ ALL WORK" })
+  ];
+  if (!blue && ledger.counts.needs_you) {
+    children.push(
+      el("span", { class: "m-back-badge", text: ledger.counts.needs_you + " NEEDS YOU" })
+    );
+  }
+  const cls = "m-toolbar " + (blue ? "blue" : "quiet") + (frozen ? "" : "");
+  return el("div", { class: cls }, children);
+}
+
+// --- Overview rows -------------------------------------------------------
+
+// The oldest ask, when it is a permission: answerable in place. "The ask is
+// answerable where it appears" — opening the Task is for context you did
+// not need, not a step on the way to ALLOW.
+function renderMobileAskCard(row, frozen) {
+  const acts = [];
+  if (row.permAllowable) {
+    const btn = el("button", { class: "m-btn m-btn-primary", text: "ALLOW" });
+    btn.addEventListener("click", () => {
+      btn.disabled = true;
+      allow(row.id);
+    });
+    acts.push(btn);
+  }
+  if (row.permRejectable) {
+    const btn = el("button", { class: "m-btn m-btn-secondary", text: "REJECT" });
+    btn.addEventListener("click", () => {
+      btn.disabled = true;
+      reject(row.id);
+    });
+    acts.push(btn);
+  }
+
+  return el("div", { class: "m-ask" + (frozen ? " frozen" : "") }, [
+    el("div", { class: "m-ask-head" }, [
+      el("span", { class: "m-ask-kind", text: "NEEDS YOU" }),
+      el("span", { class: "m-ask-t", text: "held " + row.elapsed })
+    ]),
+    el("div", { class: "m-ask-title" }, inlineEls(parseInline(row.title))),
+    row.permLive
+      ? el("div", { class: "m-ask-verb", text: "agent requested permission" })
+      : row.permPath
+        ? el("div", { class: "m-ask-verb", text: "wants to modify" })
+        : null,
+    row.permPath ? el("div", { class: "m-ask-path", text: row.permPath }) : null,
+    !row.permPath && row.permWhy ? el("div", { class: "m-ask-why" }, inlineEls(parseInline(row.permWhy))) : null,
+    acts.length ? el("div", { class: "m-ask-acts" }, acts) : null,
+    el("div", {
+      class: "m-ask-hint" + (frozen ? " offline" : ""),
+      onClick: frozen ? null : () => openMobileDetail(row.id),
+      text: frozen
+        ? "the answer has to reach the Mac · it will still be waiting when it reconnects"
+        : "the run continues where it stopped · open for context"
+    })
+  ]);
+}
+
+// Any ask that is not the one expanded card: a single blue line carrying its
+// own state and (for a decision) a preview of the question, so two open
+// decisions never compete for the same thumb. A decision-type ask always
+// renders this way, even when it is the only one — answering it needs more
+// room than a line, so it opens Task Detail rather than expanding in place.
+function renderMobileAskLine(row, frozen) {
+  const kind = row.permType === "decision" ? "NEEDS YOU · DECISION" : "NEEDS YOU";
+  const preview = row.permType === "decision" ? row.permWhy : row.permPath ? "wants to modify " + row.permPath : row.permWhy;
+  return el(
+    "div",
+    { class: "m-ask-line", onClick: frozen ? null : () => openMobileDetail(row.id) },
+    [
+      el("div", { class: "m-ask-line-body" }, [
+        el("span", { class: "m-ask-line-kind", text: kind }),
+        el("div", { class: "m-ask-line-title" }, inlineEls(parseInline(row.title))),
+        preview ? el("div", { class: "m-ask-line-preview", text: preview }) : null
+      ]),
+      el("span", { class: "m-ask-line-t", text: row.elapsed }),
+      el("span", { class: "m-ask-line-chev", text: "›" })
+    ]
+  );
+}
+
+function renderMobileWorkingRow(row, frozen) {
+  const a = row.activitySection;
+  const last = a?.recent?.at(-1);
+  let caption;
+  if (last) caption = last.verb + " · " + last.arg;
+  else if (row.note) caption = row.note;
+  else caption = row.arg || "starting execution";
+
+  return el("div", { class: "m-row-tap", onClick: () => openMobileDetail(row.id) }, [
+    el("div", { class: "m-row-head" }, [
+      el("span", { class: "m-row-state", text: "WORKING" }),
+      el("span", { class: "m-row-t", text: row.elapsed })
+    ]),
+    el("div", { class: "m-row-title" }, inlineEls(parseInline(row.title))),
+    el("div", { class: "m-row-trace-line" }, [
+      el("div", { class: "m-row-trace" }, mobileTraceEls(row.mini, frozen)),
+      el("span", { class: "m-row-caption", text: caption })
+    ])
+  ]);
+}
+
+function renderMobileReadyRow(row) {
+  return el("div", { class: "m-row-tap", onClick: () => openMobileDetail(row.id) }, [
+    el("div", { class: "m-row-head" }, [
+      el("span", { class: "m-row-state", text: "READY" }),
+      el("span", { class: "m-row-t", text: row.elapsed })
+    ]),
+    el("div", { class: "m-row-title" }, inlineEls(parseInline(row.title))),
+    el("div", { class: "m-row-sub-muted", style: { marginTop: "9px" }, text: row.sub })
+  ]);
+}
+
+function renderMobileFailedRow(row) {
+  return el("div", { class: "m-row-tap", onClick: () => openMobileDetail(row.id) }, [
+    el("div", { class: "m-row-head" }, [
+      el("span", { class: "m-row-state", text: "FAILED" }),
+      el("span", { class: "m-row-t", text: row.elapsed })
+    ]),
+    el("div", { class: "m-row-title" }, inlineEls(parseInline(row.title))),
+    el("div", { class: "m-row-sub-muted", style: { marginTop: "9px" }, text: row.sub || "execution failed" })
+  ]);
+}
+
+// The Overview: counts in priority order, the one ask open and answerable in
+// place, every running task as one line with a live trace, each finished
+// task's single most decision-relevant fact. Closed work is always one line
+// — "the screen's emptiest state is its best news" applies to NEEDS YOU
+// dropping out entirely, not to hiding what is still open.
+function renderMobileOverview(ledger, frozen) {
+  const rows = ledger.rows;
+  // ledger.mjs orders rows newest-task-first (desktop's own priority order);
+  // the Attention Stack needs the OLDEST ask primary — the one that has been
+  // waiting on you longest — so needs_you rows are re-sorted by id ascending
+  // (the best proxy available: the row projection does not expose a raw
+  // halted-since timestamp, only the formatted "held" string).
+  const needs = rows.filter(r => r.halted).slice().sort((a, b) => a.id - b.id);
+  const rest = rows.filter(r => !r.halted && !r.done);
+  const closed = rows.filter(r => r.done);
+
+  const items = [];
+  if (needs.length) {
+    const oldest = needs[0];
+    if (oldest.permType === "decision") items.push(renderMobileAskLine(oldest, frozen));
+    else items.push(renderMobileAskCard(oldest, frozen));
+    for (const row of needs.slice(1)) items.push(renderMobileAskLine(row, frozen));
+  }
+  for (const row of rest) {
+    if (row.running) items.push(renderMobileWorkingRow(row, frozen));
+    else if (row.ready) items.push(renderMobileReadyRow(row));
+    else if (row.failed) items.push(renderMobileFailedRow(row));
+  }
+  if (closed.length) {
+    items.push(
+      el("div", { class: "m-closed-line", text: closed.length + " CLOSED TODAY" })
+    );
+  }
+
+  if (!items.length) {
+    return el("div", { class: "m-empty", text: "no tasks in this workspace" });
+  }
+  return el("div", {}, items);
+}
+
+// --- Task Detail content ---------------------------------------------------
+
+// The tool step running when the halt landed — "HELD AT EDIT", not the path
+// the halt itself carries. Derived from the same activity units the WHAT IT
+// WAS DOING box below already shows; never a second source of truth.
+function heldAtVerb(row) {
+  const recent = row.activitySection?.recent ?? [];
+  const haltIndex = recent.findIndex(u => u.kind === "halt");
+  const before = haltIndex > 0 ? recent[haltIndex - 1] : haltIndex === -1 ? recent.at(-1) : null;
+  return before?.verb ?? null;
+}
+
+function providerDisplayName(id) {
+  const p = state.providers.find(p => p.id === id);
+  return (p?.displayName ?? id ?? "").toUpperCase();
+}
+
+function renderMobileHeldMeta(row) {
+  const verb = heldAtVerb(row);
+  const detail = state.details.get(row.id);
+  const runNum = detail?.runs?.length;
+  const parts = [];
+  if (verb) parts.push("HELD AT " + verb);
+  else parts.push("HELD");
+  if (row.providerId) parts.push(providerDisplayName(row.providerId));
+  if (runNum) parts.push("RUN " + runNum);
+  return el("div", { class: "m-dmeta", text: parts.join(" · ") });
+}
+
+// WHAT IT WAS DOING / the WORKING detail's LATEST — the same recent activity
+// units the desktop ACTIVITY band shows, in a single mobile-width column
+// (the two-column band grid is desktop-only — see the handoff's "NOT ON
+// MOBILE"). The "N earlier events" line is informational, matching the
+// desktop band's own meta text: neither surface has data beyond the last 5.
+function renderMobileActivityBox(row, heading, first) {
+  const a = row.activitySection;
+  if (!a?.recent?.length) return null;
+  return el("div", { class: "m-dsection" + (first ? " first" : "") }, [
+    el("div", { class: "m-dsection-k strong", text: heading }),
+    ...a.recent.map(unit =>
+      el("div", { class: "m-devent" }, [
+        el("span", { class: "m-devent-verb", text: unit.verb }),
+        el("span", { class: "m-devent-arg", text: unit.arg }),
+        el("span", { class: "m-devent-t", text: fmtDuration(unit.t) })
+      ])
+    ),
+    a.earlier ? el("div", { class: "m-disclosure", text: a.earlier + " earlier events ›" }) : null
+  ]);
+}
+
+function renderMobileFilesBox(row, first) {
+  const f = row.filesSection;
+  if (!f) return null;
+  return el("div", { class: "m-dsection" + (first ? " first" : "") }, [
+    el("div", { class: "m-dsection-k", text: "FILES · " + f.paths.length + (f.paths.length === 1 ? " TOUCHED" : " TOUCHED") }),
+    ...f.paths.map(path => el("div", { class: "m-dfile" }, [el("span", { class: "m-dfile-path", text: path })]))
+  ]);
+}
+
+function renderMobileCommandsBox(row, first) {
+  const c = row.commandsSection;
+  if (!c) return null;
+  return el("div", { class: "m-dsection" + (first ? " first" : "") }, [
+    el("div", { class: "m-dsection-k", text: "COMMANDS" }),
+    ...c.commands.map(cmd => el("div", { class: "m-dfile" }, [el("span", { class: "m-dfile-path", text: cmd })]))
+  ]);
+}
+
+// Real result text, paragraph-truncated to the first three with a disclosure
+// that expands to the rest — never a fade, always a rule and a count.
+function renderMobileResult(row, detail) {
+  const text = (detail?.result && detail.result.trim()) || (row.error ? row.error : "");
+  if (!text) return el("div", { class: "band-pending", style: { color: COLORS.muted, marginTop: "11px" }, text: "no written result" });
+  const blocks = parseRich(text);
+  const expanded = mobile.resultExpanded.has(row.id);
+  const shown = expanded ? blocks : blocks.slice(0, 3);
+  const hiddenCount = blocks.length - shown.length;
+  const body = el("div", { class: "m-dresult" }, shown.map(richBlock));
+  const disclosure =
+    hiddenCount > 0
+      ? el("div", {
+          class: "m-disclosure",
+          onClick: () => {
+            mobile.resultExpanded.add(row.id);
+            render();
+          },
+          text: "full result · " + hiddenCount + (hiddenCount === 1 ? " more paragraph ›" : " more paragraphs ›")
+        })
+      : null;
+  return el("div", {}, [body, disclosure].filter(Boolean));
+}
+
+// THIS TASK SO FAR — a multi-run Task's own history as lines, each earlier
+// run opening its own result/files/trace on tap (reuses the same
+// selectRun/renderRunPanel the desktop RUNS strip uses). Side-by-side
+// comparison stays on the desktop; the phone opens one run at a time.
+function renderMobileRunHistory(row, detail, accent) {
+  if (!detail?.runs || detail.runs.length < 2) return null;
+  const providerNames = {};
+  for (const p of state.providers) providerNames[p.id] = p.displayName;
+  const runs = projectRuns(detail.runs, { providers: providerNames });
+  const taskId = row.id;
+  const events = state.eventsByTask.get(taskId) ?? [];
+  const selected = state.runSelection.filter(s => s.taskId === taskId);
+
+  const items = runs.map(run => {
+    // The run already shown at the top of this screen (working or held on
+    // this ask) is never also a clickable history entry — it has nothing to
+    // add that isn't already on screen.
+    const isNow = run.run === runs.at(-1).run && (row.running || row.halted);
+    const isSelected = selected.some(s => s.run === run.run);
+    const head = el(
+      "div",
+      { class: "m-drun-head", onClick: isNow ? null : () => selectRun(taskId, run.run) },
+      [
+        el("span", { class: "m-drun-num" + (isNow ? " now" : ""), text: run.num }),
+        el("span", { class: "m-drun-provider" + (isNow ? " now" : ""), text: run.provider }),
+        el("span", { class: "m-drun-t", text: run.duration ?? "—" }),
+        el("span", { class: "m-drun-state" + (isNow ? " now" : ""), style: { color: run.stateColor }, text: isNow ? "NOW" : run.state })
+      ]
+    );
+    const note = isNow
+      ? null
+      : el("div", {
+          class: "m-drun-note",
+          text: run.error || (run.state === "READY" ? "completed · " + (run.duration ?? "") : run.state.toLowerCase())
+        });
+    const panel = !isNow && isSelected ? el("div", { class: "m-drun-panel" }, [renderRunPanel(taskId, run, events, accent)]) : null;
+    return el("div", { class: "m-drun" }, [head, note, panel].filter(Boolean));
+  });
+
+  return el("div", { class: "m-dsection" }, [el("div", { class: "m-dsection-k strong", text: "THIS TASK SO FAR" }), ...items]);
+}
+
+function renderMobileDecisionContent(row) {
+  const provider = state.providers.find(p => p.id === row.providerId);
+  const resumable = provider?.capabilities?.supportsResume === true;
+  const value = state.answers.get(row.id) ?? "";
+  const textarea = el("textarea", {
+    class: "m-danswer",
+    rows: 3,
+    placeholder: "your answer…",
+    "data-focus-key": "m-answer-" + row.id
+  });
+  textarea.value = value;
+  // ANSWER & CONTINUE / SAVE ONLY live in the fixed bottom bar, a sibling
+  // subtree built separately (renderMobileActionBar) — toggle them by the
+  // marker they share rather than threading a callback through both.
+  textarea.addEventListener("input", () => {
+    state.answers.set(row.id, textarea.value);
+    const has = textarea.value.trim().length > 0;
+    document.querySelectorAll("[data-mobile-answer-gate]").forEach(btn => {
+      btn.disabled = !has;
+    });
+  });
+
+  return el("div", {}, [
+    row.permWhy ? el("div", { class: "m-dquestion" }, inlineEls(parseInline(row.permWhy))) : null,
+    !resumable
+      ? el("div", {
+          class: "m-dlimit",
+          text:
+            (provider?.displayName ?? "This provider") +
+            " cannot resume sessions — answering records your decision in this run's history."
+        })
+      : null,
+    textarea,
+    el("div", { class: "m-danswer-note", text: "Your answer is recorded on the Task, so it survives this run and every run after it." })
+  ]);
+}
+
+// One content order for every status: the Task's identity, then what it is
+// doing or what it produced, then the operational detail on demand. Each
+// piece gates itself to null when the status does not carry it — the same
+// §10 discipline the desktop ledger already follows.
+function renderMobileDetailContent(row, detail, accent, frozen) {
+  const parts = [];
+
+  const stateCls = row.halted ? "blue" : row.done ? "dim" : "";
+  const stateLabel = row.halted ? row.stateLabel + (row.permType === "decision" ? " · DECISION" : " · PERMISSION") : row.stateLabel;
+  parts.push(
+    el("div", { class: "m-dtitle-row" }, [
+      el("span", { class: "m-dstate " + stateCls, text: stateLabel }),
+      el("span", { class: "m-dt", text: row.elapsed })
+    ])
+  );
+  parts.push(el("h1", { class: "m-dtitle" }, inlineEls(parseInline(row.title))));
+
+  if (row.trace) {
+    parts.push(el("div", { class: "m-dtrace-wrap" }, [renderTrack(row, accent)]));
+  }
+
+  if (row.halted) {
+    parts.push(renderMobileHeldMeta(row));
+    if (row.permType === "decision") {
+      parts.push(renderMobileDecisionContent(row));
+    } else {
+      parts.push(
+        row.permLive
+          ? el("div", { class: "m-dmeta", style: { marginTop: "20px" }, text: "agent requested permission" })
+          : null
+      );
+      if (row.permPath) {
+        parts.push(
+          el("div", { class: "m-dsection first" }, [
+            el("div", { class: "m-dresult", style: { marginTop: 0 }, text: "wants to modify" }),
+            el("div", { class: "m-dtitle", style: { fontSize: "19px", marginTop: "8px" }, text: row.permPath }),
+            row.permWhy ? el("div", { class: "m-dlimit", text: row.permWhy }) : null
+          ])
+        );
+      }
+    }
+    parts.push(renderMobileActivityBox(row, "WHAT IT WAS DOING", !row.permPath && row.permType !== "decision"));
+    parts.push(renderMobileRunHistory(row, detail, accent));
+  } else if (row.running) {
+    if (row.coarse) {
+      parts.push(el("div", { class: "m-dmeta", style: { marginTop: "16px" }, text: "process alive" }));
+      parts.push(
+        el("div", {
+          class: "m-dmeta",
+          text: providerDisplayName(row.providerId) + (row.note ? " · " + row.note : "")
+        })
+      );
+    } else {
+      const last = row.activitySection?.recent?.at(-1);
+      if (last) parts.push(el("div", { class: "m-dmeta", style: { marginTop: "16px", fontSize: "14.5px", letterSpacing: "-.008em", color: COLORS.ink }, text: last.verb + " · " + last.arg }));
+      const total = (row.activitySection?.earlier ?? 0) + (row.activitySection?.recent?.length ?? 0);
+      parts.push(el("div", { class: "m-dmeta", text: providerDisplayName(row.providerId) + (total ? " · " + total + " EVENTS" : "") }));
+    }
+    parts.push(renderMobileActivityBox(row, "LATEST", true));
+    parts.push(renderMobileFilesBox(row, !row.activitySection?.recent?.length));
+    parts.push(renderMobileCommandsBox(row));
+    parts.push(renderMobileRunHistory(row, detail, accent));
+  } else if (row.ready) {
+    parts.push(el("div", { class: "m-dsection first" }, [el("div", { class: "m-dsection-k strong", text: "RESULT" }), renderMobileResult(row, detail)]));
+    parts.push(renderMobileFilesBox(row));
+    parts.push(renderMobileCommandsBox(row));
+    // PROVENANCE / BEFORE THE STOP: renderProvenance already labels itself
+    // (the same desktop component); an empty trace (nothing happened before
+    // the stop) is silence, not an empty box — matching "no empty or
+    // not-reported state to render".
+    if (row.provenance?.total > 0) {
+      parts.push(el("div", { class: "m-dsection" }, [renderProvenance(row, accent)]));
+    }
+    parts.push(renderMobileRunHistory(row, detail, accent));
+  } else if (row.failed) {
+    parts.push(el("div", { class: "m-dmeta", style: { marginTop: "14px", fontSize: "12.5px" }, text: "Run stopped. The Task is still open — nothing was reverted." }));
+    parts.push(
+      el("div", { class: "m-dsection first" }, [
+        el("div", { class: "m-dsection-k strong", text: "STOPPED AT" }),
+        el("div", { class: "m-dpre", text: row.error || "Execution failed" })
+      ])
+    );
+    parts.push(renderMobileFilesBox(row));
+    // PROVENANCE / BEFORE THE STOP: renderProvenance already labels itself
+    // (the same desktop component); an empty trace (nothing happened before
+    // the stop) is silence, not an empty box — matching "no empty or
+    // not-reported state to render".
+    if (row.provenance?.total > 0) {
+      parts.push(el("div", { class: "m-dsection" }, [renderProvenance(row, accent)]));
+    }
+    parts.push(renderMobileRunHistory(row, detail, accent));
+  } else if (row.done) {
+    parts.push(el("div", { class: "m-dsection first" }, [el("div", { class: "m-dsection-k strong", text: "RESULT" }), renderMobileResult(row, detail)]));
+  }
+
+  return parts.filter(Boolean);
+}
+
+// Every detail screen ends in a fixed bar: one 52px primary, one secondary.
+// Reading scrolls; deciding never does.
+function renderMobileActionBar(row, frozen) {
+  if (row.halted && row.permType !== "decision") {
+    const allowBtn = el("button", { class: "m-abar-btn m-abar-primary", text: "ALLOW", disabled: !row.permAllowable ? true : undefined });
+    allowBtn.addEventListener("click", () => {
+      allowBtn.disabled = true;
+      allow(row.id);
+    });
+    const rejectBtn = el("button", { class: "m-abar-btn m-abar-secondary", text: "REJECT", disabled: !row.permRejectable ? true : undefined });
+    rejectBtn.addEventListener("click", () => {
+      rejectBtn.disabled = true;
+      reject(row.id);
+    });
+    return el("div", { class: "m-abar" }, [el("div", { class: "m-abar-row" }, [allowBtn, rejectBtn])]);
+  }
+  if (row.halted && row.permType === "decision") {
+    const value = (state.answers.get(row.id) ?? "").trim();
+    const continueBtn = el("button", {
+      class: "m-abar-btn m-abar-primary",
+      text: "ANSWER & CONTINUE",
+      "data-mobile-answer-gate": true,
+      disabled: !value ? true : undefined
+    });
+    continueBtn.addEventListener("click", () => {
+      continueBtn.disabled = true;
+      answerAndContinue(row.id).finally(() => render());
+    });
+    const saveBtn = el("button", {
+      class: "m-abar-btn m-abar-secondary quiet",
+      text: "SAVE ONLY",
+      "data-mobile-answer-gate": true,
+      disabled: !value ? true : undefined
+    });
+    saveBtn.addEventListener("click", () => {
+      saveBtn.disabled = true;
+      answerDecision(row.id).finally(() => render());
+    });
+    return el("div", { class: "m-abar" }, [
+      el("div", { class: "m-abar-row" }, [continueBtn, saveBtn]),
+      el("div", { class: "m-abar-hint", text: "a decision is not resumable in place — continuing starts a new run of this Task with your answer in context" })
+    ]);
+  }
+  if (row.running) {
+    const btn = el("button", { class: "m-abar-btn m-abar-single", style: { flex: "1" }, text: "ADD A CONSTRAINT" });
+    btn.addEventListener("click", () => openCorrection(row.id));
+    return el("div", { class: "m-abar" }, [el("div", { class: "m-abar-row" }, [btn])]);
+  }
+  if (row.ready) {
+    const acceptBtn = el("button", { class: "m-abar-btn m-abar-primary", text: "ACCEPT" });
+    acceptBtn.addEventListener("click", () => {
+      acceptBtn.disabled = true;
+      accept(row.id);
+    });
+    const correctBtn = el("button", { class: "m-abar-btn m-abar-secondary", text: "CORRECT" });
+    correctBtn.addEventListener("click", () => openCorrection(row.id));
+    return el("div", { class: "m-abar" }, [el("div", { class: "m-abar-row" }, [acceptBtn, correctBtn])]);
+  }
+  if (row.failed) {
+    const runBtn = el("button", { class: "m-abar-btn m-abar-primary", text: "RUN AGAIN" });
+    runBtn.addEventListener("click", () => {
+      runBtn.disabled = true;
+      sendBack(row.id).finally(() => render());
+    });
+    const correctBtn = el("button", { class: "m-abar-btn m-abar-secondary", text: "CORRECT" });
+    correctBtn.addEventListener("click", () => openCorrection(row.id));
+    return el("div", { class: "m-abar" }, [el("div", { class: "m-abar-row" }, [runBtn, correctBtn])]);
+  }
+  return null;
+}
+
+// CORRECTION / ADD A CONSTRAINT: one field, one button. The sheet's own
+// sentence is the whole mental model — the note sticks to the Task, and (for
+// READY/FAILED) a new run continues it; for a live WORKING task it applies
+// without stopping the run.
+function renderMobileCorrectionSheet(row) {
+  if (mobile.correctionId !== row.id) return null;
+  const rerunable = row.ready || row.failed;
+  const saved = noteInputs.get(row.id) ?? "";
+  const textarea = el("textarea", {
+    class: "m-sheet-input",
+    rows: 3,
+    placeholder: rerunable ? "the approach is right, but…" : "a constraint for the rest of this run…",
+    "data-focus-key": "m-correction-" + row.id
+  });
+  textarea.value = saved;
+  const submitBtn = el("button", {
+    class: "m-abar-btn m-abar-primary",
+    text: rerunable ? "SEND BACK" : "SAVE",
+    disabled: !saved.trim() ? true : undefined
+  });
+  textarea.addEventListener("input", () => {
+    noteInputs.set(row.id, textarea.value);
+    submitBtn.disabled = textarea.value.trim().length === 0;
+  });
+  submitBtn.addEventListener("click", () => {
+    submitBtn.disabled = true;
+    submitCorrection(row.id, { rerun: rerunable }).finally(() => render());
+  });
+  const acts = [submitBtn];
+  if (rerunable) {
+    const saveOnlyBtn = el("button", { class: "m-abar-btn m-abar-secondary quiet", text: "SAVE ONLY" });
+    saveOnlyBtn.addEventListener("click", () => {
+      saveOnlyBtn.disabled = true;
+      submitCorrection(row.id, { rerun: false }).finally(() => render());
+    });
+    acts.push(saveOnlyBtn);
+  }
+
+  return el("div", {}, [
+    el("div", { class: "m-sheet-overlay", onClick: closeCorrection }),
+    el("div", { class: "m-sheet" }, [
+      el("div", { class: "m-sheet-head" }, [
+        el("span", { class: "m-sheet-kind", text: rerunable ? "CORRECTION" : "CONSTRAINT" }),
+        el("span", { class: "m-sheet-cancel", onClick: closeCorrection, text: "CANCEL" })
+      ]),
+      textarea,
+      el("div", {
+        class: "m-sheet-note",
+        text: rerunable
+          ? "Kept on the Task, not on this run. The next run starts from the same task with the correction in context."
+          : "Recorded on the Task — applies from here without stopping this run."
+      }),
+      el("div", { class: "m-sheet-acts" }, acts)
+    ])
+  ]);
+}
+
+function renderMobileDetail(ledger, accent, frozen) {
+  const row = ledger.rows.find(r => r.id === mobile.detailId);
+  if (!row) return null;
+  const detail = state.details?.get(row.id) ?? null;
+
+  const entering = !mobile.closing && mobileDetailMounted !== row.id;
+  mobileDetailMounted = row.id;
+
+  const content = renderMobileDetailContent(row, detail, accent, frozen);
+
+  const stickyStrip = el("div", { class: "m-sticky" }, [
+    el("div", { class: "m-sticky-inner" }, [
+      el("span", { class: "m-sticky-state", text: row.stateLabel }),
+      el("span", { class: "m-sticky-title", text: row.title }),
+      el("span", { class: "m-sticky-t", text: row.elapsed })
+    ])
+  ]);
+
+  const dcontent = el("div", { class: "m-dcontent" }, [stickyStrip, ...content]);
+
+  return el(
+    "div",
+    {
+      class:
+        "m-detail" +
+        (row.halted ? " blue" : "") +
+        (entering ? " m-detail-enter" : "") +
+        (mobile.closing ? " m-detail-exit" : "")
+    },
+    [
+      renderMobileDetailToolbar(row, ledger, frozen),
+      dcontent,
+      renderMobileActionBar(row, frozen),
+      renderMobileCorrectionSheet(row)
+    ]
+  );
+}
+
+// --- mobile root -------------------------------------------------------------
+
+let mobileOverviewScroll = 0;
+let mobileDetailScroll = new Map(); // task id -> scrollTop, so re-opening a screen mid-render keeps its position
+
+function renderMobile() {
+  const shell = document.getElementById("shell");
+  shell.className = "mobile";
+  const frozen = state.remote && !state.macOnline;
+  const now = frozen && mobile.offlineSince ? mobile.offlineSince : Date.now();
+  const ledger = currentLedger(now);
+
+  const prevScroll = document.querySelector(".m-scroll");
+  if (prevScroll) mobileOverviewScroll = prevScroll.scrollTop;
+  const prevDcontent = document.querySelector(".m-dcontent");
+  if (prevDcontent && mobile.detailId !== null) mobileDetailScroll.set(mobile.detailId, prevDcontent.scrollTop);
+
+  // The Overview stays mounted underneath a pushed Task Detail — "the list
+  // holds still underneath" — Task Detail is simply layered over it via
+  // position:absolute (see .m-detail).
+  const overview = el("div", { class: "m-scroll" }, [renderMobileOverview(ledger, frozen)]);
+  const overviewToolbar = renderMobileOverviewToolbar(ledger, frozen);
+  const detail = mobile.detailId !== null ? renderMobileDetail(ledger, COLORS.accent, frozen) : null;
+
+  shell.replaceChildren(
+    el("div", { class: "m-app" }, [
+      renderMobileOfflineBar(),
+      renderMobileBar(frozen),
+      overviewToolbar,
+      overview,
+      detail,
+      state.flash ? el("div", { class: "flash", text: state.flash }) : null
+    ].filter(Boolean))
+  );
+
+  const scrollEl = document.querySelector(".m-scroll");
+  if (scrollEl) scrollEl.scrollTop = mobileOverviewScroll;
+  const dcontentEl = document.querySelector(".m-dcontent");
+  if (dcontentEl && mobile.detailId !== null) {
+    dcontentEl.scrollTop = mobileDetailScroll.get(mobile.detailId) ?? 0;
+    wireMobileStickyDetail(dcontentEl);
+  }
+}
+
+// The sticky identity strip is the only sticky element inside the scroller.
+// It is always present (so its 40px never causes a layout jump), and shown
+// only once the real title has scrolled out from under it.
+function wireMobileStickyDetail(scrollEl) {
+  const sticky = scrollEl.querySelector(".m-sticky");
+  const title = scrollEl.querySelector(".m-dtitle");
+  if (!sticky || !title) return;
+  function update() {
+    const hidden = title.getBoundingClientRect().bottom <= scrollEl.getBoundingClientRect().top + 4;
+    sticky.classList.toggle("shown", hidden);
+  }
+  scrollEl.addEventListener("scroll", update, { passive: true });
+  update();
+}
+
+// Back is an edge swipe (from the left 24px) or the ‹ ALL WORK line. This is
+// a lightweight gesture detector, not a live-follow-the-finger drag: it
+// fires the same closeMobileDetail() the nav line calls once the swipe
+// clears a distance-and-directness threshold.
+let mobileEdgeSwipe = null;
+window.addEventListener("pointerdown", event => {
+  if (!isMobileWidth() || mobile.screen !== "detail" || event.pointerType === "mouse") return;
+  if (event.clientX > 24) return;
+  mobileEdgeSwipe = { x: event.clientX, y: event.clientY };
+});
+window.addEventListener("pointerup", event => {
+  if (!mobileEdgeSwipe) return;
+  const dx = event.clientX - mobileEdgeSwipe.x;
+  const dy = Math.abs(event.clientY - mobileEdgeSwipe.y);
+  mobileEdgeSwipe = null;
+  if (dx > 60 && dy < 60) closeMobileDetail();
+});
 
 // --- boot ------------------------------------------------------------------
 
