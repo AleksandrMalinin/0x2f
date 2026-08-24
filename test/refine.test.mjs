@@ -341,6 +341,32 @@ test("when every available path fails, the preferred path's error is reported", 
   }
 });
 
+test("a failure reported on stdout is surfaced with the provider label", async () => {
+  const base = await fs.mkdtemp(path.join(os.tmpdir(), "work-refine-svc-"));
+  const { bin, dir } = await fakeModelBin({
+    stdout: "Failed to authenticate. API Error: 401 OAuth access token has expired.",
+    code: 1
+  });
+  try {
+    const refiner = createRefiner({ providers: createProviderRegistry({ base }) });
+    await withEnv("CLAUDE_BIN", bin, () =>
+      withEnv("DSH_BIN", "/nonexistent/dsh", () =>
+        assert.rejects(
+          () => refiner.refineTaskPrompt("rough"),
+          error => {
+            assert.match(error.message, /claude-code/);
+            assert.match(error.message, /401 OAuth access token has expired/);
+            return true;
+          }
+        )
+      )
+    );
+  } finally {
+    await fs.rm(base, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
 // --- the API ----------------------------------------------------------------
 
 test("POST /api/refine returns the refined text; repeated REFINE creates no tasks and starts no execution", async () => {

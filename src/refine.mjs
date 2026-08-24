@@ -132,13 +132,13 @@ export function pickRefinementPaths(providers) {
 // Spawn one model CLI, capture stdout, and resolve with the raw text. The
 // timeout is the failure boundary REFINE's button state depends on: without
 // it a hung model would leave the composer stuck in REFINING forever.
-function spawnModel(bin, args, { cwd, timeoutMs }) {
+function spawnModel(bin, args, { cwd, timeoutMs, label }) {
   return new Promise((resolve, reject) => {
     let child;
     try {
       child = spawn(bin, args, { cwd, stdio: ["ignore", "pipe", "pipe"] });
     } catch (error) {
-      reject(new WorkError(`Could not start the refinement model: ${error.message}`, 502));
+      reject(new WorkError(`Could not start the refinement model (${label}): ${error.message}`, 502));
       return;
     }
 
@@ -158,7 +158,7 @@ function spawnModel(bin, args, { cwd, timeoutMs }) {
       } catch {
         /* already gone */
       }
-      settle(reject, new WorkError("Refinement timed out — try again.", 504));
+      settle(reject, new WorkError(`Refinement timed out (${label}) — try again.`, 504));
     }, timeoutMs);
 
     child.stdout.on("data", chunk => {
@@ -168,16 +168,22 @@ function spawnModel(bin, args, { cwd, timeoutMs }) {
       stderr += chunk.toString();
     });
     child.on("error", error => {
-      settle(reject, new WorkError(`Could not start the refinement model: ${error.message}`, 502));
+      settle(reject, new WorkError(`Could not start the refinement model (${label}): ${error.message}`, 502));
     });
     child.on("close", code => {
       if (code === 0) {
         settle(resolve, stdout);
       } else {
+        // Some CLIs report failures on stdout (claude's auth errors), some on
+        // stderr (dsh). Surface whichever carries the message, capped — a
+        // bare "exited with code 1" would hide the actual cause.
+        const detail = stderr.trim() || stdout.trim().slice(0, 200);
         settle(
           reject,
           new WorkError(
-            stderr.trim() || `The refinement model exited with code ${code}.`,
+            detail
+              ? `The refinement model (${label}) failed: ${detail}`
+              : `The refinement model (${label}) exited with code ${code}.`,
             502
           )
         );
@@ -236,7 +242,8 @@ export function createRefiner({ providers, timeoutMs = 120000 } = {}) {
         try {
           const stdout = await spawnModel(refinement.bin(), refinement.args(instruction), {
             cwd: tmp,
-            timeoutMs
+            timeoutMs,
+            label: refinement.id
           });
           const refined = cleanRefinedText(stdout);
           if (!refined) {
