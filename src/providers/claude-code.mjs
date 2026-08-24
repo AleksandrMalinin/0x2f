@@ -33,7 +33,8 @@ import { spawn } from "node:child_process";
 import { decisionSection } from "../core/lifecycle.mjs";
 
 // ---------------------------------------------------------------------------
-// Claude Code provider (v0.2 — the only functional provider)
+// Claude Code provider (native adapter — the boundary where Claude-specific
+// behavior stops)
 // ---------------------------------------------------------------------------
 //
 // Verified against Claude Code 2.1.241 (Aug 2026):

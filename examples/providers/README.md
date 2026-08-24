@@ -48,11 +48,11 @@ Notes:
 - Pre-authenticate before launching (`agent login`, or `CURSOR_API_KEY` /
   `CURSOR_AUTH_TOKEN` in the environment). Cursor advertises `cursor_login`
   as its ACP auth method; 0x2F does not perform interactive login.
-- By default 0x2F declines ACP permission requests headlessly. Cursor agents
-  that need tool approval will see their requests declined — the run result
-  reflects that. Set `"permissions": "approve"` in the manifest if you want
-  the headless runtime to approve tool calls (equivalent to DSH headless
-  semantics).
+- By default 0x2F pauses on ACP permission requests and asks you
+  (`"permissions": "interactive"`). For headless use, set `"permissions":
+  "deny"` (decline tool requests automatically) or `"approve"` (approve
+  them, equivalent to DSH headless semantics). A Cursor agent that needs
+  tool approval will otherwise see its requests surface as NEEDS YOU.
 
 ## `opencode.json` — OpenCode (ACP)
 

@@ -148,8 +148,8 @@ scenarios you need an HTTPS deployment (see `relay/README.md`).
 1. The browser shows an empty task list.
 2. **Terminal B:** `2f new "remote check"` → the task appears on the "phone"
    within a second as **WORKING**, then **READY** or **FAILED**.
-3. Open the task — you see the INSPECT/ACT/VERIFY track, recent events, and
-   the result.
+3. Open the task — you see the execution trace, the ACTIVITY / FILES /
+   COMMANDS sections, and the result.
 4. On a READY task: **NOTE** (add a constraint) → **SEND BACK** (re-runs with
    the note in the next run's context via Task Continuity) → wait for READY
    again → **ACCEPT**.
@@ -189,7 +189,7 @@ itself. No re-pairing is needed — the phone session is bound to the
 
 ```bash
 cd /path/to/0x2f
-npm test        # 308 tests, including 22 relay/agent integration tests
+npm test        # the full suite (323 tests), including 22 relay/agent integration tests
 npm run check   # syntax-check every source and test file
 ```
 
