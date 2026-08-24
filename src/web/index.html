@@ -30,6 +30,10 @@
   @keyframes wk-halt { 0%, 100% { opacity: 1 } 45% { opacity: .3 } }
   @keyframes wk-in { from { opacity: 0; transform: translateY(-3px) } to { opacity: 1; transform: none } }
   @keyframes wk-live { 0%, 100% { opacity: 1 } 50% { opacity: .45 } }
+  /* the composer caret while REFINE/BRIEF is in flight; the refined text
+     revealing itself once it lands */
+  @keyframes wk-scan { 0% { transform: translateY(-9px); opacity: .35 } 50% { opacity: 1 } 100% { transform: translateY(9px); opacity: .35 } }
+  @keyframes wk-reveal { from { opacity: 0; transform: translateY(-2px) } to { opacity: 1; transform: none } }
 
   #shell { height: 100vh; display: flex; flex-direction: column; background: #e4e8ec; }
 
@@ -293,21 +297,38 @@
   }
   .composer select:hover { border-color: rgba(255,255,255,.34); }
   .composer select option { background: #2f2f2f; color: #dde4e9; }
-  /* actions row: the hint on the left, REFINE secondary to START on the right */
-  .composer-acts { display: flex; align-items: center; gap: 10px; }
-  .composer-hint { font-size: 10px; letter-spacing: .16em; flex: none; white-space: nowrap; color: #9aa6b0; margin-right: auto; }
+  /* actions row: the hint (+ line-count meta once a brief is multiline) fills
+     the left, REVERT is offered only while a brief stands over its note,
+     BRIEF stays secondary to START on the right */
+  .composer-acts { display: flex; align-items: center; gap: 10px; min-height: 32px; }
+  .composer-hint-group { flex: 1 1 auto; min-width: 0; display: flex; align-items: center; gap: 14px; overflow: hidden; }
+  .composer-hint { font-size: 10px; letter-spacing: .16em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; color: #9aa6b0; }
   .composer-hint.armed { color: #2f5fa8; }
   .composer-hint.refining { color: #c3ccd3; animation: wk-live 1.5s ease-in-out infinite; }
+  .composer-hint.error { color: #b8532a; }
+  .composer-meta-divider { width: 1px; height: 11px; background: rgba(255,255,255,.18); flex: none; display: block; }
+  .composer-meta { font-size: 10px; letter-spacing: .16em; color: #79838c; flex: 0 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .composer-btn {
     padding: 9px 20px; font-size: 10.5px; letter-spacing: .16em; cursor: pointer;
     font-weight: 500; border: 1px solid transparent; background: none;
     font-family: inherit; border-radius: 0; white-space: nowrap;
+    display: flex; align-items: center; gap: 10px;
   }
   .composer-btn:disabled { opacity: .45; cursor: default; }
   .composer-start { background: #2f5fa8; color: #f6f8fa; }
   .composer-start:hover:not(:disabled) { background: #3b6dbd; }
   .composer-refine { border-color: rgba(255,255,255,.3); color: #c3ccd3; }
   .composer-refine:hover:not(:disabled) { border-color: rgba(255,255,255,.55); color: #f6f8fa; }
+  .composer-key { font-size: 9.5px; letter-spacing: .1em; opacity: .55; }
+  /* REVERT TO NOTE: undoes one BRIEF, restoring the note that was refined —
+     available only while that revision stands untouched. */
+  .composer-revert {
+    padding: 9px 16px; font-size: 10.5px; letter-spacing: .16em; font-weight: 500;
+    font-family: inherit; border: none; background: none; color: #9aa6b0; cursor: pointer;
+    display: flex; align-items: center; gap: 9px; white-space: nowrap; flex: none;
+  }
+  .composer-revert:hover { color: #f6f8fa; }
+  .composer-divider { width: 1px; height: 20px; background: rgba(255,255,255,.14); flex: none; display: block; margin: 0 2px; }
   .legend { border-top: 1px solid rgba(255,255,255,.12); }
   .legend-inner { max-width: 1280px; margin: 0 auto; padding: 0 32px; display: flex; align-items: center; gap: 22px; height: 30px; font-size: 10px; letter-spacing: .13em; color: #9aa6b0; overflow: hidden; white-space: nowrap; }
   .legend-adapter { margin-left: auto; color: #7d8892; }
@@ -403,7 +424,8 @@
     .composer-inner { padding: 12px 14px; }
     .composer-row { gap: 10px; }
     .composer textarea { font-size: 16px; min-height: 24px; }
-    .composer-refine { display: none; }
+    .composer-refine, .composer-revert, .composer-key, .composer-divider,
+    .composer-meta, .composer-meta-divider { display: none !important; }
     .composer select { max-width: 150px; font-size: 10px; }
     .legend { display: none; }
     .run-row { gap: 12px; padding: 12px 4px; }

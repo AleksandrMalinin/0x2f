@@ -1287,20 +1287,33 @@ let providerSelect = null;
 let composerHint = null;
 let refineButton = null;
 let startButton = null;
+let syncComposerFn = null; // width-dependent visuals (font size) refresh on resize
+let cancelRefineFn = null; // lets global ESC cancel BRIEF even when focus left the textarea
 
-// Refinement in flight: buttons are disabled and the hint reads REFINING…
-// while the model call is running, so the user cannot double-fire REFINE or
-// submit a task mid-refinement. On failure the composer is left untouched —
-// the user retries REFINE or presses START with their original text.
+// Refinement in flight: buttons are disabled and the hint reads REVISING…
+// while the model call is running, so the user cannot double-fire BRIEF or
+// submit a task mid-refinement. ESC (or CANCEL) aborts the in-flight call.
+// On failure the composer is left untouched — the user retries BRIEF or
+// presses START with their original text.
 let refining = false;
+// The pre-BRIEF note, kept only while that revision stands untouched — this
+// is what REVERT TO NOTE (or ⌘Z) restores. Cleared on edit-past-revision,
+// revert, or a fresh START.
+let refineOriginal = null;
+let dirtySinceRefine = false;
+let refineError = null;
+let refineElapsedSec = 0;
+let refineTimer = null;
+let refineAbort = null;
 
 // The composer is built ONCE and kept across renders: re-creating it would
 // reset the caret and drop a half-typed task every time an event lands.
 function buildComposer() {
-  // A textarea, not a single-line input: refinement produces a longer,
-  // structured brief and the user must be able to review/edit it in place
-  // before START. Enter still submits (today's behavior); Shift+Enter is a
-  // newline.
+  // A textarea, not a single-line input: BRIEF produces a longer, structured
+  // brief and the user must be able to review/edit it in place before START.
+  // A single-line note still submits on Enter; a multi-line brief only
+  // submits on the mod key (see the keydown handler below) so Enter can add
+  // a line to it.
   const input = el("textarea", {
     placeholder: "what needs doing?",
     autocomplete: "off",
@@ -1308,6 +1321,9 @@ function buildComposer() {
     rows: 1
   });
   composerHint = el("span", { class: "composer-hint", text: "BACKGROUND JOB" });
+  const composerMeta = el("span", { class: "composer-meta" });
+  const composerMetaDivider = el("span", { class: "composer-meta-divider" });
+  const composerCaret = el("span", { class: "composer-caret" });
 
   // Provider selection is deliberately secondary: tasks are first. The
   // select defaults to the runtime default provider and is populated from
@@ -1319,57 +1335,119 @@ function buildComposer() {
   });
   providerSelect = select;
 
-  // The hint carries the composer's state: BACKGROUND JOB (empty), ENTER TO
-  // RUN (armed), or REFINING… while a refinement model call is in flight.
-  function updateHint() {
-    if (!composerHint) return;
-    if (refining) {
-      composerHint.textContent = "REFINING\u2026";
-      composerHint.className = "composer-hint refining";
-      return;
-    }
-    const armed = input.value.trim().length > 0;
-    composerHint.textContent = armed ? "ENTER TO RUN" : "BACKGROUND JOB";
-    composerHint.className = "composer-hint" + (armed ? " armed" : "");
+  const refineKey = el("span", { class: "composer-key", text: "⌥↵" });
+  const refineLabel = el("span", { text: "BRIEF" });
+  const startKeyEl = el("span", { class: "composer-key", text: "↵" });
+
+  const revertButton = el(
+    "button",
+    { class: "composer-revert", title: "restore the note this brief replaced (⌘Z)" },
+    ["REVERT TO NOTE", el("span", { class: "composer-key", text: "⌘Z" })]
+  );
+
+  function two(n) {
+    return String(n).padStart(2, "0");
+  }
+
+  function mac() {
+    return typeof navigator !== "undefined" && /Mac/.test(navigator.platform || "");
   }
 
   function autosize() {
     input.style.height = "auto";
     input.style.height =
-      Math.min(input.scrollHeight, Math.round(window.innerHeight * 0.4)) + "px";
+      Math.min(input.scrollHeight, Math.min(320, Math.round(window.innerHeight * 0.4))) + "px";
   }
 
-  function setBusy(busy) {
-    refining = busy;
-    if (refineButton) refineButton.disabled = busy;
-    if (startButton) startButton.disabled = busy;
-    updateHint();
+  // Every visual in the composer is a pure function of {text, refining,
+  // refineOriginal, dirtySinceRefine, refineError, viewport width} -- this
+  // recomputes all of it. Called after every state change instead of each
+  // caller patching the DOM piecemeal, so no state combination is missed.
+  function syncComposer() {
+    const text = input.value;
+    const multiline = text.includes("\n");
+    const armed = text.trim().length > 0;
+    const revised = refineOriginal !== null;
+    const narrow = window.innerWidth <= 640;
+    const startKey = multiline ? (mac() ? "⌘↵" : "^↵") : "↵";
+    startKeyEl.textContent = startKey;
+
+    let hintText = "BACKGROUND JOB";
+    let hintClass = "composer-hint";
+    if (refining) {
+      hintText = "REVISING… 0:" + two(refineElapsedSec) + "   ESC CANCEL";
+      hintClass = "composer-hint refining";
+    } else if (refineError) {
+      hintText = refineError;
+      hintClass = "composer-hint error";
+    } else if (revised && !dirtySinceRefine) {
+      hintText = "REVISED · REVIEW AND START";
+    } else if (armed) {
+      hintText = startKey + " START";
+      hintClass = "composer-hint armed";
+    }
+    composerHint.textContent = hintText;
+    composerHint.className = hintClass;
+
+    const showMeta = !refining && multiline && !narrow;
+    composerMetaDivider.style.display = showMeta ? "" : "none";
+    composerMeta.style.display = showMeta ? "" : "none";
+    if (showMeta) {
+      const lines = text ? text.split("\n").length : 0;
+      composerMeta.textContent =
+        lines + (lines === 1 ? " LINE" : " LINES") +
+        (revised ? " · FROM " + refineOriginal.split("\n").length + " LINE NOTE" : "");
+    }
+
+    revertButton.style.display = revised && !refining && !narrow ? "" : "none";
+    refineLabel.textContent = refineError ? "RETRY" : "BRIEF";
+    if (refineButton) refineButton.disabled = refining;
+    if (startButton) startButton.disabled = refining;
+
+    input.style.fontSize = narrow ? "16px" : multiline ? "15px" : "18px";
+    input.style.color = refining ? "#7d8892" : "#f2f5f7";
+
+    const caretBg = refining ? "#2f5fa8" : armed ? "#2f5fa8" : "#4b545c";
+    composerCaret.style.background = caretBg;
+    composerCaret.style.boxShadow = armed || refining ? "0 0 8px #2f5fa870" : "none";
+    composerCaret.style.animation = refining ? "wk-scan 1.1s ease-in-out infinite" : "none";
+  }
+  syncComposerFn = syncComposer;
+
+  function markEdited() {
+    dirtySinceRefine = refineOriginal !== null;
+    refineError = null;
+    autosize();
+    syncComposer();
   }
 
-  // START / Enter: submit the composer's CURRENT text exactly as today — the
-  // refined brief if REFINE ran, the rough note otherwise. This is the only
-  // path that creates a task; REFINE never does.
+  // START / Enter: submit the composer's CURRENT text exactly as today -- the
+  // brief if BRIEF ran, the rough note otherwise. This is the only path that
+  // creates a task; BRIEF never does.
   async function submit() {
     if (refining) return;
     if (remoteBlocked()) return;
     const title = input.value.trim();
     if (!title) return;
     const provider = providerSelect?.value || undefined;
-    // Convenience guard only — the action boundary (and therefore the API)
+    // Convenience guard only -- the action boundary (and therefore the API)
     // enforces availability itself, so a stale select can never submit an
     // unavailable provider. Refuse before clearing the field.
     if (provider && provider !== "auto") {
       const picked = state.providers.find(p => p.id === provider);
       if (picked && !picked.available) {
         flash(
-          `Execution provider "${provider}" is unavailable — install or configure it, then retry.`
+          `Execution provider "${provider}" is unavailable -- install or configure it, then retry.`
         );
         return;
       }
     }
     input.value = "";
+    refineOriginal = null;
+    dirtySinceRefine = false;
+    refineError = null;
     autosize();
-    input.dispatchEvent(new Event("input"));
+    syncComposer();
     try {
       const task = await api("/api/tasks", {
         method: "POST",
@@ -1385,84 +1463,160 @@ function buildComposer() {
     await reloadTasks();
   }
 
-  // REFINE: send the composer's current text to the refinement service and
+  // BRIEF: send the composer's current text to the refinement service and
   // replace it with the refined brief IN THE SAME composer. The result stays
-  // fully editable and START is never triggered — refinement only rewrites
-  // the text.
+  // fully editable and START is never triggered -- BRIEF only rewrites text.
+  // The pre-brief note is kept so REVERT TO NOTE (or the mod key + Z) can
+  // restore it, and the call is cancelable (ESC) while it is in flight.
   async function refine() {
     if (refining) return;
     const text = input.value.trim();
     if (!text) {
-      flash("Nothing to refine — write your task first.");
+      flash("Nothing to brief -- write your task first.");
       return;
     }
-    setBusy(true);
+    refineError = null;
+    refineElapsedSec = 0;
+    refineAbort = new AbortController();
+    refining = true;
+    syncComposer();
+    refineTimer = setInterval(() => {
+      refineElapsedSec += 1;
+      syncComposer();
+    }, 1000);
     try {
       const res = await api("/api/refine", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ text })
+        body: JSON.stringify({ text }),
+        signal: refineAbort.signal
       });
       if (!res.refined) {
-        throw new Error("The model returned an empty refinement — try again.");
+        throw new Error("The model returned an empty brief -- try again.");
       }
+      refineOriginal = text;
+      dirtySinceRefine = false;
       input.value = res.refined;
       autosize();
-      input.dispatchEvent(new Event("input"));
+      input.style.animation = "none";
+      void input.offsetHeight;
+      input.style.animation = "wk-reveal .3s ease both";
       input.focus();
+      input.setSelectionRange(0, 0);
     } catch (error) {
-      // Failure leaves the original text untouched — retry REFINE or press
-      // START with what is already in the composer.
-      flash(error.message);
+      // A deliberate cancel (ESC) leaves no error -- retry BRIEF or press
+      // START with what is already in the composer. A real failure leaves
+      // the original text untouched and surfaces inline.
+      if (error.name !== "AbortError") refineError = error.message;
     } finally {
-      setBusy(false);
+      clearInterval(refineTimer);
+      refineTimer = null;
+      refining = false;
+      syncComposer();
     }
   }
 
-  input.addEventListener("input", () => {
+  function cancelRefine() {
+    if (!refining) return;
+    refineAbort?.abort();
+  }
+  cancelRefineFn = cancelRefine;
+
+  // Restore the note a brief replaced. Only reachable while that revision
+  // stands: any edit past it clears the option (see markEdited).
+  function revert() {
+    if (refineOriginal === null) return;
+    input.value = refineOriginal;
+    refineOriginal = null;
+    dirtySinceRefine = false;
+    refineError = null;
     autosize();
-    updateHint();
-  });
+    syncComposer();
+    input.focus();
+  }
+
+  input.addEventListener("input", markEdited);
 
   input.addEventListener("keydown", event => {
     if (event.key === "Escape") {
-      input.blur();
+      if (refining) {
+        event.preventDefault();
+        cancelRefine();
+      } else {
+        input.blur();
+      }
       return;
     }
-    // Enter submits (today's behavior); Shift+Enter keeps its default newline.
-    if (event.key === "Enter" && !event.shiftKey) {
+    if (event.key === "Enter" && event.altKey) {
+      event.preventDefault();
+      refine();
+      return;
+    }
+    if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
       event.preventDefault();
       submit();
+      return;
+    }
+    // A single-line note still submits on Enter; once BRIEF has grown it
+    // into a multi-line brief, Enter is a plain newline -- only the mod key
+    // (or the button) submits, or the brief could never be edited past line
+    // one.
+    if (event.key === "Enter" && !event.shiftKey && !input.value.includes("\n")) {
+      event.preventDefault();
+      submit();
+      return;
+    }
+    if (
+      event.key.toLowerCase() === "z" &&
+      (event.metaKey || event.ctrlKey) &&
+      refineOriginal !== null &&
+      !dirtySinceRefine
+    ) {
+      event.preventDefault();
+      revert();
     }
   });
 
-  refineButton = el("button", {
-    class: "composer-btn composer-refine",
-    text: "REFINE",
-    title: "turn this rough note into a stronger execution brief (uses a model)"
-  });
+  refineButton = el(
+    "button",
+    {
+      class: "composer-btn composer-refine",
+      title: "turn this rough note into a clear execution brief (uses a model)"
+    },
+    [refineLabel, refineKey]
+  );
   refineButton.addEventListener("click", refine);
 
-  startButton = el("button", {
-    class: "composer-btn composer-start",
-    text: "START",
-    title: "start this task"
-  });
+  revertButton.addEventListener("click", revert);
+
+  startButton = el(
+    "button",
+    { class: "composer-btn composer-start", title: "start this task" },
+    ["START", startKeyEl]
+  );
   startButton.addEventListener("click", submit);
 
   composerInput = input;
   adapterNode = el("span", { class: "legend-adapter" });
+  syncComposer();
 
   return el("div", { class: "composer" }, [
     el("div", { class: "composer-inner" }, [
       el("div", { class: "composer-row" }, [
         el("span", { class: "composer-k", text: "SUBMIT" }),
-        el("span", { class: "composer-caret" }),
+        composerCaret,
         select,
         input
       ]),
-      el("div", { class: "composer-acts" }, [composerHint, refineButton, startButton])
+      el("div", { class: "composer-acts" }, [
+        el("div", { class: "composer-hint-group" }, [composerHint, composerMetaDivider, composerMeta]),
+        revertButton,
+        refineButton,
+        el("span", { class: "composer-divider" }),
+        startButton
+      ])
     ]),
+
     el("div", { class: "legend" }, [
       el("div", { class: "legend-inner" }, [
         el("span", { text: "J K SELECT" }),
@@ -1620,6 +1774,9 @@ function render() {
 
   if (!composerNode) composerNode = buildComposer();
   updateAdapter();
+  // Re-derive composer visuals that depend on viewport width (font size, the
+  // narrow-screen chrome it hides) — the composer itself is never rebuilt.
+  syncComposerFn?.();
 
   // Remote + Mac offline: a top banner, and the offline class dims every
   // control that requires the Mac (the guards in the action wrappers are the
@@ -1675,6 +1832,14 @@ function visibleRows() {
 }
 
 function onKeyDown(event) {
+  // ESC cancels an in-flight BRIEF regardless of where focus landed (a click
+  // on the BRIEF button itself moves focus off the textarea, whose own
+  // keydown handler would otherwise be the only thing listening for this).
+  if (event.key === "Escape" && refining) {
+    event.preventDefault();
+    cancelRefineFn?.();
+    return;
+  }
   const target = event.target;
   const inField =
     target &&
