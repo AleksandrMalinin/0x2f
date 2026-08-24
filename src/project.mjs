@@ -178,3 +178,119 @@ export async function appendProjectKnowledge(kind, text, base = process.cwd()) {
     existing.trimEnd() + `\n\n## ${stamp}\n\n${text.trim()}\n`
   );
 }
+
+// --- per-run prompt: Task state -> run input --------------------------------
+//
+// buildPrompt() assembles the ORIGINAL task request (project context + the
+// title) once, when the task is created. That file is the persistent intent
+// and is never overwritten. A NEW run, however, must receive the accumulated
+// Task state, not just the original prompt:
+//
+//   original task request   (prompt.md — unchanged)
+//   + user input            (task.context.notes — answers, constraints)
+//   + previous run context  (prior results, verification, changed files)
+//
+// buildRunPrompt() projects that state into one self-contained prompt,
+// persisted per run as runs/<n>/prompt.md so the exact input a disposable
+// provider session received is auditable. It deliberately reuses persisted,
+// structured Task data (run records, per-run results, normalized events) —
+// never raw provider transcripts.
+
+// The text of one `## Heading` section of a result ("" when absent).
+// Results follow the shared prompt's section contract:
+// ## Result / ## Evidence / ## Changes / ## Verification / ## Needs human decision.
+export function sectionOf(text, heading) {
+  const marker = `## ${heading}`;
+  const index = text.indexOf(marker);
+  if (index < 0) return "";
+  const tail = text.slice(index + marker.length);
+  const next = tail.search(/\n##\s+/);
+  return (next >= 0 ? tail.slice(0, next) : tail).trim();
+}
+
+function userInputSection(notes) {
+  const lines = notes.map(
+    n => `- ${n.at}: ${n.text.replace(/\s+/g, " ").trim()}`
+  );
+  return (
+    `### User input on this task\n\n` +
+    `The statements below are the user's constraints and corrections. Treat ` +
+    `them as binding on this run, alongside the original task.\n\n` +
+    lines.join("\n")
+  );
+}
+
+// One prior run's context block: meta, result, verification, changed files.
+// Uses only persisted data (run records, runs/<n>/result.md, normalized
+// file.changed events) — never a transcript.
+function priorRunBlock(record, result, changedFiles) {
+  const out = [
+    `#### Run ${record.run} — ${record.provider} · ${record.outcome ?? "?"}`
+  ];
+  const bits = [];
+  if (record.startedAt) bits.push(`started ${record.startedAt}`);
+  if (record.completedAt) bits.push(`completed ${record.completedAt}`);
+  if (bits.length) out.push(bits.join(" · "));
+  if (record.error) out.push(`Error: ${record.error}`);
+
+  out.push("");
+  out.push("Result:");
+  out.push(result.trim() || "—");
+  out.push("");
+  out.push("Verification:");
+  out.push(sectionOf(result, "Verification") || "—");
+  if (changedFiles.length) {
+    out.push("");
+    out.push("Files changed:");
+    for (const f of changedFiles) out.push(`- ${f}`);
+  }
+  return out.join("\n");
+}
+
+async function priorRunsSection(task, store, excludeRun) {
+  const runs = Array.isArray(task.runs) ? task.runs : [];
+  const prior = runs.filter(r => r.run !== excludeRun);
+  if (!prior.length) return null;
+
+  const events = await store.readEvents(task.slug);
+  const blocks = [];
+  for (const record of prior) {
+    const result = await store.readRunResult(task, record);
+    const changedFiles = events
+      .filter(e => e.type === "file.changed" && e.run === record.run && e.path)
+      .map(e => e.path);
+    blocks.push(priorRunBlock(record, result, changedFiles));
+  }
+  return `### Previous runs\n\n${blocks.join("\n\n")}`;
+}
+
+// Build the input for a NEW run from current Task state. `originalPrompt` is
+// the task-level prompt.md (the original request); when absent (legacy tasks
+// created before prompt files) the task title stands in for it.
+export async function buildRunPrompt({ task, base = process.cwd(), originalPrompt, store }) {
+  // The persistent intent: task-level prompt.md (the original request). A
+  // legacy task without a prompt file falls back to its title.
+  let original = (originalPrompt ?? "").trim();
+  if (!original) {
+    original = (
+      await readText(path.join(base, ".work", "tasks", task.slug, "prompt.md"), "")
+    ).trim();
+  }
+  if (!original) original = (task.title ?? "").trim();
+
+  const sections = [];
+  const notes = Array.isArray(task.context?.notes) ? task.context.notes : [];
+  if (notes.length) sections.push(userInputSection(notes));
+  const prior = await priorRunsSection(task, store, task.runs?.at(-1)?.run);
+  if (prior) sections.push(prior);
+
+  if (!sections.length) return original; // first run — nothing accumulated yet
+  return (
+    original +
+    "\n\n---\n\n" +
+    `## Task state for this run\n\n` +
+    `You are continuing an existing task. The original task prompt is above; ` +
+    `the Task state that has accumulated since it was written follows.\n\n` +
+    sections.join("\n\n")
+  );
+}

@@ -30,6 +30,8 @@ Commands:
   2f status
   2f open <id> [--run <n>]
   2f rerun <id> [--provider <id>]   run the same task again as a new run
+  2f note <id> <text>    record a constraint/correction on the task; the next
+                          run's context includes it (no execution is started)
   2f allow <id>     grant the permission a task is blocked on
   2f reject <id>    decline the requested change
   2f answer <id> <answer>   answer a NEEDS YOU decision (not allow/reject)
@@ -312,8 +314,27 @@ async function main() {
 
     const task = await createRuntime(base).actions.answerWork(id, { answer });
     console.log(`#${String(task.id).padStart(3, "0")} ${task.title}`);
-    console.log("Answer recorded for the open decision.");
-    console.log("The task stays NEEDS YOU — close it, or rerun it when a continuation mechanism exists.");
+    console.log("Answer recorded — it is now part of this task's context.");
+    console.log("The task stays NEEDS YOU — rerun it to continue with the answer in context, or close it.");
+    return;
+  }
+
+  // `2f note <id> "<constraint>"` — record a user constraint/correction as
+  // Task context. It never starts or resumes an execution: the note becomes
+  // part of the task's next run's input (2f rerun rebuilds the prompt from
+  // Task state). Unlike answer, it is not gated on a needs_you/decision block
+  // — add it to a READY or FAILED task before rerunning.
+  if (command === "note") {
+    await requireProject(base);
+    const id = Number(args[0]);
+    const note = args.slice(1).join(" ").trim();
+    if (!Number.isFinite(id) || !note) {
+      throw new Error('Usage: 2f note <id> "<constraint or correction>"');
+    }
+
+    const task = await createRuntime(base).actions.noteWork(id, { note });
+    console.log(`#${String(task.id).padStart(3, "0")} ${task.title}`);
+    console.log("Note recorded on the task — it will be included in the next run's context.");
     return;
   }
 

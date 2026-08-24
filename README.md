@@ -91,6 +91,15 @@ same task can be run again — through a different harness, for comparison:
 2f open 1 --run 2                        # one run's factual detail
 ```
 
+A new run is a **continuation of the task, not a blank attempt**: its input
+(`runs/<n>/prompt.md`) is rebuilt from current Task state — the original task
+request plus user constraints/answers and prior runs' results, verification
+and changed files — and handed to a fresh provider session. The task is
+persistent; provider sessions are disposable. Add a constraint with
+`2f note <id> "<constraint>"` (or `2f answer` on a decision block); it becomes
+part of the next run's context, with no manual copying. The original
+`prompt.md` is never overwritten.
+
 ## AUTO routing
 
 By default `2f new "…"` uses the configured routing default. When it is

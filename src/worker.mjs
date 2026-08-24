@@ -34,6 +34,11 @@ const store = createStore(base);
 const dir = store.taskDir(slug);
 const metaPath = path.join(dir, "task.json");
 const promptPath = path.join(dir, "prompt.md");
+// THIS run's generated input, persisted by the actions when the run starts
+// (runs/<n>/prompt.md). A run that predates per-run prompts falls back to the
+// task-level original prompt.md. Resume never reads either: it continues the
+// existing provider session with the canned grant prompt.
+const runPromptPath = path.join(dir, "runs", String(runNumber), "prompt.md");
 const resultPath = path.join(dir, "result.md");
 
 // The provider registry for THIS workspace: native providers plus any
@@ -319,7 +324,9 @@ try {
       log(`outcome: skipped — task is ${task.status}, not working`);
       process.exit(0);
     }
-    const prompt = await fs.readFile(promptPath, "utf8");
+    const prompt = (await store.exists(runPromptPath))
+      ? await fs.readFile(runPromptPath, "utf8")
+      : await fs.readFile(promptPath, "utf8");
     log(`launching ${provider.displayName} (${provider.id})`);
     outcome = await provider.start({
       cwd: base,

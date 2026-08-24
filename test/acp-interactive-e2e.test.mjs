@@ -68,11 +68,25 @@ async function writeFakeAgent(dir) {
 }
 
 async function waitForStatus(runtime, id, expected, opts = {}) {
-  const { timeout = 10000, tolerate = [] } = opts;
+  // Generous under parallel load: this test spawns a real detached worker
+  // whose start-to-permission-pause path can stretch when other test files
+  // are spawning workers at the same time. A stuck run still fails — the
+  // assertions require the exact final status.
+  const { timeout = 30000, tolerate = [] } = opts;
   const ok = new Set(["working", ...tolerate]);
   const start = Date.now();
   while (true) {
-    const task = await runtime.store.findTask(id);
+    let task;
+    try {
+      task = await runtime.store.findTask(id);
+    } catch {
+      // The worker writes task.json non-atomically; a poll that lands mid-
+      // write can transiently read an unparseable file (findTask -> 404).
+      // Retry — never treat a mid-write read as a missing task.
+      if (Date.now() - start > timeout) throw new Error("timed out waiting for task " + id);
+      await new Promise(r => setTimeout(r, 60));
+      continue;
+    }
     if (task.status === expected) return task;
     if (!ok.has(task.status)) {
       throw new Error(`task went ${task.status} instead of ${expected}: ${task.error ?? ""}`);

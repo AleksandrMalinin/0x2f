@@ -155,6 +155,25 @@ export function createStore(base = process.cwd()) {
     );
   }
 
+  // One run's generated input, persisted at runs/<n>/prompt.md so the exact
+  // prompt a provider session received is auditable per run. Written by the
+  // actions when a run starts (createWork writes run 1, rerunWork builds the
+  // continuation prompt from current Task state). The task-level prompt.md —
+  // the ORIGINAL task request — is never overwritten.
+  async function writeRunPrompt(task, run, prompt) {
+    await writeText(
+      path.join(taskDir(task.slug), "runs", String(run), "prompt.md"),
+      prompt
+    );
+  }
+
+  // Read one run's generated input; null when the run predates per-run
+  // prompts (the worker then falls back to the original prompt.md).
+  async function readRunPrompt(task, run) {
+    const p = path.join(taskDir(task.slug), "runs", String(run), "prompt.md");
+    return (await exists(p)) ? readText(p) : null;
+  }
+
   async function readTaskLog(task) {
     return readText(path.join(taskDir(task.slug), "run.log"));
   }
@@ -224,6 +243,8 @@ export function createStore(base = process.cwd()) {
     updateTask,
     readTaskResult,
     readRunResult,
+    writeRunPrompt,
+    readRunPrompt,
     readTaskLog,
     readEventLog,
     readEvents,

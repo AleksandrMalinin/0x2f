@@ -14,9 +14,10 @@ import { createStore } from "./core/store.mjs";
 import { createActions } from "./core/actions.mjs";
 import { createBus } from "./core/events.mjs";
 import { createLocalNode } from "./nodes/local.mjs";
-import { buildPrompt } from "./project.mjs";
+import { buildPrompt, buildRunPrompt } from "./project.mjs";
 import { createProviderRegistry } from "./providers/index.mjs";
 import { createRouter } from "./core/router.mjs";
+import { createRefiner } from "./refine.mjs";
 
 // "local" is the only logical workspace id today. A future trusted-node
 // runtime maps other ids to checkouts on the execution machine.
@@ -48,9 +49,19 @@ export function createRuntime(base = process.cwd(), opts = {}) {
     events,
     providers,
     router,
+    base,
     workspaceId: WORKSPACE_ID,
-    buildPrompt: title => buildPrompt(title, base)
+    buildPrompt: title => buildPrompt(title, base),
+    // Per-run input: original task request + accumulated Task state. The
+    // actions pass the store through so run results and events are read from
+    // the same persistence the task lives in.
+    buildRunPrompt: opts => buildRunPrompt({ ...opts, base })
   });
+  // Task prompt refinement — a pure text transform, independent of the Task
+  // lifecycle by design: it never creates a task, starts an execution, or
+  // persists anything. The refiner picks its model path by availability, so
+  // swapping the refinement model later touches this one line, never actions.
+  const refine = createRefiner({ providers });
   return {
     base,
     store,
@@ -59,6 +70,7 @@ export function createRuntime(base = process.cwd(), opts = {}) {
     providers,
     router,
     actions,
+    refine,
     workspaceId: WORKSPACE_ID
   };
 }

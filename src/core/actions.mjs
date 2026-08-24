@@ -18,6 +18,7 @@
 //     buildPrompt   // (title) -> prompt string
 //   }
 
+import path from "node:path";
 import { closeTask } from "./lifecycle.mjs";
 import { WorkError } from "./errors.mjs";
 import { workEvent } from "./events.mjs";
@@ -174,6 +175,11 @@ export function createActions(ctx) {
       ]
     });
 
+    // Run 1's input is the original prompt (nothing has accumulated yet);
+    // persist it per run so every run's exact input is auditable and the
+    // worker reads the per-run file uniformly.
+    await store.writeRunPrompt(task, 1, prompt);
+
     const pid = await node.startExecution({ task });
     if (pid) await store.updateTask({ ...task, pid });
 
@@ -244,6 +250,23 @@ export function createActions(ctx) {
     delete current.error;
     await store.updateTask(current);
 
+    // Build THIS run's input from current Task state — the original task
+    // request plus everything accumulated since: user input (answers,
+    // constraints) and prior run outcomes/verification. Persisted per run
+    // (runs/<n>/prompt.md) so the exact prompt the fresh provider session
+    // receives is auditable; the original prompt.md is never overwritten.
+    const originalPrompt = await store.readText(
+      path.join(store.taskDir(task.slug), "prompt.md"),
+      ""
+    );
+    const runPrompt = await ctx.buildRunPrompt({
+      task: current,
+      base: store.base,
+      originalPrompt,
+      store
+    });
+    await store.writeRunPrompt(current, runNumber, runPrompt);
+
     const pid = await node.startExecution({ task: current });
     if (pid) await store.updateTask({ ...current, pid });
 
@@ -312,16 +335,16 @@ export function createActions(ctx) {
 
   // answerWork(id, { answer }): the human's response to a needs_you/decision
   // block. A decision is not a permission — it is not allowed or rejected; it
-  // is answered. The answer is persisted with the task (the task dir's
-  // answer.json) and recorded as a normalized event, so it is part of the
-  // run's history.
+  // is answered. The answer is persisted TWICE: in the task dir's answer.json
+  // (the human-readable record, as before) and appended to the task's context
+  // notes (task.json), so it becomes part of the input of the task's NEXT run
+  // (a rerun rebuilds the prompt from Task state).
   //
   // Answering does NOT continue the run in place: whether a provider can
   // consume the answer (resume a session with it) is a provider capability,
-  // and today no provider supports free-text decision continuation. The task
-  // stays needs_you after answering — the human decides next (close the work,
-  // or rerun with the answer as context once a continuation mechanism
-  // exists). The UI states this limitation rather than faking a resume.
+  // and no provider supports free-text decision continuation. The task stays
+  // needs_you after answering — the human decides next (rerun the task to
+  // continue with the answer in context, or close the work).
   async function answerWork(id, { answer } = {}) {
     const task = await store.findTask(id);
     if (task.status !== "needs_you") {
@@ -338,12 +361,37 @@ export function createActions(ctx) {
       throw new WorkError("An answer is required.");
     }
     const clean = answer.trim();
+    const now = new Date().toISOString();
+    const notes = [...(task.context?.notes ?? []), { at: now, text: clean }];
+    const updated = { ...task, context: { ...(task.context ?? {}), notes } };
+    await store.updateTask(updated);
     await store.writeDecisionAnswer(task, {
       answer: clean,
-      at: new Date().toISOString()
+      at: now
     });
     await record(task, "task.answered", { answer: clean });
-    return { ...task };
+    return updated;
+  }
+
+  // noteWork(id, { note }): record a user constraint/correction on the task —
+  // Task context, not an execution. The task's NEXT run (2f rerun / send-back)
+  // is rebuilt from Task state and therefore includes the note; this action
+  // never starts or resumes an execution, keeping "user input updates Task
+  // context" separate from "rerun starts another execution". Unlike
+  // answerWork it is not gated on a needs_you/decision block — a constraint
+  // can be added to a READY or FAILED task before rerunning it.
+  async function noteWork(id, { note } = {}) {
+    const task = await store.findTask(id);
+    if (!note || !note.trim()) {
+      throw new WorkError("A note is required.");
+    }
+    const clean = note.trim();
+    const now = new Date().toISOString();
+    const notes = [...(task.context?.notes ?? []), { at: now, text: clean }];
+    const updated = { ...task, context: { ...(task.context ?? {}), notes } };
+    await store.updateTask(updated);
+    await record(task, "task.note", { note: clean });
+    return updated;
   }
 
   // closeWork(id): user closes the task (any status -> done).
@@ -363,6 +411,7 @@ export function createActions(ctx) {
     rerunWork,
     resumeWork,
     answerWork,
+    noteWork,
     closeWork,
     allowWork: id => resumeWork(id, "allow"),
     rejectWork: id => resumeWork(id, "reject")

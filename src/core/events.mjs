@@ -7,7 +7,7 @@
 //
 // Event log = append-only JSON lines at <workspace>/.work/tasks/<slug>/events.jsonl
 //   - actions append task-level events (task.created / task.updated /
-//     task.closed) when they mutate state;
+//     task.closed / task.answered / task.note) when they mutate state;
 //   - the execution worker appends run-level events (run.started, progress,
 //     tool.started, file.changed, needs_user, run.completed, run.failed);
 //   - any live client (SSE today, TUI tomorrow) tails the log through the
@@ -23,6 +23,7 @@ export const EVENT_TYPES = Object.freeze([
   "task.updated",
   "task.closed",
   "task.answered",
+  "task.note",
   "run.started",
   "progress",
   "tool.started",

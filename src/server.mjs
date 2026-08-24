@@ -14,7 +14,12 @@
 //   POST /api/tasks/:id/allow      -> allowWork(id)
 //   POST /api/tasks/:id/reject     -> rejectWork(id)
 //   POST /api/tasks/:id/answer     -> answerWork(id, { answer })
+//   POST /api/tasks/:id/note       -> noteWork(id, { note })   (task context
+//                                      only — no execution is started)
 //   POST /api/tasks/:id/close      -> closeWork(id)
+//   POST /api/refine               -> refineTaskPrompt({ text })  ({ refined }
+//                                      — a pure text transform: no task is
+//                                      created, no execution is started)
 //   GET  /api/providers            -> [{ id, displayName, integrationType,
 //                                      capabilities, available }]
 //                                      (default provider first — the registry
@@ -224,6 +229,19 @@ export async function startServer(base = process.cwd(), port = 4242, opts = {}) 
         return;
       }
 
+      // Refine a rough task note into a stronger execution brief — a PURE
+      // text transform, deliberately outside the Task lifecycle: no task is
+      // created, no execution is started, nothing is persisted. The client
+      // keeps the refined text in the composer; the task is still created by
+      // the user pressing START (POST /api/tasks). The refinement model path
+      // is the refiner's concern (runtime.refine), not the API's.
+      if (req.method === "POST" && url.pathname === "/api/refine") {
+        const body = JSON.parse(await readBody(req));
+        const refined = await runtime.refine.refineTaskPrompt(body.text);
+        json(res, { refined });
+        return;
+      }
+
       const taskMatch = url.pathname.match(/^\/api\/tasks\/(\d+)$/);
       if (req.method === "GET" && taskMatch) {
         json(res, await actions.getWork(Number(taskMatch[1])));
@@ -272,6 +290,19 @@ export async function startServer(base = process.cwd(), port = 4242, opts = {}) 
         const body = JSON.parse(await readBody(req));
         const task = await actions.answerWork(Number(answerMatch[1]), {
           answer: body.answer
+        });
+        json(res, task, 202);
+        return;
+      }
+
+      // Record a user constraint/correction on the task (Task context — no
+      // execution). The task's next run rebuilds its input from Task state,
+      // so the note reaches the next provider session automatically.
+      const noteMatch = url.pathname.match(/^\/api\/tasks\/(\d+)\/note$/);
+      if (req.method === "POST" && noteMatch) {
+        const body = JSON.parse(await readBody(req));
+        const task = await actions.noteWork(Number(noteMatch[1]), {
+          note: body.note
         });
         json(res, task, 202);
         return;
