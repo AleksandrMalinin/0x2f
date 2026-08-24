@@ -10,45 +10,21 @@
 //   - served verbatim to the browser as an ES module (src/web/app.js).
 // One implementation, two runtimes, no build step.
 //
-// Provider neutrality: the only inputs are normalized Work events
-// (core/events.mjs) and the normalized task shape. Tool *names* inside
-// `tool.started` are provider vocabulary, so they are treated as opaque
-// labels and classified by generic, cross-harness word stems with a safe
-// fallback — nothing here assumes Claude Code, Codex, or any other harness.
+// Progressive fidelity: how much of a run's shape can be drawn is a
+// DECLARED provider capability (capabilities.supportsStructuredEvents /
+// supportsFileChanges / supportsCommands / resultOnCompletion), never an
+// inference from "we saw no events". A dimension SHOWS when it is actually
+// present in the event log (an observed fact always renders — see
+// `sections()`); the declaration governs whether an absence is expected
+// (quiet) or a drift worth a console warning, never whether data is hidden.
+//
+// Every mark on the trace corresponds to exactly one normalized event —
+// there is no time-proportional or index-proportional geometry here. A
+// provider that reports nothing gets a single ambient liveness bar, never a
+// synthesized phase frame and never a per-interval dot that could be misread
+// as a reported step.
 
-// The three phases the ledger groups execution into. This is a reading
-// device (a run has an investigation, a change, and a verification part),
-// not a lifecycle state: Work Core has no notion of phases.
-export const PHASES = ["inspect", "act", "verify"];
-
-// Above this length an intent is a paragraph, not a title: the expanded
-// heading drops to the narrow-width size so a long engineering prompt reads
-// as a heading, not a wall of type. A rendering read, never a data rule.
 export const LONG_TITLE_CHARS = 90;
-
-export const PHASE_LABELS = {
-  inspect: "INVESTIGATION",
-  act: "CHANGE",
-  verify: "VERIFICATION"
-};
-
-export const PHASE_TRACK_LABELS = {
-  inspect: "INSPECT",
-  act: "ACT",
-  verify: "VERIFY"
-};
-
-const PHASE_PENDING = {
-  inspect: "not started",
-  act: "awaiting investigation",
-  verify: "awaiting change"
-};
-
-// Generic verb stems shared by coding harnesses. Unknown names never break
-// the projection — they inherit the phase already in progress.
-const INSPECT_STEM = /^(read|search|grep|glob|find|list|ls|cat|view|open|fetch|browse|web|lookup|inspect|plan|think|todo)/;
-const ACT_STEM = /^(edit|write|patch|apply|create|update|delete|remove|move|rename|mkdir|multiedit|notebook)/;
-const VERIFY_STEM = /(test|spec|lint|typecheck|tsc|build|check|verify|coverage|bench)/;
 
 export const COLORS = {
   ink: "#2f2f2f",
@@ -84,17 +60,6 @@ export const RUN_STATE_LABELS = {
 // surfaces present the same priority.
 const STATE_RANK = { needs_you: 0, working: 1, ready: 2, failed: 3, done: 4 };
 
-// Progressive fidelity. Whether a run's internal shape can be drawn is a
-// declared provider capability (`supportsStructuredEvents`), never an
-// inference from "we saw no tool events". The difference matters: a rich
-// provider with no steps yet has NOT STARTED, a coarse provider will never
-// report steps at all, and showing "awaiting change" for the latter is a
-// lie. Unknown provider -> assume coarse; never claim more than is declared.
-export function isRichProvider(providerId, providers = {}) {
-  const entry = providers[providerId];
-  return entry?.capabilities?.supportsStructuredEvents === true;
-}
-
 export function stateRank(status) {
   return STATE_RANK[status] ?? 9;
 }
@@ -129,6 +94,14 @@ export function fmtDuration(seconds) {
 function ms(value) {
   const t = Date.parse(value ?? "");
   return Number.isFinite(t) ? t : null;
+}
+
+function uniq(list) {
+  const out = [];
+  for (const item of list) {
+    if (item && !out.includes(item)) out.push(item);
+  }
+  return out;
 }
 
 // --- rich text (a small safe Markdown subset) ------------------------------
@@ -256,6 +229,51 @@ export function parseRich(text) {
   return blocks;
 }
 
+// --- progressive fidelity ----------------------------------------------------
+
+// The reading mode: a pure function of declared capability, never of what
+// happened to arrive in the event log so far. "coarse" — no structured
+// stream at all. "partial" — structured, but this run has not (yet) produced
+// evidence of either dimension the design can show (files or commands): a
+// rich provider thirty seconds in reads this way, and it is NOT the same
+// thing as coarse — nothing here says "not reported". "rich" — the provider
+// declares at least one of the observable dimensions.
+export function fidelity(providerId, providers = {}) {
+  const caps = providers[providerId]?.capabilities ?? {};
+  if (caps.supportsStructuredEvents !== true) return "coarse";
+  return caps.supportsFileChanges === true || caps.supportsCommands === true
+    ? "rich"
+    : "partial";
+}
+
+// Every mark class the trace can draw. Height encodes class, nothing else —
+// there is no phase, so there is nothing else height COULD encode. "read",
+// "search" and "plan" have no source today (that would mean reading tool
+// names, the inference this rewrite removes); they exist in the vocabulary
+// so a future typed tool kind (ACP's `kind`, see providers/acp.mjs) can
+// light them up without another projection change.
+export const MARK_CLASS = [
+  "quiet", "read", "search", "plan", "change", "command", "tool", "human", "halt", "fail"
+];
+
+// Mark class from the event SHAPE the step was built from, never from the
+// tool's name. `step.kind` already carries this (toSteps decided it once,
+// at the only point event fields are legitimately provider vocabulary).
+export function markClass(step) {
+  if (!step) return "quiet";
+  switch (step.kind) {
+    case "change":
+    case "command":
+    case "tool":
+    case "human":
+    case "halt":
+    case "fail":
+      return step.kind;
+    default:
+      return "tool";
+  }
+}
+
 // --- step extraction -------------------------------------------------------
 
 // A short, single-line rendering of long text (an answer, a question).
@@ -266,7 +284,8 @@ function snippet(value, max = 140) {
 
 // The argument a step operated on, in provider-neutral terms: whatever the
 // tool input names as its target. Falls back to nothing rather than guessing.
-export function stepArgument(input = {}) {  const candidates = [
+export function stepArgument(input = {}) {
+  const candidates = [
     input.file_path,
     input.path,
     input.notebook_path,
@@ -282,26 +301,14 @@ export function stepArgument(input = {}) {  const candidates = [
   return "";
 }
 
-export function classifyPhase(name, argument, current = "inspect") {
-  const n = String(name ?? "").toLowerCase();
-  const a = String(argument ?? "").toLowerCase();
-  if (VERIFY_STEM.test(n)) return "verify";
-  // A shell-ish step is classified by what it runs, not by the tool's name.
-  if (a && VERIFY_STEM.test(a) && !ACT_STEM.test(n)) return "verify";
-  if (ACT_STEM.test(n)) return "act";
-  if (INSPECT_STEM.test(n)) return "inspect";
-  return PHASES.includes(current) ? current : "inspect";
-}
-
-// Turn one task's event log into the ordered steps the ledger draws.
-// Only events that represent a unit of work become steps; `progress` is
-// narration and is surfaced separately as the current activity line.
+// Turn one task's event log into the ordered units the ledger draws — one
+// unit per reported signal, never a synthesized one. `files`/`commands` are
+// convenience projections of the same units (deduped paths; raw command
+// strings, one per invocation).
 export function toSteps(task, events = [], opts = {}) {
   const base = opts.base ?? "";
   const origin = ms(events.find(e => e.at)?.at) ?? ms(task.createdAt) ?? Date.now();
   const steps = [];
-  const files = [];
-  let phase = "inspect";
   let activity = "";
   let sessionId = task.execution?.externalSessionId ?? null;
   let lastAt = origin;
@@ -323,15 +330,14 @@ export function toSteps(task, events = [], opts = {}) {
         break;
 
       case "tool.started": {
-        const raw = stepArgument(event.input ?? {});
+        const input = event.input ?? {};
         // Paths read as project paths, not as this machine's filesystem.
-        const argument = relativePath(base, raw);
-        phase = classifyPhase(event.name, raw, phase);
+        const argument = relativePath(base, stepArgument(input));
+        const isCommand = typeof input.command === "string";
         steps.push({
-          kind: "tool",
+          kind: isCommand ? "command" : "tool",
           verb: String(event.name ?? "step").toUpperCase(),
           arg: argument,
-          phase,
           at,
           t,
           human: false
@@ -342,7 +348,9 @@ export function toSteps(task, events = [], opts = {}) {
 
       case "file.changed": {
         const changed = relativePath(base, event.path);
-        if (changed && !files.includes(changed)) files.push(changed);
+        if (changed) {
+          steps.push({ kind: "change", verb: "CHANGED", arg: changed, at, t, human: false });
+        }
         break;
       }
 
@@ -363,7 +371,6 @@ export function toSteps(task, events = [], opts = {}) {
           verb: "HALT",
           arg: reason === "permission" ? "waiting on your permission" : "waiting on your decision",
           reason,
-          phase,
           at,
           t,
           human: false
@@ -383,7 +390,6 @@ export function toSteps(task, events = [], opts = {}) {
           kind: "human",
           verb: "YOU",
           arg: answer ? "answered the decision · " + snippet(answer, 140) : "answered the decision",
-          phase,
           at,
           t,
           human: true
@@ -402,7 +408,6 @@ export function toSteps(task, events = [], opts = {}) {
             arg: event.grant === "allow"
               ? "granted the request · resuming the same session"
               : "declined the request · resuming with it withdrawn",
-            phase,
             at,
             t,
             human: true
@@ -419,7 +424,6 @@ export function toSteps(task, events = [], opts = {}) {
           arg: event.grant === "allow"
             ? "allowed the request · continuing the same run"
             : "declined the request · continuing the same run",
-          phase,
           at,
           t,
           human: true
@@ -431,7 +435,6 @@ export function toSteps(task, events = [], opts = {}) {
           kind: "fail",
           verb: "FAILED",
           arg: String(event.error ?? "Execution failed"),
-          phase,
           at,
           t,
           human: false
@@ -443,289 +446,258 @@ export function toSteps(task, events = [], opts = {}) {
     }
   }
 
-  return { origin, lastAt, steps, files, activity, sessionId };
+  const files = uniq(steps.filter(s => s.kind === "change").map(s => s.arg));
+  const commands = steps.filter(s => s.kind === "command").map(s => s.arg);
+
+  return { origin, lastAt, steps, files, commands, activity, sessionId };
 }
 
-// --- travel rule -----------------------------------------------------------
+// --- trace tail --------------------------------------------------------------
 //
-// One punched cell per unit of work, grouped by phase. Struck cells are
-// executed; the luminous cap is the point of execution; an interruption
-// tears the track open; artifacts (files the run changed) leave ticks
-// beneath the axis.
-//
-// The design draws scheduled work as faint cells ahead of the head. Work has
-// no plan of remaining steps and will not invent one, so a real track ends
-// at the head: what happened, and where execution currently stands.
+// Fixed counts, no stride, no merge, no scroll. One mark per reported
+// signal, most recent N, oldest dropped silently. The halt tear and the
+// struck fail mark are positions, not units — they sit outside this budget
+// and are placed separately, always visible.
 
-function cellHeight(phase, index, scale) {
-  const base = { inspect: 6, act: 16, verify: 11 }[phase] ?? 8;
-  const wobble = ((index * 37) % 5) - 2;
-  return Math.max(3, Math.round((base + wobble * 0.9) * scale));
+export const TAIL = { expanded: 24, collapsed: 12, provenance: 12 };
+
+export function tail(steps, n) {
+  const units = steps.filter(s => s.kind !== "halt" && s.kind !== "fail");
+  return { marks: units.slice(-n), truncated: units.length > n, total: units.length };
+}
+
+// --- the travel rule ---------------------------------------------------------
+//
+// One cell per unit of WORK — one reported event, one mark, at a fixed
+// width. There is no time-proportional or index-proportional allocation:
+// a step that held the run for 40s draws exactly the same width as one that
+// took 2s, because both are one fact, not a duration to spend pixels on.
+// Height encodes class (markClass); nothing else.
+
+const CLASS_HEIGHT = {
+  quiet: 4,
+  read: 6,
+  search: 6,
+  plan: 8,
+  change: 15,
+  command: 11,
+  tool: 8,
+  human: 13
+};
+
+function classHeight(cls, scale) {
+  return Math.max(3, Math.round((CLASS_HEIGHT[cls] ?? 8) * scale));
+}
+
+// Changes are drawn in the accent regardless of finished state — an artifact
+// stays legible as an artifact, not just as "a past step like any other".
+function classColor(cls, accent, finished) {
+  if (cls === "human" || cls === "change") return accent;
+  return finished ? COLORS.trackPast : COLORS.trackLive;
+}
+
+// A coarse provider reports no events, so there is nothing to tail. The
+// honest reading is ambient time + liveness, never a per-interval dot: in a
+// lane where every other mark means "one real event happened", a repeated
+// unit here would plausibly be misread as one too. One continuous bar
+// (capped, so its length can never be mistaken for a step count), the same
+// head/tear the live lane uses, and the elapsed-time readout that already
+// exists in the status line.
+function coarseTrace({ w, scale, accent, live, halted, elapsedSeconds }) {
+  const CAP_PX = 220;
+  const PX_PER_SECOND = 0.5;
+  const barW = Math.max(10, Math.min(CAP_PX, Math.round(elapsedSeconds * PX_PER_SECOND)));
+  const cells = [{ x: 0, w: barW + "px", h: Math.round(4 * scale) + "px", c: COLORS.unobserved, ambient: true }];
+  let x = barW;
+  const doneW = x;
+  if (halted) {
+    x += 8;
+    cells.push({ x, w: "2px", h: "0px", c: "transparent", isHalt: true });
+    x += 2;
+  } else if (live) {
+    x += 8;
+    cells.push({ x, w: w + "px", h: Math.round(28 * scale) + "px", c: accent, isHead: true });
+    x += w;
+  }
+  return {
+    cells,
+    doneW: Math.round(doneW) + "px",
+    totalW: Math.round(x) + "px",
+    truncated: false,
+    total: 0,
+    units: []
+  };
 }
 
 export function trace(steps, opts = {}) {
   const {
-    budget = 66,
+    n = TAIL.expanded,
     w = 4,
+    gap = 2,
     scale = 1,
-    marks = true,
     accent = COLORS.accent,
     live = false,
     halted = false,
-    finished = false
+    finished = false,
+    coarse = false,
+    elapsedSeconds = 0
   } = opts;
 
-  const units = steps.filter(s => s.kind === "tool" || s.kind === "human");
-  const groups = [];
-  const cellGap = marks ? 2 : 1;
-  const groupGap = marks ? 14 : 5;
+  if (coarse) return coarseTrace({ w, scale, accent, live, halted, elapsedSeconds });
 
-  // A provider that cannot report its steps still ran through a shape of
-  // work — Work just cannot see it. Draw the phase FRAME (so the ledger
-  // keeps its rhythm and the reader keeps their bearings) as a flat
-  // baseline that plainly is not activity. Every real marker below — the
-  // halt tear, the live head — is still placed, because those are known.
-  if (opts.coarse) {
-    // Each phase gets a third of the track the rich mode would use, so the
-    // frame keeps the design's rhythm and the phase labels have room to sit
-    // under their own span instead of colliding.
-    const per = Math.max(8, Math.round(budget / 3));
-    for (const phase of PHASES) {
-      const cells = [];
-      for (let k = 0; k < per; k++) {
-        cells.push({
-          w: w + "px",
-          // Dashed, uniform, hairline: a ruled frame nobody can mistake for
-          // the struck cells of real activity.
-          h: Math.max(2, Math.round(3 * scale)) + "px",
-          c: k % 2 === 0 ? COLORS.unobserved : "transparent",
-          past: false,
-          unobserved: true,
-          artifact: null
-        });
-      }
-      groups.push({
-        phase,
-        label: PHASE_TRACK_LABELS[phase],
-        cells,
-        done: false,
-        active: false,
-        unobserved: true
-      });
-    }
-  }
-
-  // One punched cell per unit of WORK, and the unit is time — a step that
-  // held the run for 40s is a longer strike than one that took 2s. Both the
-  // step order and the gaps between step timestamps are real, so this is an
-  // encoding of recorded data, not a filler that pads the track to width.
-  //
-  // Long runs are strided down first so the track stays one line wide; each
-  // surviving step then keeps at least two cells so it stays legible.
-  const stride = units.length > budget / 2 ? Math.ceil(units.length / (budget / 2)) : 1;
-  const shown = units.filter((_, i) => i % stride === 0);
-
-  const endT = opts.endT ?? (units.length ? units[units.length - 1].t : 0);
-  const spanOf = i => {
-    const next = i + 1 < shown.length ? shown[i + 1].t : endT;
-    return Math.max(0.25, next - shown[i].t);
-  };
-  const totalSpan = shown.reduce((sum, _, i) => sum + spanOf(i), 0) || 1;
-  const cellsFor = i => Math.max(2, Math.round((spanOf(i) / totalSpan) * budget));
-
-  let index = 0;
-  let stepIndex = -1;
-  for (const step of opts.coarse ? [] : shown) {
-    stepIndex++;
-    const last = groups[groups.length - 1];
-    const group =
-      last && last.phase === step.phase
-        ? last
-        : (groups.push({
-            phase: step.phase,
-            label: PHASE_TRACK_LABELS[step.phase] ?? step.phase.toUpperCase(),
-            cells: [],
-            done: true,
-            active: false
-          }),
-          groups[groups.length - 1]);
-
-    const per = cellsFor(stepIndex);
-    for (let k = 0; k < per; k++) {
-      group.cells.push({
-        w: w + "px",
-        h: cellHeight(step.phase, index, scale) + "px",
-        c: finished ? COLORS.trackPast : COLORS.trackLive,
-        past: true,
-        artifact: null
-      });
-      index++;
-    }
-  }
-
-  // The point of execution: a luminous cap while the run is moving, a tear
-  // in the track while it is halted on the human.
-  if (halted || live) {
-    const phase = shown.length ? shown[shown.length - 1].phase : "inspect";
-    const last = groups[groups.length - 1];
-    // On a coarse frame the marker rides at the end of the track: the run
-    // demonstrably stopped (or is moving), but which phase it stopped in is
-    // exactly what this provider cannot tell us — so do not pick one.
-    const group = opts.coarse
-      ? last
-      : last && last.phase === phase
-        ? last
-        : (groups.push({
-            phase,
-            label: PHASE_TRACK_LABELS[phase] ?? phase.toUpperCase(),
-            cells: [],
-            done: shown.length > 0,
-            active: false
-          }),
-          groups[groups.length - 1]);
-    if (group) group.active = !opts.coarse;
-
-    if (!group) {
-      // nothing to hang the marker on
-    } else if (halted) {
-      if (marks) {
-        group.cells.push({ w: "8px", h: "0px", c: "transparent" });
-        group.cells.push({ w: "2px", h: "0px", c: "transparent", isHalt: true });
-        group.cells.push({ w: "8px", h: "0px", c: "transparent" });
-      } else {
-        group.cells.push({ w: w + "px", h: Math.round(22 * scale) + "px", c: accent });
-      }
-    } else {
-      group.cells.push({
-        w: w + "px",
-        h: Math.round(28 * scale) + "px",
-        c: accent,
-        isHead: marks
-      });
-    }
-  }
-
-  // Geometry: run the layout once so the axis wash, the artifact ticks and
-  // the phase labels all agree on the same x-scale.
+  const { marks: units, truncated, total } = tail(steps, n);
+  const cells = [];
   let x = 0;
-  let doneW = 0;
-  const markList = [];
-  groups.forEach((group, gi) => {
-    if (gi > 0) x += groupGap;
-    let gw = 0;
-    group.cells.forEach((cell, ci) => {
-      if (ci > 0) {
-        x += cellGap;
-        gw += cellGap;
-      }
-      if (cell.artifact) markList.push({ x: Math.round(x) + "px", c: cell.artifact });
-      const width = parseFloat(cell.w);
-      x += width;
-      gw += width;
-      if (cell.past) doneW = x;
+  for (const step of units) {
+    if (cells.length) x += gap;
+    const cls = markClass(step);
+    cells.push({
+      x,
+      w: w + "px",
+      h: classHeight(cls, scale) + "px",
+      c: classColor(cls, accent, finished),
+      cls,
+      arg: step.arg
     });
-    group.w = Math.round(gw) + "px";
-    group.lc = group.unobserved
-      ? COLORS.muted
-      : group.active
-        ? halted
-          ? accent
-          : COLORS.ink
-        : group.done
-          ? COLORS.inkSoft
-          : COLORS.muted;
-  });
+    x += w;
+  }
+  const doneW = x;
+
+  // The point of execution: a luminous head while the run is moving, a tear
+  // in the track while it is halted on the human. Neither is a unit — both
+  // are positions, placed after every real mark regardless of tail budget.
+  if (halted) {
+    if (cells.length) x += gap;
+    cells.push({ x, w: "2px", h: "0px", c: "transparent", isHalt: true });
+    x += 2;
+  } else if (live) {
+    if (cells.length) x += gap;
+    cells.push({ x, w: w + "px", h: Math.round(28 * scale) + "px", c: accent, isHead: true });
+    x += w;
+  }
 
   return {
-    groups,
-    marks: markList,
+    cells,
     doneW: Math.round(doneW) + "px",
-    totalW: Math.round(x) + "px"
+    totalW: Math.round(x) + "px",
+    truncated,
+    total,
+    units
   };
 }
 
-// Artifact ticks: one per file the run actually changed, placed under the
-// cell where the change happened. Computed against a laid-out trace so the
-// positions line up with the drawn track.
-export function artifactMarks(steps, laid, changedFiles, accent = COLORS.accent) {
-  if (!changedFiles.length) return [];
-  const units = steps.filter(s => s.kind === "tool" || s.kind === "human");
-  if (!units.length) return [];
-  const total = parseFloat(laid.totalW) || 0;
-  const marks = [];
-  units.forEach((step, i) => {
-    if (!changedFiles.includes(step.arg)) return;
-    const x = Math.round(((i + 0.5) / units.length) * total);
-    marks.push({ x: x + "px", c: accent });
+// --- brackets ----------------------------------------------------------------
+//
+// One is implementable from what the system actually knows: CHANGES, spanning
+// the first to the last change-class mark in the VISIBLE tail. VERIFY needs a
+// typed check result (a provider does not have one — see §11 of the spec);
+// INSPECT needs a declared phase (nothing declares one). Both stay
+// unreachable by construction rather than approximated from a command string
+// or a tool-name guess.
+
+function contiguousRuns(list, predicate) {
+  const runs = [];
+  let start = -1;
+  list.forEach((item, i) => {
+    const hit = predicate(item);
+    if (hit && start === -1) start = i;
+    if (!hit && start !== -1) {
+      runs.push({ from: start, to: i - 1 });
+      start = -1;
+    }
   });
-  return marks;
+  if (start !== -1) runs.push({ from: start, to: list.length - 1 });
+  return runs;
 }
 
-// --- bands -----------------------------------------------------------------
-
-export function bands(task, steps, accent = COLORS.accent, opts = {}) {
-  const coarse = opts.coarse === true;
-  const currentPhase = steps.length ? steps[steps.length - 1].phase : "inspect";
-  const halted = task.status === "needs_you";
-  const running = task.status === "working";
-  // A terminal failure (or a task closed from one) means downstream phases
-  // can never execute — they are NOT REACHED, not still waiting. This is
-  // read from existing lifecycle state, never a new lifecycle state.
-  const terminal =
-    task.status === "failed" || (task.status === "done" && !!task.error);
-
-  return PHASES.map(key => {
-    const items = steps.filter(s => s.phase === key && s.kind !== "halt");
-    const here = currentPhase === key && (halted || running);
-    const active = here && running;
-    const blocked = here && halted;
-    const span = items.length
-      ? fmtDuration(items[items.length - 1].t - items[0].t)
-      : "—";
-    // Order matters. What the human is doing beats what the run is doing;
-    // both beat a claim about a phase this provider never reports. Saying
-    // "awaiting change" about a finished coarse run is not a placeholder,
-    // it is wrong — the change may well have happened unobserved.
-    const status = blocked
-      ? "waiting on you"
-      : active
-        ? "running"
-        : coarse
-          ? "not reported by this provider"
-          : terminal
-            ? "not reached"
-            : PHASE_PENDING[key];
-
-    return {
-      key,
-      label: PHASE_LABELS[key],
-      labelColor: items.length || here ? COLORS.ink : COLORS.muted,
-      unobserved: coarse && items.length === 0,
-      labelWeight: here ? 600 : 500,
-      rule: blocked
-        ? "2px solid " + accent
-        : active
-          ? "2px solid " + COLORS.ink
-          : "1px solid " + COLORS.rule,
-      meta: items.length
-        ? items.length + (items.length === 1 ? " step · " : " steps · ") + span
-        : status,
-      pending: items.length === 0,
-      pendingText: status,
-      pendingColor: here ? COLORS.ink : COLORS.muted,
-      items: items.map(step => ({
-        verb: step.verb,
-        arg: step.arg,
-        t: fmtDuration(step.t),
-        human: step.human,
-        vc: step.human ? accent : step.kind === "fail" ? COLORS.fail : COLORS.inkSoft,
-        ac: step.human ? accent : step.kind === "fail" ? COLORS.fail : COLORS.ink
-      }))
-    };
-  });
+// `units` and `cells` come from the SAME trace() call (units[i] <-> cells[i]
+// for i < units.length) so a bracket's pixels always agree with what is
+// actually drawn.
+export function brackets(units, caps = {}, cells = []) {
+  const out = [];
+  if (caps?.supportsFileChanges === true) {
+    for (const span of contiguousRuns(units, s => markClass(s) === "change")) {
+      const from = cells[span.from];
+      const to = cells[span.to];
+      if (!from || !to) continue;
+      out.push({
+        label: "CHANGES",
+        x: Math.round(from.x) + "px",
+        w: Math.round(to.x + parseFloat(to.w) - from.x) + "px"
+      });
+    }
+  }
+  return out;
 }
 
-// --- rows ------------------------------------------------------------------
+// --- section composition ------------------------------------------------------
+//
+// A dimension SHOWS when it is actually present in this run's events —
+// observed facts always render, even against a false declaration (a
+// provider that emits more than it declared is not hidden, it is flagged:
+// see `capabilityDrift`). The declaration only decides whether that absence
+// is expected and quiet, or a contradiction worth a console warning.
+//
+// CHECKS never appears: there is no typed check result anywhere in the
+// normalized model, so it is omitted from the projection entirely — never a
+// pending placeholder, never an empty section.
+
+export function sections(task, steps, caps = {}, result = null) {
+  const activityUnits = steps.filter(
+    s => s.kind === "tool" || s.kind === "command" || s.kind === "human" || s.kind === "halt"
+  );
+  const files = uniq(steps.filter(s => s.kind === "change").map(s => s.arg));
+  const commands = steps.filter(s => s.kind === "command").map(s => s.arg);
+
+  const failed = task.status === "failed" || (task.status === "done" && !!task.error);
+  const closed = task.status === "ready" || task.status === "done";
+  const hasResult = typeof result === "string" && result.trim().length > 0;
+
+  const capabilityDrift = [];
+  if (files.length && caps.supportsFileChanges !== true) capabilityDrift.push("fileChanges");
+  if (commands.length && caps.supportsCommands !== true) capabilityDrift.push("commands");
+  if (activityUnits.length && caps.supportsStructuredEvents !== true) capabilityDrift.push("structuredEvents");
+
+  return {
+    activity: activityUnits.length
+      ? { recent: activityUnits.slice(-5), earlier: Math.max(0, activityUnits.length - 5) }
+      : null,
+    files: files.length ? { paths: files } : null,
+    commands: commands.length ? { commands } : null,
+    result: !failed && closed && hasResult ? { text: result } : null,
+    failure: failed ? { error: task.error ?? "" } : null,
+    capabilityDrift
+  };
+}
+
+// Which sections a status is allowed to show at all, even when data is
+// present (§10 — the lifecycle hierarchy). DONE is deliberately the
+// narrowest: a closed row carries no trace and no operational detail, only
+// what it produced.
+const SECTION_KEYS_BY_STATUS = {
+  working: ["activity", "files", "commands"],
+  needs_you: ["activity", "files"],
+  ready: ["result", "files", "commands"],
+  failed: ["failure", "files"],
+  done: ["result"]
+};
+
+// --- the quiet note ------------------------------------------------------------
+//
+// One condition, one constant string. A capability-GAP note (a declared
+// limitation contradicting what is visible) is deliberately not implemented
+// here: it would fire from a declaration alone, without the UI actually
+// having produced a misleading juxtaposition, and the more conservative
+// choice — proven by nothing having gone wrong in the composed sections
+// above — is silence.
+export function capabilityNote(task, caps = {}) {
+  if (caps.resultOnCompletion === true && task.status === "working") {
+    return "result reported on completion";
+  }
+  return null;
+}
+
+// --- misc row helpers --------------------------------------------------------
 
 export function blockedTitle(blockedOn) {
   if (!blockedOn) return "";
@@ -803,6 +775,8 @@ export function projectRuns(runs = [], opts = {}) {
   });
 }
 
+// --- rows ------------------------------------------------------------------
+
 // One ledger row: everything the DOM layer needs, already decided.
 export function projectRow(task, events, opts = {}) {
   const {
@@ -816,69 +790,90 @@ export function projectRow(task, events, opts = {}) {
     providers = {}
   } = opts;
 
-  const { origin, lastAt, steps, files, activity, sessionId } = toSteps(task, events, { base });
-  // Declared capability, not a guess from an empty event log.
-  const rich = isRichProvider(task.execution?.provider, providers);
-  const coarse = !rich;
+  const capabilities = providers[task.execution?.provider]?.capabilities ?? {};
+  const level = fidelity(task.execution?.provider, providers);
+  const coarse = level === "coarse";
+
+  const { origin, lastAt, steps, activity, sessionId } = toSteps(task, events, { base });
 
   const halted = task.status === "needs_you";
   const running = task.status === "working";
-  const failed = task.status === "failed";
+  const failedStatus = task.status === "failed";
   const ready = task.status === "ready";
   const done = task.status === "done";
-  const finished = ready || done || failed;
+  const finished = ready || done || failedStatus;
 
   // A finished run's clock stops at its last event; a live one keeps running.
   const elapsed = (finished ? lastAt : now) - origin;
-
   // The TRACK measures execution, not attention. A task parked on you for an
-  // hour has a long HALTED-AT clock, but the step it stopped mid-way through
-  // did not take an hour — so the track ends at the last recorded event
-  // unless the run is genuinely still moving.
+  // hour has a long HALTED-AT clock, but the track ends at the last recorded
+  // event unless the run is genuinely still moving.
   const traceEnd = (running ? now : lastAt) - origin;
+  const elapsedSeconds = Math.max(0, traceEnd / 1000);
 
-  const full = trace(steps, {
-    coarse,
-    // Where the run currently stands, so the step in flight is measured
-    // against now instead of collapsing to a minimum-width strike.
-    endT: traceEnd / 1000,
-    budget: mid ? 66 : 44,
-    w: 4,
-    scale: 1,
-    marks: true,
-    accent,
-    live: running,
-    halted,
-    finished
-  });
-  full.marks = artifactMarks(steps, full, files, accent);
+  const sec = sections(task, steps, capabilities, null);
+  const allowedKeys = SECTION_KEYS_BY_STATUS[task.status] ?? [];
+  const activitySection = allowedKeys.includes("activity") ? sec.activity : null;
+  const filesSection = allowedKeys.includes("files") ? sec.files : null;
+  const commandsSection = allowedKeys.includes("commands") ? sec.commands : null;
+  const note = capabilityNote(task, capabilities);
 
-  // A closed task carries no trace: the ledger compresses it out of the way
-  // and the EXECUTION column belongs to work that is still live.
+  // §10 — one field, app.js reorders content by it.
+  const layout = ready || failedStatus || done ? "answer-primary" : "trace-primary";
+
+  let mainTrace = null;
+  if (layout === "trace-primary") {
+    const laid = trace(steps, {
+      n: TAIL.expanded, w: 4, scale: 1, accent, coarse,
+      live: running, halted, finished, elapsedSeconds
+    });
+    mainTrace = {
+      cells: laid.cells,
+      doneW: laid.doneW,
+      totalW: laid.totalW,
+      truncated: laid.truncated,
+      total: laid.total,
+      brackets: brackets(laid.units, capabilities, laid.cells)
+    };
+  }
+
+  let provenance = null;
+  if (ready || failedStatus) {
+    const laid = trace(steps, {
+      n: TAIL.provenance, w: 3, scale: 0.55, accent, coarse,
+      live: false, halted: false, finished: true, elapsedSeconds
+    });
+    provenance = {
+      cells: laid.cells,
+      doneW: laid.doneW,
+      totalW: laid.totalW,
+      truncated: laid.truncated,
+      total: laid.total,
+      brackets: brackets(laid.units, capabilities, laid.cells),
+      heading: failedStatus ? "BEFORE THE STOP" : "PROVENANCE"
+    };
+  }
+
+  // A closed task carries no trace at all — the ledger compresses it out of
+  // the way and the EXECUTION column belongs to work that is still live.
   const mini = done
-    ? { groups: [] }
-    : trace(steps, {
-        coarse,
-        endT: traceEnd / 1000,
-        budget: 40,
-        w: 2,
-        scale: 0.5,
-        marks: false,
-        accent,
-        live: running,
-        halted,
-        finished
-      });
+    ? { cells: [], doneW: "0px", totalW: "0px" }
+    : (() => {
+        const laid = trace(steps, {
+          n: TAIL.collapsed, w: 2, scale: 0.5, accent, coarse,
+          live: running, halted, finished, elapsedSeconds
+        });
+        return { cells: laid.cells, doneW: laid.doneW, totalW: laid.totalW };
+      })();
 
-  const last = steps.filter(s => s.kind === "tool").slice(-1)[0];
-  const currentPhase = steps.length ? steps[steps.length - 1].phase : "inspect";
+  const lastActivity = steps.filter(s => s.kind === "tool" || s.kind === "command").slice(-1)[0];
   // A long intent is a paragraph, not a heading: keep the expanded title at
   // the narrow-width size so it stays proportionate at any width. Collapsed
   // rows are unaffected — the intent is summarized there by design.
   const longTitle = open && task.title.length > LONG_TITLE_CHARS;
 
   const stateLabel = STATE_LABELS[task.status] ?? String(task.status).toUpperCase();
-  const stateColor = halted ? accent : failed ? COLORS.fail : done ? COLORS.muted : COLORS.ink;
+  const stateColor = halted ? accent : failedStatus ? COLORS.fail : done ? COLORS.muted : COLORS.ink;
 
   let phaseLabel = "";
   let arg = "";
@@ -887,34 +882,39 @@ export function projectRow(task, events, opts = {}) {
     arg = relativePath(base, task.blockedOn?.file) || task.blockedOn?.text || "waiting on you";
   } else if (ready) {
     phaseLabel = "COMPLETE";
-    arg = files.length
-      ? files.length + (files.length === 1 ? " file changed" : " files changed")
-      : coarse
-        ? "changed files not reported by this provider"
-        : "no files changed";
+    arg = filesSection
+      ? filesSection.paths.length + (filesSection.paths.length === 1 ? " file changed" : " files changed")
+      : "";
   } else if (done) {
     phaseLabel = "CLOSED";
-    arg = task.error
-      ? task.error
-      : files.length
-        ? files.length + (files.length === 1 ? " file changed" : " files changed")
-        : coarse
-          ? "changed files not reported by this provider"
-          : "no files changed";
-  } else if (failed) {
+    arg = task.error ?? "";
+  } else if (failedStatus) {
     phaseLabel = "FAILED AT";
     arg = task.error ?? "Execution failed";
   } else {
-    phaseLabel = (PHASE_TRACK_LABELS[currentPhase] ?? "").toUpperCase();
-    arg = activity || (last ? last.verb.toLowerCase() + "  " + last.arg : "starting execution");
+    // No phase to report — the current activity line (or the last observed
+    // step) is the honest thing to show here, never an inferred stage.
+    phaseLabel = "";
+    arg = activity || (lastActivity ? lastActivity.verb.toLowerCase() + "  " + lastActivity.arg : "starting execution");
   }
 
   let sub;
-  if (done) sub = "closed · " + fmtDuration(elapsed / 1000);
-  else if (failed) sub = task.error ?? "failed";
-  else if (ready) sub = files.length ? files.length + " files · ready for you" : "ready for you";
+  // A closed row's sub is the EXECUTION column's text: the status plus the
+  // run's duration. The duration is right-aligned into a fixed field (the
+  // widest format, h:mm:ss), so "closed" and the end of the digits sit on
+  // the same vertical axis whatever the run lasted — the row reads as a
+  // ledger column instead of drifting with the width of the duration. The
+  // padding must be non-breaking: CSS collapses plain spaces (white-space:
+  // nowrap still collapses), which would silently undo the fixed width.
+  if (done) sub = "closed · " + fmtDuration(elapsed / 1000).padStart(7, " ");
+  else if (failedStatus) sub = task.error ?? "failed";
+  else if (ready) {
+    sub = filesSection
+      ? filesSection.paths.length + (filesSection.paths.length === 1 ? " file" : " files") + " · ready for you"
+      : "ready for you";
+  }
   else if (halted) sub = blockedTitle(task.blockedOn).toLowerCase();
-  else sub = activity || (last ? last.verb.toLowerCase() + "  " + last.arg : "starting");
+  else sub = activity || (lastActivity ? lastActivity.verb.toLowerCase() + "  " + lastActivity.arg : "starting");
 
   return {
     id: task.id,
@@ -927,7 +927,7 @@ export function projectRow(task, events, opts = {}) {
     halted,
     running,
     ready,
-    failed,
+    failed: failedStatus,
     done,
     stateLabel,
     stateColor,
@@ -949,10 +949,23 @@ export function projectRow(task, events, opts = {}) {
       ? wide ? "28px 32px 34px 22px" : "24px 20px 28px 18px"
       : done ? "10px 24px 10px 20px" : "15px 24px 15px 20px",
     sub,
-    mini: mini.groups,
-    groups: full.groups,
-    marks: full.marks,
-    doneW: full.doneW,
+    mini: mini.cells,
+    miniDoneW: mini.doneW,
+    miniTotalW: mini.totalW,
+    layout,
+    tailBudget: layout === "trace-primary" ? TAIL.expanded : TAIL.provenance,
+    trace: mainTrace,
+    provenance,
+    coarse,
+    fidelity: level,
+    activitySection,
+    filesSection,
+    commandsSection,
+    // Kept flat for the DOM layer's existing consumers (the FILES list, the
+    // per-run panel): the same paths `filesSection` carries when it exists.
+    files: filesSection ? filesSection.paths : [],
+    note,
+    capabilityDrift: sec.capabilityDrift,
     phaseLabel,
     arg,
     elapsed: fmtDuration(elapsed / 1000),
@@ -968,11 +981,6 @@ export function projectRow(task, events, opts = {}) {
     // is answered, never allowed/rejected.
     permType: task.blockedOn?.type ?? null,
     providerId: task.execution?.provider ?? null,
-    // The Result panel and the track need to distinguish "zero" from
-    // "unobservable"; both read this rather than re-deriving it.
-    rich,
-    coarse,
-    filesReported: rich,
     permTitle: blockedTitle(task.blockedOn),
     permPath: relativePath(base, task.blockedOn?.file) || task.blockedOn?.tool || "",
     permWhy:
@@ -996,8 +1004,6 @@ export function projectRow(task, events, opts = {}) {
             reason: task.runs.at(-1).routing.reason
           }
         : null,
-    bands: bands(task, steps, accent, { coarse }),
-    files,
     error: task.error ?? ""
   };
 }

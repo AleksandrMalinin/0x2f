@@ -2,18 +2,24 @@
 //
 // This is the same module the browser imports (served at /app/ledger.mjs), so
 // these tests cover the production rendering path, not a copy of it. They
-// assert the DESIGN's behaviour — phases, the travel rule, Needs You, the
-// Ready result, compressed done rows — against REAL normalized events.
+// assert the projection's behaviour — one mark per real event, the declared
+// ∩ observed section rule, Needs You, the Ready result, compressed done
+// rows, progressive fidelity — against REAL normalized events.
 
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  PHASES,
-  classifyPhase,
+  markClass,
+  MARK_CLASS,
   stepArgument,
   toSteps,
+  tail,
+  TAIL,
   trace,
-  bands,
+  brackets,
+  sections,
+  capabilityNote,
+  fidelity,
   projectRow,
   projectLedger,
   sortTasks,
@@ -22,8 +28,7 @@ import {
   relativePath,
   blockedTitle,
   eventsForRun,
-  projectRuns,
-  isRichProvider
+  projectRuns
 } from "../src/web/ledger.mjs";
 import { workEvent } from "../src/core/events.mjs";
 
@@ -46,20 +51,43 @@ const task = (over = {}) => ({
   ...over
 });
 
-test("phase classification is provider-neutral and never throws on unknown tools", () => {
-  assert.equal(classifyPhase("Read", "src/a.ts"), "inspect");
-  assert.equal(classifyPhase("Grep", "foo"), "inspect");
-  assert.equal(classifyPhase("Edit", "src/a.ts"), "act");
-  assert.equal(classifyPhase("write_file", "src/a.ts"), "act");
-  assert.equal(classifyPhase("Bash", "pnpm test capture"), "verify");
-  assert.equal(classifyPhase("shell", "npm run lint"), "verify");
-  assert.equal(classifyPhase("apply_patch", "src/a.ts"), "act");
-  // An unknown tool inherits the phase already in progress rather than
-  // inventing one — a future harness cannot break the ledger.
-  assert.equal(classifyPhase("quantum_thing", "", "act"), "act");
-  assert.equal(classifyPhase("quantum_thing", ""), "inspect");
-  assert.deepEqual(PHASES, ["inspect", "act", "verify"]);
-});
+// A provider that declares everything (the honest post-boundary-fix
+// claude-code shape) and one that declares nothing but a live stream (the
+// pre-kind-plumbing ACP shape) and one fully coarse provider (DSH/command).
+const RICH = {
+  "claude-code": {
+    capabilities: {
+      supportsStructuredEvents: true,
+      supportsFileChanges: true,
+      supportsCommands: true,
+      resultOnCompletion: false
+    }
+  }
+};
+const PARTIAL = {
+  "some-acp-agent": {
+    capabilities: {
+      supportsStructuredEvents: true,
+      supportsFileChanges: false,
+      supportsCommands: false,
+      resultOnCompletion: false
+    }
+  }
+};
+const COARSE = {
+  "deepseek-harness": {
+    capabilities: {
+      supportsStructuredEvents: false,
+      supportsFileChanges: false,
+      supportsCommands: false,
+      resultOnCompletion: true
+    }
+  }
+};
+const coarseTask = over =>
+  task({ execution: { provider: "deepseek-harness", node: "local", workspace: "local" }, ...over });
+
+// --- step extraction ---------------------------------------------------------
 
 test("stepArgument reads whatever the tool input names as its target", () => {
   assert.equal(stepArgument({ file_path: "/w/src/a.ts" }), "/w/src/a.ts");
@@ -68,7 +96,7 @@ test("stepArgument reads whatever the tool input names as its target", () => {
   assert.equal(stepArgument({}), "");
 });
 
-test("toSteps turns a real event log into ordered steps, files and activity", () => {
+test("toSteps turns tool.started, file.changed and commands into distinct units", () => {
   const events = log([
     ["run.started", 0, { sessionId: "sess-1" }],
     ["tool.started", 2, { name: "Read", input: { file_path: "/w/src/a.ts" } }],
@@ -78,16 +106,31 @@ test("toSteps turns a real event log into ordered steps, files and activity", ()
     ["tool.started", 9, { name: "Bash", input: { command: "npm test" } }]
   ]);
 
-  const { steps, files, activity, sessionId } = toSteps(task(), events);
+  const { steps, files, commands, activity, sessionId } = toSteps(task(), events);
 
-  assert.deepEqual(steps.map(s => s.verb), ["READ", "EDIT", "BASH"]);
-  assert.deepEqual(steps.map(s => s.phase), ["inspect", "act", "verify"]);
-  assert.deepEqual(steps.map(s => Math.round(s.t)), [2, 6, 9]);
+  assert.deepEqual(steps.map(s => s.kind), ["tool", "tool", "change", "command"]);
+  assert.deepEqual(steps.map(s => s.verb), ["READ", "EDIT", "CHANGED", "BASH"]);
+  assert.deepEqual(steps.map(s => Math.round(s.t)), [2, 6, 6, 9]);
   assert.deepEqual(files, ["/w/src/a.ts"]);
+  assert.deepEqual(commands, ["npm test"]);
   assert.equal(sessionId, "sess-1");
   // The progress line is narration, not a step — it becomes the activity
   // line and is cleared by the next real step.
   assert.equal(activity, "");
+});
+
+test("markClass reads the event shape the step was built from, not a tool name", () => {
+  const events = log([
+    ["tool.started", 0, { name: "Read", input: { file_path: "a.ts" } }],
+    ["tool.started", 1, { name: "Bash", input: { command: "npm test" } }],
+    ["file.changed", 2, { path: "a.ts" }],
+    ["task.updated", 3, { status: "working", grant: "allow" }]
+  ]);
+  const { steps } = toSteps(task(), events);
+  assert.deepEqual(steps.map(markClass), ["tool", "command", "change", "human"]);
+  assert.deepEqual(MARK_CLASS, [
+    "quiet", "read", "search", "plan", "change", "command", "tool", "human", "halt", "fail"
+  ]);
 });
 
 test("the last progress line survives as the live activity when no step follows", () => {
@@ -128,21 +171,127 @@ test("a resume the human authorised becomes a YOU step", () => {
   assert.equal(quiet.length, 0);
 });
 
-test("the travel rule draws executed work only — never scheduled work it cannot know", () => {
+test("an answered decision becomes a YOU step in the ledger", () => {
+  const events = log([
+    ["tool.started", 1, { name: "Read", input: { file_path: "a.ts" } }],
+    ["needs_user", 2, { reason: "decision", blockedOn: { type: "decision", text: "X or Y?" } }],
+    ["task.answered", 5, { answer: "Choose X, because it is the narrower change." }]
+  ]);
+  const steps = toSteps(task({ status: "needs_you" }), events).steps;
+  const humans = steps.filter(s => s.human);
+  assert.equal(humans.length, 1);
+  assert.equal(humans[0].verb, "YOU");
+  assert.match(humans[0].arg, /answered the decision/);
+  assert.match(humans[0].arg, /Choose X, because it is the narrower change/);
+  // A long answer is shown short in the step line, never dropped entirely.
+  const longAnswer = "x".repeat(300);
+  const longSteps = toSteps(task({ status: "needs_you" }), log([
+    ["task.answered", 1, { answer: longAnswer }]
+  ])).steps;
+  assert.ok(longSteps[0].arg.length < longAnswer.length);
+});
+
+test("an interactive ACP permission becomes a YOU step when resolved in place", () => {
+  const events = log([
+    ["tool.started", 1, { name: "Edit", input: { file_path: "a.ts" } }],
+    ["needs_user", 2, { reason: "permission", blockedOn: { type: "permission", live: true, tool: "Edit a.ts" } }],
+    ["permission.resolved", 5, { grant: "allow" }],
+    ["run.completed", 7, { status: "ready" }]
+  ]);
+  const steps = toSteps(task({ status: "ready" }), events).steps;
+  const humans = steps.filter(s => s.human);
+  assert.equal(humans.length, 1);
+  assert.equal(humans[0].verb, "YOU");
+  assert.match(humans[0].arg, /continuing the same run/);
+});
+
+test("step arguments and changed files are shown as project paths, not machine paths", () => {
+  const events = log([
+    ["tool.started", 1, { name: "Read", input: { file_path: "/w/services/capture/ingest.ts" } }],
+    ["tool.started", 2, { name: "Edit", input: { file_path: "/w/services/capture/ingest.ts" } }],
+    ["file.changed", 2, { path: "/w/services/capture/ingest.ts" }]
+  ]);
+  const { steps, files } = toSteps(task(), events, { base: "/w" });
+  assert.deepEqual(steps.filter(s => s.kind !== "change").map(s => s.arg), [
+    "services/capture/ingest.ts",
+    "services/capture/ingest.ts"
+  ]);
+  assert.deepEqual(files, ["services/capture/ingest.ts"]);
+
+  // A file outside the workspace keeps its absolute path — it is genuinely
+  // not a project path and pretending otherwise would mislead.
+  const outside = toSteps(task(), log([
+    ["tool.started", 1, { name: "Read", input: { file_path: "/etc/hosts" } }]
+  ]), { base: "/w" });
+  assert.equal(outside.steps[0].arg, "/etc/hosts");
+});
+
+test("a file changed twice produces two marks — one per real event, never deduped in the trace", () => {
+  const events = log([
+    ["file.changed", 1, { path: "a.ts" }],
+    ["file.changed", 5, { path: "a.ts" }]
+  ]);
+  const { steps, files } = toSteps(task(), events);
+  assert.equal(steps.filter(s => s.kind === "change").length, 2);
+  // ...but the FILES list (what changed) reports the unique path once.
+  assert.deepEqual(files, ["a.ts"]);
+});
+
+// --- tail ---------------------------------------------------------------------
+
+test("tail keeps the most recent N units and drops halt/fail (positions, not units)", () => {
+  const events = log([
+    ["tool.started", 1, { name: "Read", input: { file_path: "a.ts" } }],
+    ["needs_user", 2, { reason: "permission", blockedOn: { type: "permission" } }],
+    ["task.updated", 3, { status: "working", grant: "allow" }],
+    ["tool.started", 4, { name: "Edit", input: { file_path: "a.ts" } }],
+    ["run.failed", 5, { error: "boom" }]
+  ]);
+  const { steps } = toSteps(task(), events);
+  const { marks, truncated, total } = tail(steps, 2);
+  // 3 non-halt/fail units exist (tool, human, tool); the budget of 2 keeps
+  // only the most recent.
+  assert.deepEqual(marks.map(s => s.kind), ["human", "tool"]);
+  assert.equal(truncated, true);
+  assert.equal(total, 3);
+});
+
+test("tail drops the oldest units silently once the budget is exceeded", () => {
+  const many = [];
+  for (let i = 0; i < 40; i++) many.push(["tool.started", i, { name: "Read", input: { file_path: "a" + i } }]);
+  const { steps } = toSteps(task(), log(many));
+  const { marks, truncated, total } = tail(steps, TAIL.collapsed);
+  assert.equal(marks.length, TAIL.collapsed);
+  assert.equal(marks[marks.length - 1].arg, "a39");
+  assert.equal(truncated, true);
+  assert.equal(total, 40);
+});
+
+// --- the travel rule ------------------------------------------------------------
+
+test("the trace draws one fixed-width cell per unit, never scaled by how long it took", () => {
+  const events = log([
+    ["tool.started", 0, { name: "Read", input: { file_path: "a.ts" } }],
+    ["tool.started", 40, { name: "Edit", input: { file_path: "a.ts" } }],
+    ["run.completed", 44, { status: "ready" }]
+  ]);
+  const { steps } = toSteps(task(), events);
+  const laid = trace(steps, { live: true, halted: false, finished: false });
+  const marks = laid.cells.filter(c => !c.isHead && !c.isHalt);
+  assert.equal(marks.length, 2);
+  // A 40s gap and a 4s gap draw the SAME width — width is not a duration.
+  assert.equal(marks[0].w, marks[1].w);
+});
+
+test("the point of execution is the luminous head, and it is drawn last", () => {
   const events = log([
     ["tool.started", 1, { name: "Read", input: { file_path: "a.ts" } }],
     ["tool.started", 3, { name: "Edit", input: { file_path: "a.ts" } }]
   ]);
   const { steps } = toSteps(task(), events);
   const laid = trace(steps, { live: true, halted: false, finished: false });
-
-  assert.deepEqual(laid.groups.map(g => g.label), ["INSPECT", "ACT"]);
-  // The point of execution is the luminous head, and it is the last cell.
-  const cells = laid.groups.flatMap(g => g.cells);
-  assert.equal(cells.filter(c => c.isHead).length, 1);
-  assert.equal(cells[cells.length - 1].isHead, true);
-  // Nothing faint/scheduled is drawn ahead of it.
-  assert.equal(cells.filter(c => c.c === "#c6cfd6").length, 0);
+  assert.equal(laid.cells.filter(c => c.isHead).length, 1);
+  assert.equal(laid.cells[laid.cells.length - 1].isHead, true);
 });
 
 test("an interruption tears the track open instead of capping it", () => {
@@ -152,61 +301,312 @@ test("an interruption tears the track open instead of capping it", () => {
   ]);
   const { steps } = toSteps(task({ status: "needs_you" }), events);
   const laid = trace(steps, { live: false, halted: true, finished: false });
-  const cells = laid.groups.flatMap(g => g.cells);
-  assert.equal(cells.filter(c => c.isHalt).length, 1);
-  assert.equal(cells.filter(c => c.isHead).length, 0);
+  assert.equal(laid.cells.filter(c => c.isHalt).length, 1);
+  assert.equal(laid.cells.filter(c => c.isHead).length, 0);
 });
 
 test("a finished run's track is struck in graphite, with no head", () => {
   const events = log([["tool.started", 1, { name: "Read", input: { file_path: "a.ts" } }]]);
   const { steps } = toSteps(task({ status: "ready" }), events);
-  const cells = trace(steps, { live: false, halted: false, finished: true }).groups.flatMap(g => g.cells);
-  assert.ok(cells.length > 0);
-  assert.ok(cells.every(c => c.c === "#2f2f2f"));
+  const laid = trace(steps, { live: false, halted: false, finished: true });
+  assert.ok(laid.cells.length > 0);
+  assert.ok(laid.cells.every(c => c.c === "#2f2f2f"));
 });
 
-test("a long run is strided down so the track stays one line wide", () => {
+test("a long run is bounded by the tail budget, not strided", () => {
   const many = [];
   for (let i = 0; i < 400; i++) many.push(["tool.started", i, { name: "Read", input: { file_path: "a" + i } }]);
   const { steps } = toSteps(task(), log(many));
-  const laid = trace(steps, { budget: 66, live: true });
-  const cells = laid.groups.flatMap(g => g.cells).length;
-  assert.ok(cells <= 70, "expected the track to stay bounded, got " + cells);
+  const laid = trace(steps, { n: TAIL.expanded, live: true });
+  const marks = laid.cells.filter(c => !c.isHead);
+  assert.equal(marks.length, TAIL.expanded);
+  assert.equal(laid.truncated, true);
 });
 
-test("bands group the run into investigation / change / verification", () => {
+test("a change mark is drawn in the accent, distinct from an ordinary tool mark", () => {
   const events = log([
     ["tool.started", 1, { name: "Read", input: { file_path: "a.ts" } }],
-    ["tool.started", 3, { name: "Grep", input: { pattern: "heldCaptures" } }],
-    ["tool.started", 6, { name: "Edit", input: { file_path: "a.ts" } }],
-    ["tool.started", 9, { name: "Bash", input: { command: "npm test" } }]
+    ["tool.started", 2, { name: "Edit", input: { file_path: "a.ts" } }],
+    ["file.changed", 2, { path: "a.ts" }]
   ]);
   const { steps } = toSteps(task(), events);
-  const [investigation, change, verification] = bands(task(), steps);
-
-  assert.equal(investigation.label, "INVESTIGATION");
-  assert.equal(investigation.items.length, 2);
-  assert.match(investigation.meta, /2 steps/);
-  assert.equal(change.items.length, 1);
-  assert.equal(verification.items.length, 1);
-  // The band the run is standing in is the one that reads as live.
-  assert.equal(verification.meta, "1 step · 0:00");
-  assert.equal(verification.rule, "2px solid #2f2f2f");
+  const laid = trace(steps, { live: false, halted: false, finished: true, accent: "#2f5fa8" });
+  const [read, edit, change] = laid.cells;
+  assert.equal(read.cls, "tool");
+  assert.equal(edit.cls, "tool");
+  assert.equal(change.cls, "change");
+  assert.equal(change.c, "#2f5fa8");
+  assert.notEqual(read.c, change.c);
 });
 
-test("an empty band says what it is waiting for rather than showing nothing", () => {
-  const [investigation, change] = bands(task(), []);
-  assert.equal(investigation.pending, true);
-  assert.equal(change.pendingText, "awaiting investigation");
+test("a coarse provider draws a single ambient bar — never a per-interval dot", () => {
+  const laid = trace([], { coarse: true, live: true, elapsedSeconds: 90 });
+  // Exactly one ambient shape plus the head: nothing here could be mistaken
+  // for a reported event.
+  assert.equal(laid.cells.filter(c => c.ambient).length, 1);
+  assert.equal(laid.cells.filter(c => c.isHead).length, 1);
+  assert.equal(laid.cells.length, 2);
 });
 
-test("a halted band waits on you", () => {
-  const events = log([["tool.started", 1, { name: "Edit", input: { file_path: "a.ts" } }]]);
-  const { steps } = toSteps(task({ status: "needs_you" }), events);
-  const change = bands(task({ status: "needs_you" }), steps)[1];
-  assert.equal(change.meta, "1 step · 0:00");
-  assert.equal(change.rule, "2px solid #2f5fa8");
+test("the coarse ambient bar's width is capped, so elapsed time never reads as a step count", () => {
+  const short = trace([], { coarse: true, elapsedSeconds: 5 });
+  const long = trace([], { coarse: true, elapsedSeconds: 100000 });
+  const capped = trace([], { coarse: true, elapsedSeconds: 100000 * 2 });
+  assert.equal(long.cells[0].w, capped.cells[0].w);
+  assert.ok(parseFloat(long.cells[0].w) > parseFloat(short.cells[0].w));
 });
+
+test("a coarse frame carries the halt tear exactly once and draws no phase frame", () => {
+  const laid = trace([], { coarse: true, halted: true, elapsedSeconds: 30 });
+  assert.equal(laid.cells.filter(c => c.isHalt).length, 1);
+  assert.equal(laid.cells.filter(c => c.unobserved).length, 0);
+});
+
+// --- brackets -------------------------------------------------------------------
+
+test("brackets: CHANGES spans the first to the last change mark, only when declared", () => {
+  const events = log([
+    ["tool.started", 1, { name: "Read", input: { file_path: "a.ts" } }],
+    ["tool.started", 2, { name: "Edit", input: { file_path: "a.ts" } }],
+    ["file.changed", 2, { path: "a.ts" }],
+    ["file.changed", 3, { path: "b.ts" }],
+    ["tool.started", 4, { name: "Bash", input: { command: "npm test" } }]
+  ]);
+  const { steps } = toSteps(task(), events);
+  const laid = trace(steps, { live: false, finished: true });
+  const withCap = brackets(laid.units, { supportsFileChanges: true }, laid.cells);
+  assert.equal(withCap.length, 1);
+  assert.equal(withCap[0].label, "CHANGES");
+
+  // Not declared -> no bracket, even though the same evidence is present.
+  const withoutCap = brackets(laid.units, { supportsFileChanges: false }, laid.cells);
+  assert.deepEqual(withoutCap, []);
+});
+
+test("brackets: two separated runs of edits give two brackets", () => {
+  const events = log([
+    ["file.changed", 1, { path: "a.ts" }],
+    ["tool.started", 2, { name: "Bash", input: { command: "npm test" } }],
+    ["file.changed", 3, { path: "b.ts" }]
+  ]);
+  const { steps } = toSteps(task(), events);
+  const laid = trace(steps, { live: false, finished: true });
+  const out = brackets(laid.units, { supportsFileChanges: true }, laid.cells);
+  assert.equal(out.length, 2);
+});
+
+test("brackets: zero evidence in the tail is a valid, complete reading", () => {
+  const events = log([["tool.started", 1, { name: "Read", input: { file_path: "a.ts" } }]]);
+  const { steps } = toSteps(task(), events);
+  const laid = trace(steps, { live: false, finished: true });
+  assert.deepEqual(brackets(laid.units, { supportsFileChanges: true }, laid.cells), []);
+});
+
+// --- section composition ---------------------------------------------------------
+
+test("sections: a dimension shows only when actually present, and CHECKS never exists", () => {
+  const events = log([
+    ["tool.started", 1, { name: "Read", input: { file_path: "a.ts" } }],
+    ["tool.started", 2, { name: "Edit", input: { file_path: "a.ts" } }],
+    ["file.changed", 2, { path: "a.ts" }],
+    ["tool.started", 3, { name: "Bash", input: { command: "npm test" } }]
+  ]);
+  const { steps } = toSteps(task(), events);
+  const caps = RICH["claude-code"].capabilities;
+  const sec = sections(task(), steps, caps, null);
+
+  assert.ok(sec.activity);
+  assert.deepEqual(sec.files.paths, ["a.ts"]);
+  assert.deepEqual(sec.commands.commands, ["npm test"]);
+  assert.equal(sec.failure, null);
+  assert.equal(sec.result, null); // no result text given
+  assert.equal("checks" in sec, false);
+});
+
+test("sections: declared true with nothing observed yet is not a section — and not a lie", () => {
+  const sec = sections(task({ status: "working" }), [], RICH["claude-code"].capabilities, null);
+  assert.equal(sec.activity, null);
+  assert.equal(sec.files, null);
+  assert.equal(sec.commands, null);
+  assert.deepEqual(sec.capabilityDrift, []);
+});
+
+test("sections: observed facts render even against a false declaration, and flag the drift", () => {
+  const events = log([
+    ["file.changed", 1, { path: "a.ts" }]
+  ]);
+  const { steps } = toSteps(task(), events);
+  const sec = sections(task(), steps, { supportsFileChanges: false }, null);
+  // The fact still renders...
+  assert.deepEqual(sec.files.paths, ["a.ts"]);
+  // ...and the contradiction is flagged for the console, never suppressed.
+  assert.deepEqual(sec.capabilityDrift, ["fileChanges"]);
+});
+
+test("sections: RESULT is gated on status and real result text, FAILURE takes precedence", () => {
+  const ready = sections(task({ status: "ready" }), [], {}, "## Result\nfixed it");
+  assert.deepEqual(ready.result, { text: "## Result\nfixed it" });
+
+  const failed = sections(task({ status: "failed", error: "boom" }), [], {}, "");
+  assert.deepEqual(failed.failure, { error: "boom" });
+  assert.equal(failed.result, null);
+
+  const doneWithError = sections(task({ status: "done", error: "boom" }), [], {}, "text");
+  assert.deepEqual(doneWithError.failure, { error: "boom" });
+  assert.equal(doneWithError.result, null);
+
+  const workingNoText = sections(task({ status: "working" }), [], {}, null);
+  assert.equal(workingNoText.result, null);
+});
+
+// --- the quiet note ---------------------------------------------------------------
+
+test("capabilityNote: result-on-completion fires only while a coarse provider is working", () => {
+  const dsh = COARSE["deepseek-harness"].capabilities;
+  assert.equal(capabilityNote(task({ status: "working" }), dsh), "result reported on completion");
+  assert.equal(capabilityNote(task({ status: "ready" }), dsh), null);
+  assert.equal(capabilityNote(task({ status: "working" }), RICH["claude-code"].capabilities), null);
+});
+
+test("capabilityNote: never fires a capability-gap note merely from a declaration", () => {
+  // A provider with structured events but no declared file dimension —
+  // exactly the "activity visible, files unsupported" shape the spec
+  // considered and this implementation deliberately keeps silent about.
+  const note = capabilityNote(task({ status: "working" }), PARTIAL["some-acp-agent"].capabilities);
+  assert.equal(note, null);
+});
+
+// --- progressive fidelity ----------------------------------------------------------
+
+test("fidelity is a declaration, never an inference from the event log", () => {
+  assert.equal(fidelity("claude-code", RICH), "rich");
+  assert.equal(fidelity("some-acp-agent", PARTIAL), "partial");
+  assert.equal(fidelity("deepseek-harness", COARSE), "coarse");
+  // Unknown or unregistered provider -> coarse, never claim more than declared.
+  assert.equal(fidelity("some-future-harness", RICH), "coarse");
+  assert.equal(fidelity(undefined, RICH), "coarse");
+});
+
+test("a rich provider with no steps yet reads as rich, not coarse, with nothing to show", () => {
+  const row = projectRow(task({ status: "working" }), log([["run.started", 0, {}]]), {
+    open: true,
+    providers: RICH
+  });
+  assert.equal(row.coarse, false);
+  assert.equal(row.fidelity, "rich");
+  assert.equal(row.activitySection, null);
+  assert.equal(row.filesSection, null);
+});
+
+test("a coarse provider draws the single ambient trace, never the old three-phase frame", () => {
+  const events = log([
+    ["run.started", 0, {}],
+    ["run.completed", 40, { status: "ready" }]
+  ]);
+  const row = projectRow(coarseTask({ status: "working" }), events, {
+    open: true,
+    providers: COARSE
+  });
+  assert.equal(row.coarse, true);
+  assert.equal(row.trace.cells.filter(c => c.ambient).length, 1);
+  assert.equal(row.trace.cells.length <= 2, true);
+});
+
+test("a coarse working row carries the result-on-completion note and no data sections", () => {
+  const row = projectRow(coarseTask({ status: "working" }), [], { open: true, providers: COARSE });
+  assert.equal(row.note, "result reported on completion");
+  assert.equal(row.activitySection, null);
+  assert.equal(row.filesSection, null);
+});
+
+// --- section visibility by lifecycle status (§10) -----------------------------
+
+test("working shows ACTIVITY/FILES/COMMANDS when present; needs_you drops COMMANDS", () => {
+  const events = log([
+    ["tool.started", 1, { name: "Read", input: { file_path: "a.ts" } }],
+    ["tool.started", 2, { name: "Edit", input: { file_path: "a.ts" } }],
+    ["file.changed", 2, { path: "a.ts" }],
+    ["tool.started", 3, { name: "Bash", input: { command: "npm test" } }]
+  ]);
+  const working = projectRow(task({ status: "working" }), events, { open: true, providers: RICH });
+  assert.ok(working.activitySection);
+  assert.ok(working.filesSection);
+  assert.ok(working.commandsSection);
+  assert.equal(working.layout, "trace-primary");
+
+  const needsYou = projectRow(
+    task({ status: "needs_you", blockedOn: { type: "permission" } }),
+    events,
+    { open: true, providers: RICH }
+  );
+  assert.ok(needsYou.activitySection);
+  assert.ok(needsYou.filesSection);
+  assert.equal(needsYou.commandsSection, null);
+});
+
+test("ready shows RESULT-eligible FILES/COMMANDS and a provenance trace, never ACTIVITY", () => {
+  const events = log([
+    ["tool.started", 1, { name: "Edit", input: { file_path: "a.ts" } }],
+    ["file.changed", 1, { path: "a.ts" }],
+    ["tool.started", 4, { name: "Bash", input: { command: "npm test" } }],
+    ["run.completed", 5, { status: "ready" }]
+  ]);
+  const row = projectRow(task({ status: "ready" }), events, { open: true, providers: RICH });
+  assert.equal(row.layout, "answer-primary");
+  assert.equal(row.activitySection, null);
+  assert.ok(row.filesSection);
+  assert.ok(row.commandsSection);
+  assert.ok(row.provenance);
+  assert.equal(row.provenance.heading, "PROVENANCE");
+  assert.equal(row.trace, null);
+});
+
+test("failed shows FAILURE and FILES but never COMMANDS; provenance is labelled before the stop", () => {
+  const events = log([
+    ["tool.started", 1, { name: "Edit", input: { file_path: "a.ts" } }],
+    ["file.changed", 1, { path: "a.ts" }],
+    ["tool.started", 2, { name: "Bash", input: { command: "npm test" } }],
+    ["run.failed", 3, { error: "boom" }]
+  ]);
+  const row = projectRow(task({ status: "failed", error: "boom" }), events, { open: true, providers: RICH });
+  assert.ok(row.filesSection);
+  assert.equal(row.commandsSection, null);
+  assert.equal(row.provenance.heading, "BEFORE THE STOP");
+});
+
+test("done carries no trace at all — the whole fix for the old three-empty-band screen", () => {
+  const events = log([
+    ["tool.started", 1, { name: "Read", input: { file_path: "a.ts" } }],
+    ["tool.started", 9, { name: "Edit", input: { file_path: "a.ts" } }],
+    ["file.changed", 9, { path: "a.ts" }],
+    ["run.completed", 14, { status: "ready" }]
+  ]);
+  const row = projectRow(task({ status: "done" }), events, { open: true, providers: RICH });
+  assert.equal(row.layout, "answer-primary");
+  assert.equal(row.trace, null);
+  assert.equal(row.provenance, null);
+  assert.equal(row.activitySection, null);
+  assert.equal(row.filesSection, null);
+  assert.deepEqual(row.mini, []);
+
+  // A task still in flight keeps its mini trace.
+  const live = projectRow(task({ status: "working" }), events, { providers: RICH });
+  assert.ok(live.mini.length > 0);
+});
+
+test("a coarse ready row reports files as absent (no section), not as zero", () => {
+  const coarseRow = projectRow(coarseTask({ status: "ready" }), [], { open: true, providers: COARSE });
+  assert.equal(coarseRow.filesSection, null);
+  assert.deepEqual(coarseRow.files, []);
+  assert.equal(coarseRow.arg, "");
+
+  // A rich provider that genuinely changed nothing also shows no section —
+  // the RESULT text carries the answer, never a confident zero.
+  const richRow = projectRow(task({ status: "ready" }), [], { open: true, providers: RICH });
+  assert.equal(richRow.filesSection, null);
+});
+
+// --- everything else projectRow already covered ------------------------------
 
 test("projectRow renders the Needs You state from the normalized blockedOn", () => {
   const blocked = task({
@@ -263,26 +663,6 @@ test("projectRow distinguishes permission from decision for the interaction surf
   assert.equal(projectRow(decision, [], { open: true }).providerId, "claude-code");
 });
 
-test("an answered decision becomes a YOU step in the ledger", () => {
-  const events = log([
-    ["tool.started", 1, { name: "Read", input: { file_path: "a.ts" } }],
-    ["needs_user", 2, { reason: "decision", blockedOn: { type: "decision", text: "X or Y?" } }],
-    ["task.answered", 5, { answer: "Choose X, because it is the narrower change." }]
-  ]);
-  const steps = toSteps(task({ status: "needs_you" }), events).steps;
-  const humans = steps.filter(s => s.human);
-  assert.equal(humans.length, 1);
-  assert.equal(humans[0].verb, "YOU");
-  assert.match(humans[0].arg, /answered the decision/);
-  assert.match(humans[0].arg, /Choose X, because it is the narrower change/);
-  // A long answer is shown short in the step line, never dropped entirely.
-  const longAnswer = "x".repeat(300);
-  const longSteps = toSteps(task({ status: "needs_you" }), log([
-    ["task.answered", 1, { answer: longAnswer }]
-  ])).steps;
-  assert.ok(longSteps[0].arg.length < longAnswer.length);
-});
-
 test("projectRow renders the ready result from the files the run actually changed", () => {
   const events = log([
     ["tool.started", 1, { name: "Edit", input: { file_path: "/w/src/a.ts" } }],
@@ -290,12 +670,13 @@ test("projectRow renders the ready result from the files the run actually change
     ["tool.started", 4, { name: "Bash", input: { command: "npm test" } }],
     ["run.completed", 5, { status: "ready" }]
   ]);
-  const row = projectRow(task({ status: "ready" }), events, { base: "/w", open: true });
+  const row = projectRow(task({ status: "ready" }), events, { base: "/w", open: true, providers: RICH });
   assert.equal(row.ready, true);
   assert.equal(row.stateLabel, "READY");
   assert.deepEqual(row.files, ["src/a.ts"]);
   assert.equal(row.phaseLabel, "COMPLETE");
   assert.equal(row.arg, "1 file changed");
+  assert.equal(row.sub, "1 file · ready for you");
   // The clock measures the run (first event -> last event), not the wall
   // time since the task was filed.
   assert.equal(row.elapsed, "0:04");
@@ -314,12 +695,25 @@ test("projectRow compresses a done task and drops its trace, as the design does"
   assert.equal(row.titleWeight, 400);
   assert.equal(row.titleColor, "#5c6771");
   assert.match(row.sub, /^closed · /);
-  // The EXECUTION column belongs to live work; a closed row leaves it empty.
   assert.deepEqual(row.mini, []);
+});
 
-  // A task still in flight keeps its trace.
-  const live = projectRow(task({ status: "working" }), events, { providers: RICH });
-  assert.ok(live.mini.flatMap(g => g.cells).length > 0);
+test("a closed row's sub keeps a fixed width so EXECUTION reads as a grid", () => {
+  const NBSP = " ";
+  const closed = seconds => projectRow(task({ status: "done" }), log([
+    ["tool.started", 1, { name: "Read", input: { file_path: "a.ts" } }],
+    ["run.completed", seconds + 1, { status: "ready" }]
+  ]), { providers: RICH }).sub;
+
+  assert.equal(closed(127), "closed · " + NBSP.repeat(3) + "2:07");
+  assert.equal(closed(601), "closed · " + NBSP.repeat(2) + "10:01");
+  assert.equal(closed(33), "closed · " + NBSP.repeat(3) + "0:33");
+  assert.equal(closed(903), "closed · " + NBSP.repeat(2) + "15:03");
+  assert.equal(closed(3847), "closed · 1:04:07");
+  assert.equal(closed(0), "closed · " + NBSP.repeat(3) + "0:00");
+  const widths = new Set([closed(127), closed(601), closed(33), closed(903), closed(3847), closed(0)].map(s => s.length));
+  assert.equal(widths.size, 1);
+  assert.equal([...widths][0], 16);
 });
 
 test("projectRow surfaces failure, a state the design does not draw", () => {
@@ -334,7 +728,6 @@ test("execution metadata is secondary: node and provider, never the headline", (
   const row = projectRow(task(), [], { open: true });
   assert.equal(row.node, "local / claude-code");
   assert.equal(row.title, "investigate the correction lifecycle");
-  // A different harness on a different node changes only that line.
   const other = projectRow(
     task({ execution: { provider: "codex", node: "mini", workspace: "local" } }),
     [],
@@ -375,27 +768,6 @@ test("ledger helpers", () => {
   );
 });
 
-test("step arguments and changed files are shown as project paths, not machine paths", () => {
-  const events = log([
-    ["tool.started", 1, { name: "Read", input: { file_path: "/w/services/capture/ingest.ts" } }],
-    ["tool.started", 2, { name: "Edit", input: { file_path: "/w/services/capture/ingest.ts" } }],
-    ["file.changed", 2, { path: "/w/services/capture/ingest.ts" }]
-  ]);
-  const { steps, files } = toSteps(task(), events, { base: "/w" });
-  assert.deepEqual(steps.map(s => s.arg), [
-    "services/capture/ingest.ts",
-    "services/capture/ingest.ts"
-  ]);
-  assert.deepEqual(files, ["services/capture/ingest.ts"]);
-
-  // A file outside the workspace keeps its absolute path — it is genuinely
-  // not a project path and pretending otherwise would mislead.
-  const outside = toSteps(task(), log([
-    ["tool.started", 1, { name: "Read", input: { file_path: "/etc/hosts" } }]
-  ]), { base: "/w" });
-  assert.equal(outside.steps[0].arg, "/etc/hosts");
-});
-
 test("a run measured in hours reads as hours, not as 479 minutes", () => {
   assert.equal(fmtDuration(59 * 60 + 59), "59:59");
   assert.equal(fmtDuration(60 * 60), "1:00:00");
@@ -433,7 +805,6 @@ test("projectRuns formats run records into ledger rows without inventing fields"
         outcome: "ready",
         attempts: 1
       },
-      // A legacy run with no timing: duration stays absent, shown as "—".
       { run: 3, provider: "codex", node: "mini", outcome: "failed", error: "boom", legacy: true }
     ],
     { providers }
@@ -447,8 +818,7 @@ test("projectRuns formats run records into ledger rows without inventing fields"
   assert.equal(runs[0].attempts, 2);
   assert.equal(runs[1].provider, "DEEPSEEK HARNESS");
   assert.equal(runs[1].duration, "2:48");
-  assert.equal(runs[1].model, null); // DSH never surfaced a model — absent
-  // An unknown provider id falls back to the id itself.
+  assert.equal(runs[1].model, null);
   assert.equal(runs[2].provider, "CODEX");
   assert.equal(runs[2].duration, null);
   assert.equal(runs[2].state, "FAILED");
@@ -466,20 +836,6 @@ test("projectRuns maps needs_you/working states into the ledger vocabulary", () 
   assert.equal(runs[1].state, "WORKING");
 });
 
-test("an interactive ACP permission becomes a YOU step when resolved in place", () => {
-  const events = log([
-    ["tool.started", 1, { name: "Edit", input: { file_path: "a.ts" } }],
-    ["needs_user", 2, { reason: "permission", blockedOn: { type: "permission", live: true, tool: "Edit a.ts" } }],
-    ["permission.resolved", 5, { grant: "allow" }],
-    ["run.completed", 7, { status: "ready" }]
-  ]);
-  const steps = toSteps(task({ status: "ready" }), events).steps;
-  const humans = steps.filter(s => s.human);
-  assert.equal(humans.length, 1);
-  assert.equal(humans[0].verb, "YOU");
-  assert.match(humans[0].arg, /continuing the same run/);
-});
-
 test("projectRow exposes interactive permission options without inventing them", () => {
   const blocked = task({
     status: "needs_you",
@@ -491,7 +847,7 @@ test("projectRow exposes interactive permission options without inventing them",
       description: "Edit submit-capture.ts",
       options: [{ optionId: "allow-once", name: "Allow once", kind: "allow_once" }],
       canAllow: true,
-      canReject: false // no reject option supplied — ALLOW only, never guessed
+      canReject: false
     }
   });
   const row = projectRow(blocked, [], { base: "/w", open: true });
@@ -501,7 +857,7 @@ test("projectRow exposes interactive permission options without inventing them",
   assert.equal(row.permOptions.length, 1);
   assert.equal(row.permOptions[0].kind, "allow_once");
   assert.equal(row.permPath, "src/submit-capture.ts");
-  assert.equal(row.permWhy, "Edit submit-capture.ts"); // description fallback
+  assert.equal(row.permWhy, "Edit submit-capture.ts");
 });
 
 test("a long intent keeps the expanded heading proportionate (smallest typography adjustment)", () => {
@@ -511,48 +867,16 @@ test("a long intent keeps the expanded heading proportionate (smallest typograph
   assert.ok(long.length > 90, "the fixture should exceed the long-title threshold");
   assert.ok(short.length <= 90, "the default fixture should stay a short title");
 
-  // Long intents drop to the narrow heading size at any width.
   assert.equal(projectRow(task({ title: long }), [], { open: true, mid: true }).titleSize, "24px");
   assert.equal(projectRow(task({ title: long }), [], { open: true, mid: false }).titleSize, "24px");
-  // Short intents keep the current treatment exactly.
   assert.equal(projectRow(task(), [], { open: true, mid: true }).titleSize, "31px");
   assert.equal(projectRow(task(), [], { open: true, mid: false }).titleSize, "24px");
-  // A long halted intent is proportionate too.
   const halted = task({ title: long, status: "needs_you", blockedOn: { type: "permission" } });
   assert.equal(projectRow(halted, [], { open: true, mid: true }).titleSize, "26px");
   assert.equal(projectRow(task({ status: "needs_you", blockedOn: { type: "permission" } }), [], { open: true, mid: true }).titleSize, "34px");
 
-  // Collapsed rows keep the compact size regardless of intent length.
   assert.equal(projectRow(task({ title: long }), [], { open: false }).titleSize, "17.5px");
-  // The persisted intent is never truncated by the projection.
   assert.equal(projectRow(task({ title: long }), [], { open: true }).title, long);
-});
-
-test("after a terminal failure, downstream bands read as not reached, not awaiting", () => {
-  const events = log([
-    ["tool.started", 1, { name: "Read", input: { file_path: "a.ts" } }],
-    ["run.failed", 2, { error: "spawn dsh ENOENT" }]
-  ]);
-  const failed = task({ status: "failed", error: "spawn dsh ENOENT" });
-  const { steps } = toSteps(failed, events);
-  const [investigation, change, verification] = bands(failed, steps);
-
-  // The phase that was standing when the run failed keeps its steps; the
-  // phases that can no longer execute say so instead of "awaiting".
-  assert.ok(investigation.items.length >= 1);
-  assert.equal(change.pendingText, "not reached");
-  assert.equal(change.meta, "not reached");
-  assert.equal(verification.pendingText, "not reached");
-
-  // A task closed from a failure reads the same way (existing state — the
-  // error survives close — never a new lifecycle state).
-  const closedFromFailure = bands(task({ status: "done", error: "spawn dsh ENOENT" }), steps);
-  assert.equal(closedFromFailure[1].pendingText, "not reached");
-
-  // Live and completed runs keep the historical wording; only the terminal
-  // failure presentation changed.
-  assert.equal(bands(task(), steps)[1].pendingText, "awaiting investigation");
-  assert.equal(bands(task({ status: "ready" }), steps)[1].pendingText, "awaiting investigation");
 });
 
 test("projectRow exposes the AUTO routing decision of the current run", () => {
@@ -564,140 +888,25 @@ test("projectRow exposes the AUTO routing decision of the current run", () => {
   const row = projectRow(routed, [], {});
   assert.deepEqual(row.routed, { provider: "alpha", reason: "preferred compatible provider" });
 
-  // Manual runs and legacy tasks have no routing decision.
   const manual = projectRow(task({ runs: [{ run: 1, provider: "alpha", outcome: "ready" }] }), [], {});
   assert.equal(manual.routed, null);
   assert.equal(projectRow(task(), [], {}).routed, null);
 });
 
-// --- progressive fidelity --------------------------------------------------
-//
-// How much of a run's shape can be drawn is a DECLARED provider capability,
-// never an inference from an empty event log. These pin the difference.
-
-const RICH = { "claude-code": { capabilities: { supportsStructuredEvents: true } } };
-const COARSE = { "deepseek-harness": { capabilities: { supportsStructuredEvents: false } } };
-const coarseTask = over => task({ execution: { provider: "deepseek-harness", node: "local", workspace: "local" }, ...over });
-
-test("observability comes from the declared capability, not from the events", () => {
-  assert.equal(isRichProvider("claude-code", RICH), true);
-  assert.equal(isRichProvider("deepseek-harness", COARSE), false);
-  // An unregistered or unknown provider is assumed coarse — never claim more
-  // than the provider declares.
-  assert.equal(isRichProvider("some-future-harness", RICH), false);
-  assert.equal(isRichProvider(undefined, RICH), false);
-});
-
-test("a coarse provider keeps the INSPECT/ACT/VERIFY frame instead of vanishing", () => {
-  const events = log([
-    ["run.started", 0, {}],
-    ["run.completed", 40, { status: "ready" }]
-  ]);
-  const row = projectRow(coarseTask({ status: "ready" }), events, {
-    open: true,
-    providers: COARSE
-  });
-
-  assert.equal(row.coarse, true);
-  // The frame is present and labelled...
-  assert.deepEqual(row.groups.map(g => g.label), ["INSPECT", "ACT", "VERIFY"]);
-  // ...but every cell is marked unobserved, so nothing reads as activity.
-  const cells = row.groups.flatMap(g => g.cells);
-  assert.ok(cells.length > 0);
-  assert.ok(cells.every(c => c.unobserved === true));
-  assert.ok(cells.every(c => c.h === "3px"));
-});
-
-test("a coarse provider says 'not reported', never 'awaiting change'", () => {
-  const events = log([["run.completed", 40, { status: "ready" }]]);
-  const rowBands = projectRow(coarseTask({ status: "ready" }), events, {
-    open: true,
-    providers: COARSE
-  }).bands;
-
-  for (const band of rowBands) {
-    assert.equal(band.pendingText, "not reported by this provider", band.label);
-    assert.equal(band.unobserved, true, band.label);
-  }
-});
-
-test("a rich provider with no steps yet still reads as not started", () => {
-  const row = projectRow(task({ status: "working" }), log([["run.started", 0, {}]]), {
-    open: true,
-    providers: RICH
-  });
-  assert.equal(row.coarse, false);
-  // The phase in flight reads as running; the ones after it are genuinely
-  // still ahead — not "unreportable".
-  assert.equal(row.bands[0].pendingText, "running");
-  assert.equal(row.bands[1].pendingText, "awaiting investigation");
-  assert.equal(row.bands[2].pendingText, "awaiting change");
-  assert.ok(row.bands.every(b => b.unobserved === false));
-});
-
-test("a coarse result reports files as unknown rather than as zero", () => {
-  const coarse = projectRow(coarseTask({ status: "ready" }), [], { open: true, providers: COARSE });
-  assert.equal(coarse.filesReported, false);
-  assert.match(coarse.arg, /not reported by this provider/);
-
-  // A rich provider that genuinely changed nothing still says zero.
-  const rich = projectRow(task({ status: "ready" }), [], { open: true, providers: RICH });
-  assert.equal(rich.filesReported, true);
-  assert.equal(rich.arg, "no files changed");
-});
-
-test("a coarse frame carries the halt tear exactly once and invents no phase", () => {
-  const events = log([
-    ["run.started", 0, {}],
-    ["needs_user", 30, { reason: "decision", blockedOn: { type: "decision" } }]
-  ]);
-  const row = projectRow(
-    coarseTask({ status: "needs_you", blockedOn: { type: "decision", text: "which one?" } }),
-    events,
-    { open: true, providers: COARSE }
-  );
-  const cells = row.groups.flatMap(g => g.cells);
-  assert.equal(cells.filter(c => c.isHalt).length, 1);
-  // Still exactly three groups — the marker did not fabricate a fourth phase.
-  assert.deepEqual(row.groups.map(g => g.label), ["INSPECT", "ACT", "VERIFY"]);
-  assert.equal(row.phaseLabel, "HALTED AT");
-});
-
-test("the track spends its cells on time, so a long step strikes wider", () => {
-  // Two steps: the first held the run for 40s, the second for 4s.
-  const events = log([
-    ["tool.started", 0, { name: "Read", input: { file_path: "a.ts" } }],
-    ["tool.started", 40, { name: "Edit", input: { file_path: "a.ts" } }],
-    ["run.completed", 44, { status: "ready" }]
-  ]);
-  const row = projectRow(task({ status: "ready" }), events, { open: true, providers: RICH });
-  const [inspect, act] = row.groups;
-  assert.equal(inspect.label, "INSPECT");
-  assert.equal(act.label, "ACT");
-  assert.ok(
-    inspect.cells.length > act.cells.length * 3,
-    `expected the 40s step to strike far wider than the 4s one, got ${inspect.cells.length} vs ${act.cells.length}`
-  );
-});
-
-test("time parked on a human is not counted as execution on the track", () => {
+test("time parked on a human is not counted in the trace's tail selection", () => {
   const events = log([
     ["tool.started", 0, { name: "Read", input: { file_path: "a.ts" } }],
     ["tool.started", 10, { name: "Edit", input: { file_path: "a.ts" } }],
     ["needs_user", 12, { reason: "permission", blockedOn: { type: "permission" } }]
   ]);
   const blocked = task({ status: "needs_you", blockedOn: { type: "permission", file: "a.ts" } });
-  // "now" is an hour after the halt: the HALTED-AT clock grows, the track does not.
+  // "now" is an hour after the halt: the HALTED-AT clock grows, the trace
+  // still shows exactly the two real units, never a synthesized gap.
   const row = projectRow(blocked, events, {
     open: true,
     providers: RICH,
     now: Date.parse("2026-01-01T11:00:00.000Z")
   });
-  const act = row.groups.find(g => g.label === "ACT");
-  const inspect = row.groups.find(g => g.label === "INSPECT");
-  // The blocked EDIT must not have swallowed the whole track.
-  assert.ok(
-    act.cells.length < inspect.cells.length * 2,
-    `waiting time leaked into the track: inspect ${inspect.cells.length} vs act ${act.cells.length}`
-  );
+  const marks = row.trace.cells.filter(c => !c.isHalt);
+  assert.equal(marks.length, 2);
 });
