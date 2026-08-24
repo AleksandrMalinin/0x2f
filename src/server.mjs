@@ -158,6 +158,16 @@ export async function startServer(base = process.cwd(), port = 4242, opts = {}) 
         return;
       }
 
+      // Surface descriptor: how this server is reached. The local server is
+      // always "local" and its Mac is always "online"; the relay serves the
+      // same client with mode "relay" and a real online/offline signal, so
+      // the web client can tell where it is running and disable actions when
+      // the Mac cannot be reached.
+      if (req.method === "GET" && url.pathname === "/api/status") {
+        json(res, { mode: "local", mac: "online", base: store.base });
+        return;
+      }
+
       // Live event channel — normalized Work events, SSE format.
       if (req.method === "GET" && url.pathname === "/api/events") {
         res.writeHead(200, {

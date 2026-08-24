@@ -9,7 +9,8 @@ until you close it. You work in terms of **tasks**, not agent sessions.
 
 `0x2F` is hex for the ASCII `/` (47). The CLI is `2f`.
 
-Zero-dependency Node.js, no build step, local-first.
+Zero-dependency Node.js (one exception: the `ws` package, used only by the
+remote-control relay agent), no build step, local-first.
 
 ## Install
 
@@ -213,6 +214,43 @@ Three distinctions that help read the code:
   where execution happens.
 - **Provider ≠ model.** A harness runs many models; 0x2F routes to harnesses.
 
+## Remote control
+
+Control 0x2F from your phone while away from the laptop — the Mac keeps
+running the work; the phone is a compact control surface.
+
+```bash
+2f pair --relay https://relay.example.com
+```
+
+This starts (or reuses) the 0x2F runtime, which connects **outbound** to the
+relay (works behind NAT, from any phone network), prints a short-lived
+one-time pairing URL, and you open it on your phone. The phone serves the
+SAME Web UI from the relay — see NEEDS YOU / WORKING / READY / FAILED, open a
+Task, `ANSWER` / `ALLOW` / `REJECT` / `NOTE` / `SEND BACK` / `ACCEPT`.
+
+Three ownership rules:
+
+> **Local 0x2F owns work.** Tasks, runs, agents, repository and credentials
+> stay on the Mac; the relay never becomes the Task source of truth.
+> **Relay owns connectivity.** It forwards normalized events and proxies
+> commands; it is disposable, and a restart never loses Task state (the Mac
+> restores the relay's view on reconnect).
+> **Web owns control.** The phone talks the same API semantics as the local
+> UI — no second Task-control model.
+
+Reliability is explicit: while the Mac is offline the phone shows the bounded
+last-known state with a **MAC OFFLINE** banner and disables actions; mutating
+commands are **never queued** (a tap on SEND BACK either runs now or fails
+loudly). Every mutating request carries a unique `requestId`; the Mac's
+bounded idempotency cache means a double tap or network retry can never
+execute `ACCEPT` / `ANSWER` / `SEND BACK` twice.
+
+The relay is a small standalone Node app — see [`relay/`](relay/README.md)
+for deployment (Node ≥ 20, `ws`, TLS in front via Caddy/nginx). Full
+setup-and-test walkthrough (relay → pair → phone → control loop → offline):
+[`docs/remote-control.md`](docs/remote-control.md).
+
 ## Project structure
 
 ```text
@@ -225,6 +263,10 @@ src/
   ui.mjs              `2f ui` launcher: probe, spawn, wait, open the browser
   project.mjs         workspace context (.work files, prompt assembly)
   render.mjs          CLI rendering
+  relay/
+    agent.mjs         remote-control agent: outbound WS, events up, commands down
+    pair.mjs          `2f pair`: one-time device pairing
+    protocol.mjs      the versioned Mac ↔ relay wire contract
   core/
     actions.mjs       the single implementation of Work's business rules
     lifecycle.mjs     task state machine (working → needs_you → ready/failed → done)
@@ -245,6 +287,7 @@ src/
     index.html        Web shell
     app.js            browser client (fetch + SSE)
     ledger.mjs        pure event → ledger projection
+relay/                the standalone relay service (see relay/README.md)
 examples/providers/   verified manifests (Gemini, Cursor, OpenCode, Codex, command)
 test/                 node --test suite
 ```
@@ -276,7 +319,10 @@ repository, `npm link` keeps it pointing at your checkout.
 ## Current limitations
 
 - **Execution is local-only.** The API binds to `127.0.0.1`; there is no
-  remote/mini-PC node yet.
+  remote/mini-PC node yet. Remote control is an outbound control layer, not
+  remote execution.
+- **Remote control is v1.** No push notifications (the phone works while the
+  app is open), no offline command queue by design, one phone per Mac.
 - **AUTO is deterministic policy routing**, not semantic selection — and there
   is no automatic failover (a routed run that fails is `failed`, not secretly
   retried elsewhere).

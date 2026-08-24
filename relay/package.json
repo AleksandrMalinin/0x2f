@@ -1,0 +1,20 @@
+{
+  "name": "0x2f-relay",
+  "version": "0.1.0",
+  "description": "0x2F Relay — connectivity/control layer between a phone browser and a local 0x2F runtime. Never cloud 0x2f: no Task state, no credentials, no execution.",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "0x2f-relay": "./server.mjs"
+  },
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node --test \"../test/*.test.mjs\""
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}

@@ -118,17 +118,17 @@ function otherProcessMessage(port, url) {
   );
 }
 
-// The whole launcher, with injectable seams for tests (probe, spawn, browser
-// opener). Returns { status: "reused" | "started", url, opened }.
-export async function launchUi({
+// Start the detached 0x2F runtime unless a healthy one already answers on
+// the port. Returns { status: "reused" | "started", url }. This is the
+// shared "make sure 0x2F is running" step behind `2f ui` and `2f pair` —
+// both surfaces need the runtime alive, and neither may start a second one.
+export async function ensureRuntime({
   base,
   port = 4242,
-  open = true,
   host = "127.0.0.1",
   waitMs = 10000,
   intervalMs = 150,
   probe = probeUi,
-  openBrowserImpl = openBrowser,
   spawnImpl = spawn,
   logPath
 } = {}) {
@@ -137,8 +137,7 @@ export async function launchUi({
   // Already running? Reuse it — never start a second runtime.
   const first = await probe(url);
   if (first.ok) {
-    const opened = open ? await openBrowserImpl(url) : false;
-    return { status: "reused", url, opened };
+    return { status: "reused", url };
   }
   if (first.kind === "other") {
     throw new UiError(otherProcessMessage(port, url));
@@ -166,8 +165,7 @@ export async function launchUi({
   for (;;) {
     const p = await probe(url);
     if (p.ok) {
-      const opened = open ? await openBrowserImpl(url) : false;
-      return { status: "started", url, opened };
+      return { status: "started", url };
     }
     if (p.kind === "other") {
       throw new UiError(otherProcessMessage(port, url));
@@ -180,4 +178,32 @@ export async function launchUi({
       `See ${log} for the runtime log. If another process owns the port, stop ` +
       `it or use another port: 2f ui <port>.`
   );
+}
+
+// The whole launcher, with injectable seams for tests (probe, spawn, browser
+// opener). Returns { status: "reused" | "started", url, opened }.
+export async function launchUi({
+  base,
+  port = 4242,
+  open = true,
+  host = "127.0.0.1",
+  waitMs = 10000,
+  intervalMs = 150,
+  probe = probeUi,
+  openBrowserImpl = openBrowser,
+  spawnImpl = spawn,
+  logPath
+} = {}) {
+  const result = await ensureRuntime({
+    base,
+    port,
+    host,
+    waitMs,
+    intervalMs,
+    probe,
+    spawnImpl,
+    logPath
+  });
+  const opened = open ? await openBrowserImpl(result.url) : false;
+  return { status: result.status, url: result.url, opened };
 }
