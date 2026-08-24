@@ -94,6 +94,11 @@ const state = {
   connected: false,
   width: window.innerWidth,
   base: "",
+  // Remote mode (the client is served by the 0x2F Relay): `macOnline` tracks
+  // whether the Mac itself is reachable — distinct from `connected`, which
+  // only says the SSE stream to whatever server served this page is alive.
+  remote: false,
+  macOnline: true,
   flash: null,
   soundOn: storedFlag(SOUND_KEY, true),
   notifyOn: storedFlag(NOTIFY_KEY, false),
@@ -186,7 +191,15 @@ function richBody(text) {
 // --- transport -------------------------------------------------------------
 
 async function api(path, options) {
-  const res = await fetch(path, options);
+  const opts = { ...options };
+  // Every mutating request carries a unique idempotency key. The relay
+  // forwards it as the command requestId and the Mac never executes the same
+  // key twice — so a double tap, a network retry, or a reconnect can never
+  // run ACCEPT / ANSWER / SEND BACK twice.
+  if ((opts.method ?? "GET") === "POST") {
+    opts.headers = { ...(opts.headers ?? {}), "x-0x2f-request-id": requestId() };
+  }
+  const res = await fetch(path, opts);
   if (!res.ok) {
     let message = "HTTP " + res.status;
     try {
@@ -197,6 +210,50 @@ async function api(path, options) {
     throw new Error(message);
   }
   return res.status === 204 ? null : res.json();
+}
+
+function requestId() {
+  try {
+    return crypto.randomUUID();
+  } catch {
+    return "rid-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 10);
+  }
+}
+
+// Remote mode: the client is served by the relay, which exposes the Mac's
+// presence through /api/status. While the Mac is offline, mutating controls
+// are unavailable — explicit failure beats "taps SEND BACK now, it executes
+// 15 minutes later".
+async function checkStatus() {
+  let info = null;
+  try {
+    const res = await fetch("/api/status");
+    if (res.status === 401) {
+      location.href = "/"; // session lost — the relay serves the pairing page
+      return;
+    }
+    if (res.ok) info = await res.json();
+  } catch {
+    info = null; // server unreachable — treat as offline if we were remote
+  }
+  const remote = info?.mode === "relay";
+  const macOnline = remote ? info?.mac === "online" : true;
+  if (remote !== state.remote || macOnline !== state.macOnline) {
+    state.remote = remote;
+    state.macOnline = macOnline;
+    render();
+  } else {
+    state.remote = remote;
+    state.macOnline = macOnline;
+  }
+}
+
+function remoteBlocked() {
+  if (state.remote && !state.macOnline) {
+    flash("MAC OFFLINE — actions are unavailable until the Mac reconnects.");
+    return true;
+  }
+  return false;
 }
 
 function post(path) {
@@ -386,13 +443,29 @@ async function act(fn) {
   await reloadTasks();
 }
 
-const allow = id => act(() => post("/api/tasks/" + id + "/allow"));
-const reject = id => act(() => post("/api/tasks/" + id + "/reject"));
-const accept = id =>
+const allow = id => {
+  if (remoteBlocked()) return;
+  act(() => post("/api/tasks/" + id + "/allow"));
+};
+const reject = id => {
+  if (remoteBlocked()) return;
+  act(() => post("/api/tasks/" + id + "/reject"));
+};
+const accept = id => {
+  if (remoteBlocked()) return;
   act(async () => {
     await post("/api/tasks/" + id + "/close");
     if (state.openId === id) state.openId = null;
   });
+};
+
+// SEND BACK reruns the task through the shared rerun action: the next run's
+// input is rebuilt from current Task state (answers, notes, prior results),
+// so it is the "continue with my correction" gesture of the control loop.
+const sendBack = id => {
+  if (remoteBlocked()) return;
+  act(() => post("/api/tasks/" + id + "/rerun"));
+};
 
 // CLOSE tells 0x2F this Work is no longer active — the same closeWork action
 // the ACCEPT button uses. It never touches the provider: no resume, no new
@@ -404,6 +477,7 @@ const close = id => accept(id);
 // ANSWER responds to a needs_you/decision block. A decision is answered,
 // never allowed/rejected; the answer is persisted with the task.
 async function answerDecision(id) {
+  if (remoteBlocked()) return;
   const answer = (state.answers.get(id) ?? "").trim();
   if (!answer) return;
   try {
@@ -617,6 +691,27 @@ function renderRunsSection(detail, row, accent) {
 
 // --- ledger rendering ------------------------------------------------------
 
+// A provider that emits more than it declared is not hidden (facts still
+// render — see ledger.mjs `sections()`), it is flagged: a console warning,
+// once per task+dimension-set, never a UI element. This is the one place
+// `row.capabilityDrift` is read.
+const warnedDrift = new Set();
+function warnCapabilityDrift(row) {
+  if (!row.capabilityDrift?.length) return;
+  const key = row.id + ":" + row.capabilityDrift.join(",");
+  if (warnedDrift.has(key)) return;
+  warnedDrift.add(key);
+  console.warn(
+    `0x2F: task ${row.num} (${row.providerId ?? "?"}) reported ${row.capabilityDrift.join(", ")} ` +
+      "without declaring the capability — the ledger shows it anyway."
+  );
+}
+
+// One mark per real event: `cell.cls` is the mark's class (change/command/
+// tool/human), never a phase. The halt tear and the live head are POSITIONS
+// (see ledger.mjs trace()), not units — they get their own shapes instead of
+// a fill. `cell.ambient` is the coarse provider's single elapsed-time bar: it
+// is deliberately never shaped like a reported mark.
 function trackCell(cell, accent) {
   const parts = [];
   if (cell.isHead) {
@@ -626,6 +721,7 @@ function trackCell(cell, accent) {
         style: { width: cell.w, background: accent, boxShadow: "0 0 9px " + accent + "70" }
       })
     );
+    return el("div", { class: "track-cell", style: { width: cell.w } }, parts);
   }
   if (cell.isHalt) {
     parts.push(
@@ -638,70 +734,77 @@ function trackCell(cell, accent) {
         [el("span", { style: { color: accent }, text: "!" })]
       )
     );
+    return el("div", { class: "track-cell", style: { width: cell.w } }, parts);
   }
   parts.push(
     el("div", {
-      class: "fill" + (cell.unobserved ? " unobserved" : ""),
+      class: "fill" + (cell.ambient ? " ambient" : ""),
       style: { height: cell.h, background: cell.c }
     })
   );
-  return el("div", { class: "track-cell", style: { width: cell.w } }, parts);
+  return el("div", { class: "track-cell", style: { width: cell.w }, title: cell.arg || null }, parts);
 }
 
 function renderTrack(row, accent) {
+  const t = row.trace;
+  if (!t) return null; // answer-primary rows (ready/failed/done) carry no trace
+
   const wash = el("div", {
     class: "track-wash",
     style: {
-      width: row.doneW,
+      width: t.doneW,
       background: "linear-gradient(180deg, rgba(47,95,168,0) 40%, " + accent + "1f 100%)"
     }
   });
 
-  const track = el(
+  const track = el("div", { class: "track" }, t.cells.map(cell => trackCell(cell, accent)));
+
+  // CHANGES is the one bracket the projection can ever draw (VERIFY/INSPECT
+  // are intentionally unreachable — see ledger.mjs brackets()).
+  const brackets = el(
     "div",
-    { class: "track" },
-    row.groups.map(group =>
-      el("div", { class: "track-group" }, group.cells.map(cell => trackCell(cell, accent)))
+    { class: "track-brackets" },
+    t.brackets.map(b =>
+      el("div", { class: "track-bracket", style: { left: b.x, width: b.w } }, [
+        el("span", { class: "track-bracket-label", text: b.label })
+      ])
     )
   );
 
-  const marks = el(
-    "div",
-    { class: "track-marks" },
-    row.marks.map(mark => el("span", { style: { left: mark.x, background: mark.c } }))
-  );
-
-  const labels = el(
-    "div",
-    { class: "track-labels" },
-    row.groups.map(group =>
-      el("div", { class: "track-label", style: { width: group.w, color: group.lc }, text: group.label })
-    )
-  );
-
-  return el("div", { class: "track-wrap" }, [
-    wash,
-    track,
-    el("div", { class: "track-axis" }),
-    marks,
-    labels
-  ]);
+  return el("div", { class: "track-wrap" }, [wash, track, el("div", { class: "track-axis" }), brackets]);
 }
 
-function renderMini(row, accent) {
+// A small, unlabelled version of the trace for the collapsed row — never
+// phase-grouped, just marks (or the coarse ambient bar).
+function renderMini(row) {
   return el(
     "div",
     { class: "compact-mini" },
-    row.mini.map(group =>
-      el(
-        "div",
-        { class: "mini-group" },
-        group.cells.map(cell =>
-          el("span", { style: { width: cell.w, height: cell.h, background: cell.c, flex: "none" } })
-        )
-      )
+    row.mini.map(cell => el("span", { style: { width: cell.w, height: cell.h, background: cell.c, flex: "none" } }))
+  );
+}
+
+// READY/FAILED close with a small provenance trace instead of the live one:
+// what actually happened, at a glance, after the run is over. FAILED labels
+// it "BEFORE THE STOP" rather than "PROVENANCE" — the same shape, an honest
+// different name for what it is showing.
+function renderProvenance(row, accent) {
+  const p = row.provenance;
+  if (!p) return null;
+  const track = el("div", { class: "track provenance" }, p.cells.map(cell => trackCell(cell, accent)));
+  const brackets = el(
+    "div",
+    { class: "track-brackets" },
+    p.brackets.map(b =>
+      el("div", { class: "track-bracket", style: { left: b.x, width: b.w } }, [
+        el("span", { class: "track-bracket-label", text: b.label })
+      ])
     )
   );
+  return el("div", { class: "provenance-wrap" }, [
+    el("div", { class: "provenance-k", text: p.heading }),
+    el("div", { class: "track-wrap provenance" }, [track, el("div", { class: "track-axis" }), brackets])
+  ]);
 }
 
 function actionButton(label, key, cls, onClick, focusKey) {
@@ -762,6 +865,15 @@ function renderDecisionCard(row, accent) {
       }, "inspect-" + row.id)
     );
   }
+  // ANSWER records the decision in Task context; SEND BACK reruns the task so
+  // the next run continues with the answer in context.
+  acts.push(
+    actionButton("SEND BACK", "S", "act-outline", e => {
+      e.stopPropagation();
+      e.currentTarget.disabled = true;
+      sendBack(row.id).finally(() => render());
+    }, "sendback-" + row.id)
+  );
   acts.push(closeButton(row.id));
 
   return el(
@@ -856,62 +968,82 @@ function renderHalt(row, accent) {
   );
 }
 
-function renderBands(row) {
-  return el(
-    "div",
-    { class: "bands" },
-    row.bands.map(band =>
-      el("div", { class: "band", style: { borderTop: band.rule } }, [
-        el("div", { class: "band-left" }, [
-          el("div", {
-            class: "band-label",
-            style: { color: band.labelColor, fontWeight: band.labelWeight },
-            text: band.label
-          }),
-          el("div", { class: "band-meta", text: band.meta })
-        ]),
-        el(
-          "div",
-          { class: "band-right" },
-          band.items
-            .map(item =>
-              el("div", { class: "band-item" }, [
-                el("span", { class: "band-verb", style: { color: item.vc }, text: item.verb }),
-                el("span", {
-                  class: "band-arg" + (item.human ? " human" : ""),
-                  style: { color: item.ac },
-                  text: item.arg
-                }),
-                el("span", { class: "band-t", text: item.t })
-              ])
-            )
-            .concat(
-              band.pending
-                ? [
-                    el("div", {
-                      class: "band-pending",
-                      style: { color: band.pendingColor },
-                      text: band.pendingText
-                    })
-                  ]
-                : []
-            )
-        )
-      ])
-    )
+// A section is declared ∩ observed (see ledger.mjs `sections()`): app.js
+// never decides whether ACTIVITY/FILES/COMMANDS exist, it only renders the
+// object it is handed, or nothing when that object is null. No section here
+// ever renders empty, and no section renders a status string in place of
+// data — an absent dimension is silence, not a placeholder.
+function sectionRow(label, meta, content) {
+  return el("div", { class: "band" }, [
+    el("div", { class: "band-left" }, [
+      el("div", { class: "band-label", text: label }),
+      meta ? el("div", { class: "band-meta", text: meta }) : null
+    ].filter(Boolean)),
+    el("div", { class: "band-right" }, content)
+  ]);
+}
+
+function renderActivitySection(row) {
+  const a = row.activitySection;
+  if (!a) return null;
+  const items = a.recent.map(step =>
+    el("div", { class: "band-item" }, [
+      el("span", {
+        class: "band-verb",
+        style: { color: step.human ? COLORS.accent : COLORS.inkSoft },
+        text: step.verb
+      }),
+      el("span", {
+        class: "band-arg" + (step.human ? " human" : ""),
+        style: { color: step.human ? COLORS.accent : COLORS.ink },
+        text: step.arg
+      }),
+      el("span", { class: "band-t", text: fmtDuration(step.t) })
+    ])
   );
+  return sectionRow("ACTIVITY", a.earlier ? a.earlier + " earlier events" : null, items);
+}
+
+function renderFilesSection(row) {
+  const f = row.filesSection;
+  if (!f) return null;
+  const items = f.paths.map(path => el("div", { class: "band-item" }, [el("span", { class: "band-arg", text: path })]));
+  return sectionRow("FILES", f.paths.length + (f.paths.length === 1 ? " file" : " files"), items);
+}
+
+function renderCommandsSection(row) {
+  const c = row.commandsSection;
+  if (!c) return null;
+  const items = c.commands.map(cmd => el("div", { class: "band-item" }, [el("span", { class: "band-arg", text: cmd })]));
+  return sectionRow("COMMANDS", c.commands.length + (c.commands.length === 1 ? " command" : " commands"), items);
+}
+
+// The DOM layer never asks "is this status allowed to show ACTIVITY" — that
+// gate already happened in ledger.mjs (SECTION_KEYS_BY_STATUS). Each of
+// these three is independently null-or-not.
+function renderSections(row) {
+  const parts = [renderActivitySection(row), renderFilesSection(row), renderCommandsSection(row)].filter(Boolean);
+  return parts.length ? el("div", { class: "bands" }, parts) : null;
 }
 
 function renderResult(row, detail) {
-  const files = row.files.map(path =>
-    el("div", { class: "result-file" }, [el("span", { text: path })])
-  );
-
   const body = detail && detail.result && detail.result.trim()
     ? el("div", { class: "result-body" }, [richBody(detail.result.trim())])
     : row.error
       ? el("div", { class: "result-body", style: { color: COLORS.fail } }, [richBody(row.error)])
       : el("div", { class: "band-pending", style: { color: COLORS.muted }, text: "no written result" });
+
+  // SEND BACK: rerun through the shared action — the next run is rebuilt from
+  // current Task state, so a correction recorded with NOTE reaches the agent.
+  // The button disables itself while the request is in flight so a double tap
+  // cannot start two runs; the request id dedupe covers network retries.
+  const sendBackBtn = row.ready || row.failed
+    ? actionButton("SEND BACK", "S", "act-outline", e => {
+        e.stopPropagation();
+        e.currentTarget.disabled = true;
+        sendBack(row.id).finally(() => render());
+      }, "sendback-" + row.id)
+    : null;
 
   const acts = row.ready
     ? el("div", { class: "acts" }, [
@@ -919,29 +1051,86 @@ function renderResult(row, detail) {
           e.stopPropagation();
           accept(row.id);
         }, "accept-" + row.id),
+        sendBackBtn,
         closeButton(row.id)
       ])
     : row.failed
-      ? el("div", { class: "acts" }, [closeButton(row.id)])
+      ? el("div", { class: "acts" }, [sendBackBtn, closeButton(row.id)])
       : null;
 
   return el("div", { class: "result" }, [
-    el("div", {}, [
-      el("div", { class: "result-k", text: row.failed ? "FAILURE" : "RESULT" }),
-      // "00 FILES CHANGED" would read as "it changed nothing". For a
-      // provider that never reports file changes the truth is that we do
-      // not know, so say that instead of printing a confident zero.
-      row.filesReported
-        ? el("div", { class: "result-n" }, [
-            two(row.files.length),
-            el("small", { text: row.files.length === 1 ? "FILE CHANGED" : "FILES CHANGED" })
-          ])
-        : el("div", { class: "result-n unreported" }, [
-            "\u2014",
-            el("small", { text: "FILES NOT REPORTED" })
-          ])
-    ]),
-    el("div", { class: "band-right" }, files.concat([body, acts].filter(Boolean)))
+    el("div", {}, [el("div", { class: "result-k", text: row.failed ? "FAILURE" : "RESULT" })]),
+    el("div", { class: "band-right" }, [body, acts].filter(Boolean))
+  ]);
+}
+
+// The one capability-driven sentence the ledger ever shows (§09): either it
+// is null, or it is exactly one of the two constant strings ledger.mjs
+// produces. No dynamic composition happens here.
+function renderCapabilityNote(row) {
+  if (!row.note) return null;
+  return el("div", { class: "capability-note", text: row.note });
+}
+
+// --- note: a free-form constraint/correction recorded on the task -----------
+// Uses the shared noteWork action: Task context only, no execution started.
+// The task's next run (SEND BACK) rebuilds its input from Task state, so the
+// note reaches the agent automatically. Kept across re-renders exactly like
+// half-typed decision answers.
+
+const noteInputs = new Map(); // taskId -> half-typed note
+
+function renderNoteLine(row) {
+  const input = el("input", {
+    class: "note-input",
+    placeholder: "correction / constraint for the next run…",
+    autocomplete: "off",
+    spellcheck: "false"
+  });
+  const saved = noteInputs.get(row.id) ?? "";
+  input.value = saved;
+
+  const btn = el("button", { class: "act act-quiet", text: "NOTE" });
+  btn.disabled = saved.trim().length === 0;
+
+  async function submit() {
+    if (remoteBlocked()) return;
+    const note = (noteInputs.get(row.id) ?? "").trim();
+    if (!note) return;
+    btn.disabled = true;
+    try {
+      await api("/api/tasks/" + row.id + "/note", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ note })
+      });
+      noteInputs.delete(row.id);
+    } catch (error) {
+      flash(error.message);
+      return;
+    }
+    await reloadTasks();
+  }
+
+  btn.addEventListener("click", e => {
+    e.stopPropagation();
+    submit();
+  });
+  input.addEventListener("input", () => {
+    noteInputs.set(row.id, input.value);
+    btn.disabled = input.value.trim().length === 0;
+  });
+  input.addEventListener("keydown", e => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      submit();
+    }
+  });
+
+  return el("div", { class: "note-line" }, [
+    el("span", { class: "note-k", text: "NOTE" }),
+    input,
+    btn
   ]);
 }
 
@@ -969,12 +1158,18 @@ function renderRow(row, accent) {
           style: { fontSize: row.titleSize, fontWeight: row.titleWeight, color: row.titleColor }
         }, inlineEls(parseInline(row.title))),
         el("span", { class: "compact-sub", style: { color: row.subColor }, text: row.sub }),
-        renderMini(row, accent),
+        renderMini(row),
         el("span", { class: "compact-state", style: { color: row.stateColor }, text: row.stateLabel })
       ]
     );
   } else {
     const detail = state.details?.get(row.id);
+    warnCapabilityDrift(row);
+    // One content order covers every status: each piece gates itself to
+    // null when the lifecycle stage does not carry it (§10) — a working row
+    // has a trace and no RESULT, a ready row has RESULT/PROVENANCE and no
+    // trace, a done row has only RESULT. No per-status branching is needed
+    // here because ledger.mjs already decided what exists.
     body = el("div", { style: { padding: row.pad } }, [
       el("div", { class: "detail-head", onClick: () => toggleOpen(row.id) }, [
         el("h1", { class: "detail-title", style: { fontSize: row.titleSize } }, inlineEls(parseInline(row.title))),
@@ -996,9 +1191,12 @@ function renderRow(row, accent) {
             el("span", { class: "routed-why", text: row.routed.reason })
           ])
         : null,
+      renderCapabilityNote(row),
       row.halted ? renderHalt(row, accent) : null,
-      renderBands(row),
       row.ready || row.failed || row.done ? renderResult(row, detail) : null,
+      renderSections(row),
+      renderProvenance(row, accent),
+      renderNoteLine(row),
       // Run history lives inside task detail: a compact RUNS strip, with
       // per-run facts and side-by-side comparison behind selection.
       detail && detail.runs ? renderRunsSection(detail, row, accent) : null
@@ -1055,7 +1253,7 @@ function renderChrome(ledger, accent) {
       el("div", { class: "brand" }, [
         el("span", { class: "brand-mark", text: "0x2F" }),
         el("span", { class: slashClass, style: slashDelay ? { animationDelay: slashDelay } : {}, text: "/" }),
-        el("span", { class: "brand-scope", text: "LOCAL" }),
+        el("span", { class: "brand-scope", text: state.remote ? "REMOTE" : "LOCAL" }),
         el("span", { class: "chrome-div" }),
         el("span", { class: "runtime" }, [
           el("span", { class: "runtime-label", text: "RUNTIME" }),
@@ -1153,6 +1351,7 @@ function buildComposer() {
   // path that creates a task; REFINE never does.
   async function submit() {
     if (refining) return;
+    if (remoteBlocked()) return;
     const title = input.value.trim();
     if (!title) return;
     const provider = providerSelect?.value || undefined;
@@ -1270,6 +1469,7 @@ function buildComposer() {
         el("span", { text: "\u21b5 OPEN" }),
         el("span", { text: "A ALLOW / ACCEPT" }),
         el("span", { text: "R REJECT" }),
+        el("span", { text: "S SEND BACK" }),
         el("span", { text: "I INSPECT" }),
         el("span", { text: "X CLOSE" }),
         el("span", { text: "/ SUBMIT" }),
@@ -1421,13 +1621,27 @@ function render() {
   if (!composerNode) composerNode = buildComposer();
   updateAdapter();
 
-  shell.replaceChildren(
+  // Remote + Mac offline: a top banner, and the offline class dims every
+  // control that requires the Mac (the guards in the action wrappers are the
+  // backstop; this is the visible signal).
+  shell.className = state.remote && !state.macOnline ? "offline" : "";
+  const parts = [];
+  if (state.remote && !state.macOnline) {
+    parts.push(
+      el("div", {
+        class: "mac-offline-bar",
+        text: "MAC OFFLINE — showing last known state. Actions are disabled until the Mac reconnects."
+      })
+    );
+  }
+  parts.push(
     renderChrome(ledger, accent),
     scroll,
     composerNode,
     ...(SOUND_DEMO ? [renderSoundDemo()] : []),
     ...(state.flash ? [el("div", { class: "flash", text: state.flash })] : [])
   );
+  shell.replaceChildren(...parts);
 
   scroll.scrollTop = scrollTop;
   if (focusKey) document.querySelector('[data-focus-key="' + focusKey + '"]')?.focus();
@@ -1512,6 +1726,8 @@ function onKeyDown(event) {
     else if (row?.ready) accept(row.id);
   } else if (event.key === "r" || event.key === "R") {
     if (row?.halted && row.permType !== "decision") reject(row.id);
+  } else if (event.key === "s" || event.key === "S") {
+    if (row?.ready || row?.failed) sendBack(row.id);
   } else if (event.key === "x" || event.key === "X") {
     // CLOSE: remove the Work from active attention — never a provider call.
     if (row?.halted || row?.ready || row?.failed) accept(row.id);
@@ -1577,6 +1793,11 @@ setInterval(() => {
 }, 1000);
 
 render();
+// Remote mode (the relay serves this page) polls /api/status so the Mac's
+// presence is live: MAC OFFLINE banner + disabled actions while it is gone.
+checkStatus().then(() => {
+  if (state.remote) setInterval(checkStatus, 4000);
+});
 loadAll()
   .then(() => connect())
   .catch(error => {

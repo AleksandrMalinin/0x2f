@@ -110,25 +110,29 @@
   .detail-title { flex: 1; min-width: 0; margin: 0; font-family: "Instrument Sans", system-ui, sans-serif; font-weight: 500; letter-spacing: -.026em; line-height: 1.08; color: #2f2f2f; text-wrap: pretty; overflow-wrap: anywhere; }
   .detail-state { font-size: 10.5px; letter-spacing: .16em; flex: none; white-space: nowrap; }
 
-  /* travel rule */
+  /* travel rule — one fixed-width cell per REAL event, never a phase frame
+     and never a duration-proportional strike. Below the axis: at most one
+     CHANGES bracket (the only span the projection can ever draw honestly). */
   .track-wrap { margin-top: 40px; display: inline-block; position: relative; }
   .track-wash { position: absolute; left: 0; bottom: 22px; height: 36px; pointer-events: none; }
-  .track { display: flex; align-items: flex-end; gap: 14px; height: 36px; position: relative; }
-  .track-group { display: flex; align-items: flex-end; gap: 2px; flex: none; }
+  .track { display: flex; align-items: flex-end; gap: 2px; height: 36px; position: relative; }
   .track-cell { height: 36px; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; flex: none; }
   .track-cell > .fill { width: 100%; }
-  /* Scaffolding for a provider that cannot report its steps: the phase frame
-     stays legible, but a flat hairline can never be mistaken for activity. */
-  .track-cell > .fill.unobserved { opacity: .75; }
+  /* The coarse ambient bar: a single continuous shape, deliberately never
+     shaped like a reported mark (no repeated units in this lane). */
+  .track-cell > .fill.ambient { opacity: .75; }
   .track-head { height: 7px; margin-bottom: 5px; flex: none; animation: wk-live 1.8s ease-in-out infinite; }
   .track-halt { position: relative; width: 2px; height: 32px; flex: none; }
   .track-halt > span { position: absolute; bottom: 38px; left: 50%; transform: translateX(-50%); font-size: 20px; line-height: 1; animation: wk-halt 1.15s ease-in-out infinite; }
   .track-axis { height: 1px; background: #2f2f2f; opacity: .6; }
-  .track-marks { position: relative; height: 6px; }
-  .track-marks > span { position: absolute; top: 0; width: 1px; height: 5px; }
-  .track-labels { display: flex; gap: 14px; margin-top: 5px; }
-  .track-label { flex: none; font-size: 10px; letter-spacing: .16em; }
-  .mini-group { display: flex; align-items: flex-end; gap: 1px; flex: none; }
+  .track-brackets { position: relative; height: 20px; margin-top: 3px; }
+  .track-bracket { position: absolute; top: 0; height: 6px; border-left: 1px solid #8f9aa4; border-right: 1px solid #8f9aa4; border-bottom: 1px solid #8f9aa4; }
+  .track-bracket-label { position: absolute; top: 9px; left: 0; font-size: 9.5px; letter-spacing: .14em; color: #79838c; white-space: nowrap; }
+  .track-wrap.provenance { margin-top: 0; }
+  .track.provenance { height: 17px; gap: 2px; }
+  .track.provenance .track-cell { height: 17px; }
+  .provenance-wrap { margin-top: 30px; }
+  .provenance-k { font-size: 10px; letter-spacing: .16em; color: #5c6771; font-weight: 600; margin-bottom: 10px; }
 
   .status-line { margin-top: 24px; display: flex; align-items: baseline; gap: 18px; max-width: 860px; }
   .status-phase { font-size: 10px; letter-spacing: .16em; color: #5c6771; width: 102px; flex: none; }
@@ -167,10 +171,12 @@
   .act-quiet:hover { border-color: #2f2f2f; color: #2f2f2f; }
   .act[disabled] { opacity: .45; cursor: default; }
 
-  /* bands */
+  /* sections — ACTIVITY / FILES / COMMANDS. One is present or it does not
+     exist at all; there is no empty or "not reported" state to style. */
   .bands { margin-top: 34px; }
-  .band { display: grid; grid-template-columns: 148px 1fr; padding: 16px 0 20px; }
-  .band-label { font-size: 10px; letter-spacing: .16em; line-height: 1.6; }
+  .band { display: grid; grid-template-columns: 148px 1fr; padding: 16px 0 20px; border-top: 1px solid #dbe2e7; }
+  .band:first-child { border-top: none; }
+  .band-label { font-size: 10px; letter-spacing: .16em; line-height: 1.6; color: #2f2f2f; }
   .band-meta { font-size: 11.5px; color: #5c6771; margin-top: 8px; }
   .band-left { padding-right: 20px; }
   .band-right { border-left: 1px solid #dbe2e7; padding-left: 24px; }
@@ -181,14 +187,13 @@
   .band-t { flex: none; font-size: 11.5px; color: #5c6771; font-variant-numeric: tabular-nums; }
   .band-pending { font-size: 13px; padding: 6px 0; }
 
-  /* result */
+  /* result / failure */
   .result { border-top: 1px solid #2f2f2f; padding: 24px 0 6px; display: grid; grid-template-columns: 148px 1fr; }
   .result-k { font-size: 10px; letter-spacing: .16em; color: #2f2f2f; font-weight: 600; }
-  .result-n { font-size: 26px; letter-spacing: -.03em; color: #2f2f2f; font-variant-numeric: tabular-nums; margin-top: 15px; }
-  .result-n.unreported { color: #5c6771; }
-  .result-n small { font-size: 11px; letter-spacing: .16em; color: #5c6771; display: block; margin-top: 6px; }
-  .result-file { display: flex; justify-content: space-between; gap: 20px; padding: 6px 0; font-size: 14px; letter-spacing: -.008em; color: #2f2f2f; overflow-wrap: anywhere; }
-  .result-body { margin-top: 14px; font-size: 13.5px; line-height: 1.65; color: #2f2f2f; overflow-wrap: anywhere; max-height: 420px; overflow: auto; }
+  .result-body { margin-top: 0; font-size: 13.5px; line-height: 1.65; color: #2f2f2f; overflow-wrap: anywhere; max-height: 420px; overflow: auto; }
+
+  /* the one capability-driven sentence the ledger ever shows (§09) */
+  .capability-note { margin-top: 12px; font-size: 11.5px; color: #8f9aa4; max-width: 860px; }
 
   /* rich prose — a small safe Markdown subset for provider-authored text.
      Ink headings, muted rules, mono code: no links, no images, no raw HTML.
@@ -310,6 +315,30 @@
   .empty { padding: 60px 24px 60px 20px; border-left: 1px solid #dbe2e7; color: #5c6771; font-size: 13px; letter-spacing: .04em; }
   .flash { position: fixed; left: 50%; transform: translateX(-50%); bottom: 118px; background: #b8532a; color: #f6f8fa; padding: 10px 20px; font-size: 11px; letter-spacing: .14em; z-index: 20; }
 
+  /* remote control: the Mac is unreachable. The banner is the signal; the
+     offline class dims every control that requires the Mac (the action
+     wrappers' guard is the backstop). */
+  .mac-offline-bar {
+    flex: none; background: #b8532a; color: #f6f8fa; text-align: center;
+    font-size: 10px; letter-spacing: .16em; padding: 7px 14px;
+  }
+  .offline .act, .offline .composer-start, .offline .composer-refine {
+    opacity: .4; pointer-events: none;
+  }
+
+  /* NOTE — record a constraint/correction on the task (Task context only;
+     the next run's prompt is rebuilt from it, so it reaches the agent on
+     SEND BACK). */
+  .note-line { display: flex; align-items: center; gap: 12px; margin-top: 22px; max-width: 860px; }
+  .note-k { font-size: 10px; letter-spacing: .16em; color: #5c6771; width: 76px; flex: none; font-weight: 600; }
+  .note-input {
+    flex: 1; min-width: 0; font-family: inherit; font-size: 13px; line-height: 1.5;
+    color: #2f2f2f; background: #fff; border: 1px solid #c6cfd6; padding: 9px 12px;
+    border-radius: 0; outline: none;
+  }
+  .note-input:focus { border-color: #2f5fa8; }
+  .note-line .act { padding: 10px 18px; margin-top: 0; }
+
   @media (max-width: 1179px) {
     .chrome-inner, .legend-inner { padding: 0 18px; }
     .composer-inner { padding: 16px 18px 14px; }
@@ -322,6 +351,65 @@
     .head-exec, .compact-mini { display: none; }
     .counter.clock, .legend-adapter { display: none; }
     .compare { grid-template-columns: 1fr; }
+  }
+  /* Phone — the remote control surface. A narrow single-column ledger, not a
+     shrunken desktop: touch-sized targets, no keyboard legend, no columns.
+     The client (app.js) already collapses to compact rows below 900px; this
+     pass owns the phone layout and touch ergonomics. */
+  @media (max-width: 640px) {
+    .chrome-inner { height: 52px; padding: 0 12px; gap: 10px; }
+    .brand { gap: 9px; }
+    .brand-scope, .chrome-div, .runtime-label, .chrome-settings { display: none; }
+    .counters { margin-left: auto; }
+    .counter { min-width: 0; padding: 0 12px; }
+    .counter:last-child { display: none; }
+    .counter-n { font-size: 15px; }
+    .counter-k { font-size: 9px; }
+
+    .sheet { border-left: none; border-right: none; }
+    .head { grid-template-columns: 42px 1fr; }
+    .head-cols { padding: 10px 14px 9px 14px; }
+    .head-right, .head-exec, .head-state { display: none; }
+    .row { grid-template-columns: 42px 1fr; }
+    .row-gutter { padding: 14px 10px; }
+    .compact { gap: 10px; padding: 14px 4px; min-height: 52px; }
+    .compact-sub, .compact-mini { display: none; }
+    .compact-state { width: auto; }
+    .compact-title { font-size: 15.5px; }
+    .empty { padding: 40px 18px; }
+
+    .detail-title { font-size: 21px; }
+    .status-line { flex-wrap: wrap; gap: 7px 12px; margin-top: 18px; }
+    .status-phase { width: auto; }
+    .status-node { display: none; }
+    .status-div { display: none; }
+    .routed-line { flex-wrap: wrap; }
+    .track-wrap { margin-top: 26px; }
+    .track { gap: 8px; }
+    .track-labels { gap: 8px; }
+
+    .halt-card { padding: 20px 16px; }
+    .halt-path { font-size: 17px; }
+    .band { grid-template-columns: 1fr; padding: 14px 0 16px; }
+    .band-left { padding-right: 0; }
+    .band-right { border-left: none; padding-left: 0; margin-top: 8px; }
+    .result { grid-template-columns: 1fr; padding: 18px 0 4px; }
+    .note-line { margin-top: 18px; }
+
+    /* touch targets */
+    .act { padding: 14px 20px; min-height: 46px; }
+    .note-line .act { padding: 12px 18px; min-height: 44px; }
+    .decision-answer, .note-input { font-size: 16px; } /* ≥16px: no iOS zoom */
+    .composer-inner { padding: 12px 14px; }
+    .composer-row { gap: 10px; }
+    .composer textarea { font-size: 16px; min-height: 24px; }
+    .composer-refine { display: none; }
+    .composer select { max-width: 150px; font-size: 10px; }
+    .legend { display: none; }
+    .run-row { gap: 12px; padding: 12px 4px; }
+    .run-head { gap: 10px; flex-wrap: wrap; }
+    .run-facts { gap: 6px 16px; }
+    .flash { bottom: 90px; left: 12px; right: 12px; transform: none; text-align: center; }
   }
 </style>
 </head>
