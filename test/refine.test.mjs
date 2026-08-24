@@ -238,9 +238,11 @@ test("a failing model run rejects and leaves the caller's text untouched", async
   try {
     const refiner = createRefiner({ providers: createProviderRegistry({ base }) });
     const original = "keep my rough idea";
-    await withEnv("CLAUDE_BIN", bin, async () => {
-      await assert.rejects(() => refiner.refineTaskPrompt(original), /E_AGENT/);
-    });
+    await withEnv("CLAUDE_BIN", bin, () =>
+      withEnv("DSH_BIN", "/nonexistent/dsh", async () => {
+        await assert.rejects(() => refiner.refineTaskPrompt(original), /E_AGENT/);
+      })
+    );
     // The service never mutates its input — the composer's text survives.
     assert.equal(original, "keep my rough idea");
   } finally {
@@ -255,7 +257,9 @@ test("an empty model response is a failure, never a blank brief", async () => {
   try {
     const refiner = createRefiner({ providers: createProviderRegistry({ base }) });
     await withEnv("CLAUDE_BIN", bin, () =>
-      assert.rejects(() => refiner.refineTaskPrompt("rough"), /empty refinement/)
+      withEnv("DSH_BIN", "/nonexistent/dsh", () =>
+        assert.rejects(() => refiner.refineTaskPrompt("rough"), /empty refinement/)
+      )
     );
   } finally {
     await fs.rm(base, { recursive: true, force: true });
@@ -272,11 +276,68 @@ test("a hanging refinement times out instead of leaving the composer stuck", asy
       timeoutMs: 200
     });
     await withEnv("CLAUDE_BIN", bin, () =>
-      assert.rejects(() => refiner.refineTaskPrompt("rough"), /timed out/)
+      withEnv("DSH_BIN", "/nonexistent/dsh", () =>
+        assert.rejects(() => refiner.refineTaskPrompt("rough"), /timed out/)
+      )
     );
   } finally {
     await fs.rm(base, { recursive: true, force: true });
     await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("falls back to the next model path when the preferred one fails", async () => {
+  const base = await fs.mkdtemp(path.join(os.tmpdir(), "work-refine-svc-"));
+  const claudeRecord = path.join(base, "claude-record.json");
+  const dshRecord = path.join(base, "dsh-record.json");
+  const { bin: claudeFake, dir: claudeDir } = await fakeModelBin({
+    stdout: "",
+    stderr: "claude: E_AUTH: not authenticated",
+    code: 1,
+    recordFile: claudeRecord
+  });
+  const { bin: dshFake, dir: dshDir } = await fakeModelBin({ stdout: "dsh brief", recordFile: dshRecord });
+  try {
+    const refiner = createRefiner({ providers: createProviderRegistry({ base }) });
+    const refined = await withEnv("CLAUDE_BIN", claudeFake, () =>
+      withEnv("DSH_BIN", dshFake, () => refiner.refineTaskPrompt("rough"))
+    );
+    assert.equal(refined, "dsh brief");
+    // Both were actually tried, in preference order: claude first, then dsh.
+    const claude = await readRecord(claudeRecord);
+    assert.equal(claude.argv.slice(2)[0], "-p");
+    const dsh = await readRecord(dshRecord);
+    assert.equal(dsh.argv.slice(2)[0], "--profile");
+  } finally {
+    await fs.rm(base, { recursive: true, force: true });
+    await fs.rm(claudeDir, { recursive: true, force: true });
+    await fs.rm(dshDir, { recursive: true, force: true });
+  }
+});
+
+test("when every available path fails, the preferred path's error is reported", async () => {
+  const base = await fs.mkdtemp(path.join(os.tmpdir(), "work-refine-svc-"));
+  const { bin: claudeFake, dir: claudeDir } = await fakeModelBin({
+    stdout: "",
+    stderr: "claude: E_AUTH: not authenticated",
+    code: 1
+  });
+  const { bin: dshFake, dir: dshDir } = await fakeModelBin({
+    stdout: "",
+    stderr: "dsh: E_AGENT: agent failed",
+    code: 1
+  });
+  try {
+    const refiner = createRefiner({ providers: createProviderRegistry({ base }) });
+    await withEnv("CLAUDE_BIN", claudeFake, () =>
+      withEnv("DSH_BIN", dshFake, () =>
+        assert.rejects(() => refiner.refineTaskPrompt("rough"), /E_AUTH/)
+      )
+    );
+  } finally {
+    await fs.rm(base, { recursive: true, force: true });
+    await fs.rm(claudeDir, { recursive: true, force: true });
+    await fs.rm(dshDir, { recursive: true, force: true });
   }
 });
 
@@ -362,7 +423,9 @@ test("a failed refinement does not destroy the original text: START still uses i
   try {
     const original = "my rough idea stays";
     const res = await withEnv("CLAUDE_BIN", bin, () =>
-      postJson(handle.url + "/api/refine", { text: original })
+      withEnv("DSH_BIN", "/nonexistent/dsh", () =>
+        postJson(handle.url + "/api/refine", { text: original })
+      )
     );
     assert.equal(res.status, 502);
     assert.match((await res.json()).error, /E_AUTH/);

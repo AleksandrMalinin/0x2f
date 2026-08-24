@@ -17,7 +17,9 @@
 // execution providers run, in their narrowest text-only mode — no harness
 // run, no events, no session. Which model runs inside is the provider's own
 // concern (exactly as for task execution); this service only chooses the
-// PATH, deterministically, by executable availability:
+// PATH. Paths are tried in preference order, by executable availability, and
+// a FAILED call falls through to the next available path — a broken
+// preferred CLI (e.g. expired auth) must not take the whole feature down:
 //
 //   claude-code       `claude -p --output-format text --disallowedTools=…`
 //                     print mode with every tool denied — the closest thing
@@ -109,20 +111,22 @@ const REFINEMENT_PATHS = {
 };
 const REFINEMENT_ORDER = ["claude-code", "deepseek-harness"];
 
-// Pick the first refinement path whose executable can be resolved. Uses the
-// provider registry's availability check (never spawns), so a fake bin via
-// CLAUDE_BIN / DSH_BIN participates exactly like it does for execution.
-export function pickRefinementPath(providers) {
+// Pick the refinement paths whose executables can be resolved, in preference
+// order. Uses the provider registry's availability check (never spawns), so a
+// fake bin via CLAUDE_BIN / DSH_BIN participates exactly like it does for
+// execution.
+export function pickRefinementPaths(providers) {
+  const paths = [];
   for (const id of REFINEMENT_ORDER) {
     try {
       if (providers?.available?.(id) === true) {
-        return { id, ...REFINEMENT_PATHS[id] };
+        paths.push({ id, ...REFINEMENT_PATHS[id] });
       }
     } catch {
       // treat an unreadable availability check as unavailable
     }
   }
-  return null;
+  return paths;
 }
 
 // Spawn one model CLI, capture stdout, and resolve with the raw text. The
@@ -211,8 +215,8 @@ export function createRefiner({ providers, timeoutMs = 120000 } = {}) {
       );
     }
 
-    const refinement = pickRefinementPath(providers);
-    if (!refinement) {
+    const paths = pickRefinementPaths(providers);
+    if (!paths.length) {
       throw new WorkError(
         "No model is available to refine — install Claude Code or DeepSeek Harness, then retry.",
         503
@@ -224,15 +228,26 @@ export function createRefiner({ providers, timeoutMs = 120000 } = {}) {
     // repository: refinement must never read or modify project files.
     const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "0x2f-refine-"));
     try {
-      const stdout = await spawnModel(refinement.bin(), refinement.args(instruction), {
-        cwd: tmp,
-        timeoutMs
-      });
-      const refined = cleanRefinedText(stdout);
-      if (!refined) {
-        throw new WorkError("The model returned an empty refinement — try again.", 502);
+      // Try each available path in order; a failed call falls through to the
+      // next one. If every path fails, report the FIRST path's error — it is
+      // the preferred path, and its message is the most actionable.
+      let firstError = null;
+      for (const refinement of paths) {
+        try {
+          const stdout = await spawnModel(refinement.bin(), refinement.args(instruction), {
+            cwd: tmp,
+            timeoutMs
+          });
+          const refined = cleanRefinedText(stdout);
+          if (!refined) {
+            throw new WorkError("The model returned an empty refinement — try again.", 502);
+          }
+          return refined;
+        } catch (error) {
+          if (!firstError) firstError = error;
+        }
       }
-      return refined;
+      throw firstError ?? new WorkError("Refinement failed.", 502);
     } finally {
       await fs.rm(tmp, { recursive: true, force: true }).catch(() => {});
     }
