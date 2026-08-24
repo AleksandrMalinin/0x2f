@@ -264,10 +264,19 @@
 
   /* composer */
   .composer { flex: none; background: #2f2f2f; box-shadow: inset 0 1px 0 rgba(255,255,255,.12), 0 -1px 0 rgba(21,21,21,.5); }
-  .composer-inner { max-width: 1280px; margin: 0 auto; padding: 0 32px; display: flex; align-items: center; gap: 16px; height: 72px; }
+  .composer-inner { max-width: 1280px; margin: 0 auto; padding: 16px 32px 14px; display: flex; flex-direction: column; gap: 12px; }
+  .composer-row { display: flex; align-items: center; gap: 16px; }
   .composer-k { font-size: 11px; letter-spacing: .16em; color: #9aa6b0; flex: none; }
   .composer-caret { width: 9px; height: 19px; background: #2f5fa8; flex: none; box-shadow: 0 0 8px #2f5fa870; }
-  .composer input { flex: 1; min-width: 0; border: none; background: transparent; outline: none; font-family: inherit; font-size: 18px; letter-spacing: -.02em; color: #f2f5f7; caret-color: #2f5fa8; }
+  /* A textarea, not an input: refinement produces a longer brief that must be
+     reviewable and editable in place. It grows with its content; the max
+     height keeps the composer from swallowing the ledger. */
+  .composer textarea {
+    flex: 1; min-width: 0; border: none; background: transparent; outline: none;
+    font-family: inherit; font-size: 18px; letter-spacing: -.02em; line-height: 1.45;
+    color: #f2f5f7; caret-color: #2f5fa8; resize: none; overflow-y: auto; padding: 0;
+    min-height: 26px;
+  }
   /* Provider choice is secondary — a quiet native select next to the caret.
      Unavailable providers show a "UNAVAILABLE" suffix and are disabled, so
      the select needs a little more room than the plain ids did. */
@@ -279,8 +288,21 @@
   }
   .composer select:hover { border-color: rgba(255,255,255,.34); }
   .composer select option { background: #2f2f2f; color: #dde4e9; }
-  .composer-hint { font-size: 10px; letter-spacing: .16em; flex: none; white-space: nowrap; color: #9aa6b0; }
+  /* actions row: the hint on the left, REFINE secondary to START on the right */
+  .composer-acts { display: flex; align-items: center; gap: 10px; }
+  .composer-hint { font-size: 10px; letter-spacing: .16em; flex: none; white-space: nowrap; color: #9aa6b0; margin-right: auto; }
   .composer-hint.armed { color: #2f5fa8; }
+  .composer-hint.refining { color: #c3ccd3; animation: wk-live 1.5s ease-in-out infinite; }
+  .composer-btn {
+    padding: 9px 20px; font-size: 10.5px; letter-spacing: .16em; cursor: pointer;
+    font-weight: 500; border: 1px solid transparent; background: none;
+    font-family: inherit; border-radius: 0; white-space: nowrap;
+  }
+  .composer-btn:disabled { opacity: .45; cursor: default; }
+  .composer-start { background: #2f5fa8; color: #f6f8fa; }
+  .composer-start:hover:not(:disabled) { background: #3b6dbd; }
+  .composer-refine { border-color: rgba(255,255,255,.3); color: #c3ccd3; }
+  .composer-refine:hover:not(:disabled) { border-color: rgba(255,255,255,.55); color: #f6f8fa; }
   .legend { border-top: 1px solid rgba(255,255,255,.12); }
   .legend-inner { max-width: 1280px; margin: 0 auto; padding: 0 32px; display: flex; align-items: center; gap: 22px; height: 30px; font-size: 10px; letter-spacing: .13em; color: #9aa6b0; overflow: hidden; white-space: nowrap; }
   .legend-adapter { margin-left: auto; color: #7d8892; }
@@ -289,7 +311,8 @@
   .flash { position: fixed; left: 50%; transform: translateX(-50%); bottom: 118px; background: #b8532a; color: #f6f8fa; padding: 10px 20px; font-size: 11px; letter-spacing: .14em; z-index: 20; }
 
   @media (max-width: 1179px) {
-    .chrome-inner, .composer-inner, .legend-inner { padding: 0 18px; }
+    .chrome-inner, .legend-inner { padding: 0 18px; }
+    .composer-inner { padding: 16px 18px 14px; }
     .head, .row { grid-template-columns: 44px 1fr; }
     .band, .result { grid-template-columns: 112px 1fr; }
     :root { --col-exec: 120px; }

@@ -1086,16 +1086,30 @@ let composerInput = null;
 let composerNode = null;
 let adapterNode = null;
 let providerSelect = null;
+let composerHint = null;
+let refineButton = null;
+let startButton = null;
+
+// Refinement in flight: buttons are disabled and the hint reads REFINING…
+// while the model call is running, so the user cannot double-fire REFINE or
+// submit a task mid-refinement. On failure the composer is left untouched —
+// the user retries REFINE or presses START with their original text.
+let refining = false;
 
 // The composer is built ONCE and kept across renders: re-creating it would
 // reset the caret and drop a half-typed task every time an event lands.
 function buildComposer() {
-  const input = el("input", {
+  // A textarea, not a single-line input: refinement produces a longer,
+  // structured brief and the user must be able to review/edit it in place
+  // before START. Enter still submits (today's behavior); Shift+Enter is a
+  // newline.
+  const input = el("textarea", {
     placeholder: "what needs doing?",
     autocomplete: "off",
-    spellcheck: "false"
+    spellcheck: "false",
+    rows: 1
   });
-  const hint = el("span", { class: "composer-hint", text: "BACKGROUND JOB" });
+  composerHint = el("span", { class: "composer-hint", text: "BACKGROUND JOB" });
 
   // Provider selection is deliberately secondary: tasks are first. The
   // select defaults to the runtime default provider and is populated from
@@ -1107,18 +1121,38 @@ function buildComposer() {
   });
   providerSelect = select;
 
-  input.addEventListener("input", () => {
-    const armed = input.value.trim().length > 0;
-    hint.textContent = armed ? "ENTER TO RUN" : "BACKGROUND JOB";
-    hint.className = "composer-hint" + (armed ? " armed" : "");
-  });
-
-  input.addEventListener("keydown", async event => {
-    if (event.key === "Escape") {
-      input.blur();
+  // The hint carries the composer's state: BACKGROUND JOB (empty), ENTER TO
+  // RUN (armed), or REFINING… while a refinement model call is in flight.
+  function updateHint() {
+    if (!composerHint) return;
+    if (refining) {
+      composerHint.textContent = "REFINING\u2026";
+      composerHint.className = "composer-hint refining";
       return;
     }
-    if (event.key !== "Enter") return;
+    const armed = input.value.trim().length > 0;
+    composerHint.textContent = armed ? "ENTER TO RUN" : "BACKGROUND JOB";
+    composerHint.className = "composer-hint" + (armed ? " armed" : "");
+  }
+
+  function autosize() {
+    input.style.height = "auto";
+    input.style.height =
+      Math.min(input.scrollHeight, Math.round(window.innerHeight * 0.4)) + "px";
+  }
+
+  function setBusy(busy) {
+    refining = busy;
+    if (refineButton) refineButton.disabled = busy;
+    if (startButton) startButton.disabled = busy;
+    updateHint();
+  }
+
+  // START / Enter: submit the composer's CURRENT text exactly as today — the
+  // refined brief if REFINE ran, the rough note otherwise. This is the only
+  // path that creates a task; REFINE never does.
+  async function submit() {
+    if (refining) return;
     const title = input.value.trim();
     if (!title) return;
     const provider = providerSelect?.value || undefined;
@@ -1135,6 +1169,7 @@ function buildComposer() {
       }
     }
     input.value = "";
+    autosize();
     input.dispatchEvent(new Event("input"));
     try {
       const task = await api("/api/tasks", {
@@ -1149,18 +1184,85 @@ function buildComposer() {
       return;
     }
     await reloadTasks();
+  }
+
+  // REFINE: send the composer's current text to the refinement service and
+  // replace it with the refined brief IN THE SAME composer. The result stays
+  // fully editable and START is never triggered — refinement only rewrites
+  // the text.
+  async function refine() {
+    if (refining) return;
+    const text = input.value.trim();
+    if (!text) {
+      flash("Nothing to refine — write your task first.");
+      return;
+    }
+    setBusy(true);
+    try {
+      const res = await api("/api/refine", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ text })
+      });
+      if (!res.refined) {
+        throw new Error("The model returned an empty refinement — try again.");
+      }
+      input.value = res.refined;
+      autosize();
+      input.dispatchEvent(new Event("input"));
+      input.focus();
+    } catch (error) {
+      // Failure leaves the original text untouched — retry REFINE or press
+      // START with what is already in the composer.
+      flash(error.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  input.addEventListener("input", () => {
+    autosize();
+    updateHint();
   });
+
+  input.addEventListener("keydown", event => {
+    if (event.key === "Escape") {
+      input.blur();
+      return;
+    }
+    // Enter submits (today's behavior); Shift+Enter keeps its default newline.
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      submit();
+    }
+  });
+
+  refineButton = el("button", {
+    class: "composer-btn composer-refine",
+    text: "REFINE",
+    title: "turn this rough note into a stronger execution brief (uses a model)"
+  });
+  refineButton.addEventListener("click", refine);
+
+  startButton = el("button", {
+    class: "composer-btn composer-start",
+    text: "START",
+    title: "start this task"
+  });
+  startButton.addEventListener("click", submit);
 
   composerInput = input;
   adapterNode = el("span", { class: "legend-adapter" });
 
   return el("div", { class: "composer" }, [
     el("div", { class: "composer-inner" }, [
-      el("span", { class: "composer-k", text: "SUBMIT" }),
-      el("span", { class: "composer-caret" }),
-      select,
-      input,
-      hint
+      el("div", { class: "composer-row" }, [
+        el("span", { class: "composer-k", text: "SUBMIT" }),
+        el("span", { class: "composer-caret" }),
+        select,
+        input
+      ]),
+      el("div", { class: "composer-acts" }, [composerHint, refineButton, startButton])
     ]),
     el("div", { class: "legend" }, [
       el("div", { class: "legend-inner" }, [
