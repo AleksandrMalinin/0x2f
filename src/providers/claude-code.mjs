@@ -79,6 +79,12 @@ When you finish, return the same markdown sections as the original task:
 ## Result, ## Evidence, ## Changes, ## Verification, ## Needs human decision
 (## Needs human decision uses the REQUIRED: yes / REQUIRED: no protocol.)`;
 
+// Tools that actually mutate a file on disk. A Read, Grep, Glob or
+// NotebookRead also carries a file_path but never changed anything — only
+// these produce a file.changed event. This is the one place Claude's tool
+// vocabulary is allowed to decide what counts as a change.
+const MUTATING = new Set(["Edit", "MultiEdit", "Write", "NotebookEdit"]);
+
 const CONTINUE_PROMPT = `Continue the task from where you left off.
 
 When you finish, return the same markdown sections as the original task:
@@ -91,9 +97,18 @@ export const claudeCodeProvider = {
   capabilities: {
     supportsResume: true,
     supportsStructuredEvents: true,
+    // This adapter emits file.changed itself for mutating tools only (see
+    // MUTATING below) — a Read or Grep never produces one.
+    supportsFileChanges: true,
+    // tool.started already carries input.command for Bash calls, unchanged
+    // by that fix — the COMMANDS dimension is honest today.
+    supportsCommands: true,
     supportsPermissionRequests: true,
     supportsSandbox: false,
-    supportsStreaming: true
+    supportsStreaming: true,
+    // The written result is available the moment a run halts or completes,
+    // not only at the very end — never gate the RESULT section on this.
+    resultOnCompletion: false
   },
 
   async start({ cwd, prompt, onEvent = () => {} }) {
@@ -213,6 +228,9 @@ function runClaude({ cwd, args, onEvent }) {
         for (const block of event.message?.content ?? []) {
           if (block.type === "tool_use") {
             onEvent({ type: "tool.started", name: block.name, input: block.input });
+            if (MUTATING.has(block.name) && typeof block.input?.file_path === "string") {
+              onEvent({ type: "file.changed", path: block.input.file_path });
+            }
           } else if (block.type === "text" && block.text) {
             onEvent({ type: "progress", text: block.text });
           }

@@ -141,12 +141,15 @@ const onEvent = async event => {
             ? input.command.slice(0, 80)
             : "";
       record("tool.started", { name: event.name, input: event.input ?? {} });
-      if (typeof input.file_path === "string") {
-        record("file.changed", { path: input.file_path });
-      }
       log(`tool: ${event.name}${target ? ` ${target}` : ""}`);
       break;
     }
+    case "file.changed":
+      // The provider adapter decides what counts as a change (vendor tool
+      // vocabulary is its concern, not ours) — this just records what it says.
+      record("file.changed", { path: event.path });
+      log(`file changed: ${event.path}`);
+      break;
     case "progress":
       if (event.text) {
         record("progress", { text: event.text });

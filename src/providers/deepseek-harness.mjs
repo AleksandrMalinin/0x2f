@@ -58,9 +58,14 @@ export const deepseekHarnessProvider = {
     // emits no structured event stream, and has no approval prompts.
     supportsResume: false,
     supportsStructuredEvents: false,
+    supportsFileChanges: false,
+    supportsCommands: false,
     supportsPermissionRequests: false,
     supportsSandbox: false,
-    supportsStreaming: false
+    supportsStreaming: false,
+    // The only signal this profile gives is the final stdout text, printed
+    // once the run has fully quiesced — there is nothing to show before that.
+    resultOnCompletion: true
   },
 
   async start({ cwd, prompt, onEvent = () => {} }) {

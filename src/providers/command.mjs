@@ -32,9 +32,14 @@ export function createCommandProvider(manifest) {
     capabilities: {
       supportsResume: false,
       supportsStructuredEvents: false,
+      supportsFileChanges: false,
+      supportsCommands: false,
       supportsPermissionRequests: false,
       supportsSandbox: false,
-      supportsStreaming: false
+      supportsStreaming: false,
+      // Exit 0 + stdout is the only signal a bare command gives, and it
+      // arrives all at once when the process closes — nothing before that.
+      resultOnCompletion: true
     },
 
     async start({ cwd, prompt, onEvent = () => {} }) {

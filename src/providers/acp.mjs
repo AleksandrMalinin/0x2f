@@ -74,6 +74,21 @@ const RESUME_PROMPTS = {
     "(## Needs human decision uses the REQUIRED: yes / REQUIRED: no protocol.)"
 };
 
+// tool_call.kind is the agent's OWN classification of what it is doing —
+// normalizing it into the tool input shape the ledger already reads
+// (input.command for a shell-shaped step, input.file_path for a file-shaped
+// one) is boundary normalization, not invention. An agent that never sends
+// kind falls back to the file location alone, exactly as before.
+export function toolInput(kind, title, file) {
+  if (kind === "execute" && typeof title === "string" && title.trim()) {
+    return { command: title };
+  }
+  if (typeof file === "string" && file) {
+    return { file_path: file };
+  }
+  return {};
+}
+
 export function createAcpProvider(manifest) {
   // Permission policy: "interactive" (the product path — permission requests
   // enter the real NEEDS YOU lifecycle and the human decides), "deny", or
@@ -96,11 +111,18 @@ export function createAcpProvider(manifest) {
       supportsResume: true,
       // Status/tool updates are structured when the agent provides them.
       supportsStructuredEvents: true,
+      // tool_call.kind (the agent's own classification) is plumbed through
+      // to a file.changed / command distinction below — an edit that
+      // completes is a change, an execute call is a command.
+      supportsFileChanges: true,
+      supportsCommands: true,
       // Permission requests participate in the NEEDS YOU lifecycle
       // (interactive) or are auto-resolved (deny/approve), per the manifest.
       supportsPermissionRequests: true,
       supportsSandbox: false,
-      supportsStreaming: true
+      supportsStreaming: true,
+      // agent_message_chunk / tool_call updates stream throughout the run.
+      resultOnCompletion: false
     },
 
     async start({ cwd, prompt, onEvent = () => {}, permission } = {}) {
@@ -482,7 +504,7 @@ function runAcp({ manifest, cwd, prompt, onEvent, permissions, decisionFile = nu
               onEvent({
                 type: "tool.started",
                 name,
-                input: file ? { file_path: file } : {}
+                input: toolInput(update.kind, update.title, file)
               });
               break;
             }
@@ -495,6 +517,12 @@ function runAcp({ manifest, cwd, prompt, onEvent, permissions, decisionFile = nu
                   name: update.title || "tool",
                   input: { file_path: locations[0].path }
                 });
+              }
+              // kind is the agent's OWN classification of what this tool call
+              // did — an "edit" that reached completed is a real change, not
+              // an inference from the tool's name.
+              if (update.kind === "edit" && update.status === "completed" && locations[0]?.path) {
+                onEvent({ type: "file.changed", path: locations[0].path });
               }
               break;
             }

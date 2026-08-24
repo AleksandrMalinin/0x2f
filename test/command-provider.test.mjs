@@ -54,9 +54,12 @@ test("command provider: declares the conservative capabilities", () => {
   assert.deepEqual(provider.capabilities, {
     supportsResume: false,
     supportsStructuredEvents: false,
+    supportsFileChanges: false,
+    supportsCommands: false,
     supportsPermissionRequests: false,
     supportsSandbox: false,
-    supportsStreaming: false
+    supportsStreaming: false,
+    resultOnCompletion: true
   });
   assert.equal(provider.resume, undefined); // no resume seam
 });
