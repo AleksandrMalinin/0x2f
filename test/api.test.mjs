@@ -284,6 +284,47 @@ test("GET / serves the 0x2F Web shell and its module assets", async () => {
   }
 });
 
+test("the browser client's full module graph is served (no blank-page regressions)", async () => {
+  const { base, handle } = await startTestServer();
+  try {
+    // Walk every module the browser client imports, transitively, and assert
+    // each one serves. A single missing module (historically e2e.mjs's
+    // /relay/protocol.mjs import) fails the whole ES-module graph and the UI
+    // renders blank — individual asset checks never caught that.
+    const origin = new URL(handle.url).origin;
+    const seen = new Set();
+    const queue = ["/app/app.js", "/app/pair.mjs"];
+    const specRE = /\bimport\s+(?:[^"'\n]*?\s+from\s+)?["']([^"']+)["']/g;
+
+    while (queue.length) {
+      const path = queue.shift();
+      if (seen.has(path)) continue;
+      seen.add(path);
+
+      const res = await apiFetch(handle.url + path);
+      assert.equal(res.status, 200, `module must be served: ${path}`);
+      const text = await res.text();
+      for (const match of text.matchAll(specRE)) {
+        const spec = match[1];
+        if (!spec || spec.startsWith("http:") || spec.startsWith("https:")) continue;
+        const url = new URL(spec, handle.url + path);
+        if (url.origin !== origin) continue;
+        queue.push(url.pathname);
+      }
+    }
+
+    // The relay client protocol module the E2E envelope code imports must be
+    // part of the graph — the historical blank-page regression.
+    assert.ok(
+      seen.has("/relay/protocol.mjs"),
+      "e2e.mjs's relay protocol import must be served by the local runtime"
+    );
+  } finally {
+    await handle.close();
+    await fs.rm(base, { recursive: true, force: true });
+  }
+});
+
 test("GET /api/events/history returns the persisted normalized log per task", async () => {
   const { base, runtime, handle } = await startTestServer();
   try {
@@ -437,6 +478,247 @@ test("POST /api/tasks/:id/rerun starts a second run under the same task through 
       ["start", task.slug],
       ["start", task.slug]
     ]);
+  } finally {
+    await handle.close();
+    await fs.rm(base, { recursive: true, force: true });
+  }
+});
+
+// --- the decision continuation flow ----------------------------------------
+//
+// Dogfooding found the whole path broken: a task blocked on a DECISION could
+// be answered, but the task could not then be continued. SEND BACK is a
+// body-less POST (no provider override), and the rerun route parsed its body
+// with a bare JSON.parse — `JSON.parse("")` threw `Unexpected end of JSON
+// input`, which the catch-all turned into a generic 500. The decision was
+// recorded and the task was stranded in NEEDS YOU with no way forward.
+
+async function blockOnDecision(runtime, task, question = "Which database?") {
+  const blocked = applyOutcome(task, {
+    status: "needs_you",
+    reason: "decision",
+    externalSessionId: "sess-decision",
+    blockedOn: { type: "decision", question }
+  });
+  blocked.execution = { ...(blocked.execution ?? {}), externalSessionId: "sess-decision" };
+  await runtime.store.writeJson(
+    path.join(runtime.store.taskDir(task.slug), "task.json"),
+    blocked
+  );
+  return blocked;
+}
+
+// A body-less POST — exactly what the Web client's `post()` helper sends for
+// SEND BACK, and what used to produce the 500.
+function postBodyless(url, headers = {}) {
+  return fetch(url, { method: "POST", headers: { ...authHeaders(), ...headers } });
+}
+
+test("DECISION FLOW: answer then SEND BACK continues the same task (the dogfooding sequence)", async () => {
+  const { base, node, runtime, handle } = await startTestServer();
+  try {
+    const task = await runtime.actions.createWork({ title: "Decision task" });
+    await blockOnDecision(runtime, task);
+
+    // ANSWER records the decision.
+    const answerRes = await postJson(handle.url + "/api/tasks/" + task.id + "/answer", {
+      answer: "use Postgres"
+    });
+    assert.equal(answerRes.status, 202);
+    const answered = await answerRes.json();
+    assert.equal(answered.status, "needs_you");
+    assert.deepEqual(
+      answered.context.notes.map(n => n.text),
+      ["use Postgres"]
+    );
+
+    // SEND BACK continues it — a body-less POST, as the browser sends it.
+    const res = await postBodyless(handle.url + "/api/tasks/" + task.id + "/rerun");
+    assert.equal(res.status, 201, "SEND BACK must succeed after an answer");
+
+    // The response is complete, valid JSON — never an empty/partial body.
+    const text = await res.text();
+    assert.ok(text.length > 0, "SEND BACK must never answer with an empty body");
+    const rerun = JSON.parse(text);
+
+    assert.equal(rerun.status, "working");
+    assert.equal(rerun.runs.length, 2, "the answered run stays in history");
+    assert.equal(rerun.runs[1].run, 2);
+    assert.equal(rerun.blockedOn, undefined, "the decision block is cleared");
+
+    // The recorded answer survives the rerun and is carried into the new run.
+    assert.deepEqual(
+      rerun.context.notes.map(n => n.text),
+      ["use Postgres"]
+    );
+    const runPrompt = await runtime.store.readRunPrompt(rerun, 2);
+    assert.match(
+      runPrompt ?? "",
+      /use Postgres/,
+      "the answer must reach the next run's input"
+    );
+
+    assert.deepEqual(node.calls, [
+      ["start", task.slug],
+      ["start", task.slug]
+    ]);
+  } finally {
+    await handle.close();
+    await fs.rm(base, { recursive: true, force: true });
+  }
+});
+
+test("DECISION FLOW: a body-less rerun POST is a valid request, not a 500", async () => {
+  const { base, runtime, handle } = await startTestServer();
+  try {
+    const task = await runtime.actions.createWork({ title: "Bodyless rerun" });
+    await blockOnDecision(runtime, task);
+
+    const res = await postBodyless(handle.url + "/api/tasks/" + task.id + "/rerun");
+    assert.equal(res.status, 201);
+    assert.match(res.headers.get("content-type") ?? "", /application\/json/);
+    // The exact historical failure: a generic 500 carrying the parser's message.
+    const body = await res.json();
+    assert.equal(body.error, undefined);
+    assert.notEqual(body.error, "Unexpected end of JSON input");
+  } finally {
+    await handle.close();
+    await fs.rm(base, { recursive: true, force: true });
+  }
+});
+
+test("DECISION FLOW: SEND BACK is idempotent — a retry never starts a duplicate run", async () => {
+  const { base, node, runtime, handle } = await startTestServer();
+  try {
+    const task = await runtime.actions.createWork({ title: "Retry safety" });
+    await blockOnDecision(runtime, task);
+    await postJson(handle.url + "/api/tasks/" + task.id + "/answer", { answer: "go" });
+
+    // The client mints one key per user gesture; an ambiguous failure makes it
+    // retry with the SAME key.
+    const key = "req-send-back-once";
+    const url = handle.url + "/api/tasks/" + task.id + "/rerun";
+    const first = await postBodyless(url, { "x-0x2f-request-id": key });
+    const second = await postBodyless(url, { "x-0x2f-request-id": key });
+
+    assert.equal(first.status, 201);
+    assert.equal(second.status, 201, "the retry replays the original answer");
+    const a = await first.json();
+    const b = await second.json();
+    assert.deepEqual(b, a, "the retry must return the first attempt's result");
+
+    // Exactly one new run, and exactly one execution on the node.
+    assert.equal(a.runs.length, 2);
+    const reread = await runtime.actions.getWork(task.id);
+    assert.equal(reread.runs.length, 2, "a retry must not append a third run");
+    assert.deepEqual(node.calls, [
+      ["start", task.slug],
+      ["start", task.slug]
+    ]);
+  } finally {
+    await handle.close();
+    await fs.rm(base, { recursive: true, force: true });
+  }
+});
+
+test("DECISION FLOW: concurrent duplicate SEND BACKs collapse to one run", async () => {
+  const { base, node, runtime, handle } = await startTestServer();
+  try {
+    const task = await runtime.actions.createWork({ title: "Double tap" });
+    await blockOnDecision(runtime, task);
+
+    const key = "req-double-tap";
+    const url = handle.url + "/api/tasks/" + task.id + "/rerun";
+    // Both in flight at once — the second must wait for the first, not race it.
+    const [first, second] = await Promise.all([
+      postBodyless(url, { "x-0x2f-request-id": key }),
+      postBodyless(url, { "x-0x2f-request-id": key })
+    ]);
+    assert.equal(first.status, 201);
+    assert.equal(second.status, 201);
+    assert.deepEqual(await second.json(), await first.json());
+
+    const reread = await runtime.actions.getWork(task.id);
+    assert.equal(reread.runs.length, 2);
+    assert.equal(node.calls.length, 2, "one create + one rerun execution");
+  } finally {
+    await handle.close();
+    await fs.rm(base, { recursive: true, force: true });
+  }
+});
+
+test("DECISION FLOW: distinct request ids are distinct gestures", async () => {
+  const { base, runtime, handle } = await startTestServer();
+  try {
+    const task = await runtime.actions.createWork({ title: "Fresh keys" });
+    await blockOnDecision(runtime, task);
+    const url = handle.url + "/api/tasks/" + task.id + "/rerun";
+
+    const first = await postBodyless(url, { "x-0x2f-request-id": "key-one" });
+    assert.equal(first.status, 201);
+
+    // A genuinely new gesture is executed, and refused on its own merits —
+    // the task is working — rather than silently replaying the first.
+    const second = await postBodyless(url, { "x-0x2f-request-id": "key-two" });
+    assert.equal(second.status, 400);
+    const body = await second.json();
+    assert.match(body.error, /working/);
+  } finally {
+    await handle.close();
+    await fs.rm(base, { recursive: true, force: true });
+  }
+});
+
+test("every API failure is explicit, valid JSON (never an empty or partial body)", async () => {
+  const { base, runtime, handle } = await startTestServer();
+  try {
+    const task = await runtime.actions.createWork({ title: "Failure shapes" });
+
+    const cases = [
+      // Malformed JSON is the client's error — an explicit 400, not a 500.
+      [
+        "malformed body",
+        await fetch(handle.url + "/api/tasks/" + task.id + "/note", {
+          method: "POST",
+          headers: { "content-type": "application/json", ...authHeaders() },
+          body: "{ not json"
+        }),
+        400
+      ],
+      // A JSON scalar is not a parameter set.
+      [
+        "non-object body",
+        await fetch(handle.url + "/api/tasks/" + task.id + "/note", {
+          method: "POST",
+          headers: { "content-type": "application/json", ...authHeaders() },
+          body: '"just a string"'
+        }),
+        400
+      ],
+      // An unknown route used to answer with the bare text "Not found".
+      ["unknown route", await apiFetch(handle.url + "/api/nope"), 404],
+      ["unauthorized", await fetch(handle.url + "/api/tasks"), 401],
+      // A refused action from the shared layer.
+      [
+        "not answerable",
+        await postJson(handle.url + "/api/tasks/" + task.id + "/answer", { answer: "x" }),
+        400
+      ]
+    ];
+
+    for (const [label, res, status] of cases) {
+      assert.equal(res.status, status, label + ": status");
+      assert.match(
+        res.headers.get("content-type") ?? "",
+        /application\/json/,
+        label + ": content-type"
+      );
+      const text = await res.text();
+      assert.ok(text.length > 0, label + ": body must not be empty");
+      const body = JSON.parse(text); // must not throw — the historical failure
+      assert.equal(typeof body.error, "string", label + ": carries an error string");
+      assert.ok(body.error.length > 0, label + ": the error is not blank");
+    }
   } finally {
     await handle.close();
     await fs.rm(base, { recursive: true, force: true });

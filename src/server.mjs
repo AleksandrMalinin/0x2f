@@ -49,6 +49,16 @@
 //      local scripts/tests). The token is generated per server process.
 //   4. Request-body cap — bodies are bounded before any JSON.parse.
 //
+// Two properties every client can rely on:
+//
+//   * Every response is valid JSON. Failures are `{ error }` objects with a
+//     real status — never an empty body, never bare text — so a client can
+//     parse unconditionally.
+//   * POSTs are idempotent when they carry `x-0x2f-request-id`. The same key
+//     executes once; a retry replays the first attempt's exact answer. This
+//     mirrors the relay agent's ack cache, so a double tap or a retry after an
+//     ambiguous failure cannot start a second run of a task.
+//
 // Static assets and the shell are served without authentication (Host +
 // browser-request checks still apply) so the UI can bootstrap; only /api/*
 // is token-gated. `GET /api/health` is deliberately unauthenticated — it
@@ -64,28 +74,37 @@ import { createTailer } from "./core/events.mjs";
 import { WorkError } from "./core/errors.mjs";
 import { MAX_BODY_BYTES } from "./core/limits.mjs";
 
-// The Web surface is served as three static files from src/web/:
+// The Web surface is served as static files from src/ — the shell and the
+// browser client from src/web/, plus the relay client protocol module the
+// browser's E2E envelope code imports (src/relay/protocol.mjs). Values are
+// [src-relative path, mime]:
 //
-//   index.html   the shell + the design's styles
-//   app.js       the browser client (transport + DOM)
-//   ledger.mjs   the pure projection from normalized events to the ledger
-//                view model — imported by the browser AND by the Node tests,
-//                so the rendering rules have exactly one implementation.
+//   /                index.html   the shell + the design's styles
+//   /app/app.js      the browser client (transport + DOM)
+//   /app/ledger.mjs  the pure projection from normalized events to the
+//                    ledger view model — imported by the browser AND by the
+//                    Node tests, so the rendering rules have exactly one
+//                    implementation.
 //
 // The allowlist below is the whole static story: no directory walking, no
-// user-supplied paths, nothing outside src/web can be requested.
+// user-supplied paths, nothing outside these exact entries can be requested.
 const ASSETS = {
-  "/": ["index.html", "text/html; charset=utf-8"],
-  "/pair": ["pair.html", "text/html; charset=utf-8"],
-  "/app/app.css": ["app.css", "text/css; charset=utf-8"],
-  "/app/app.js": ["app.js", "text/javascript; charset=utf-8"],
-  "/app/e2e.mjs": ["e2e.mjs", "text/javascript; charset=utf-8"],
-  "/app/pair.mjs": ["pair.mjs", "text/javascript; charset=utf-8"],
-  "/app/pair.css": ["pair.css", "text/css; charset=utf-8"],
-  "/app/remote.mjs": ["remote.mjs", "text/javascript; charset=utf-8"],
-  "/app/ledger.mjs": ["ledger.mjs", "text/javascript; charset=utf-8"],
-  "/app/sound-policy.mjs": ["sound-policy.mjs", "text/javascript; charset=utf-8"],
-  "/app/sound.mjs": ["sound.mjs", "text/javascript; charset=utf-8"]
+  "/": ["web/index.html", "text/html; charset=utf-8"],
+  "/pair": ["web/pair.html", "text/html; charset=utf-8"],
+  "/app/app.css": ["web/app.css", "text/css; charset=utf-8"],
+  "/app/app.js": ["web/app.js", "text/javascript; charset=utf-8"],
+  "/app/e2e.mjs": ["web/e2e.mjs", "text/javascript; charset=utf-8"],
+  "/app/pair.mjs": ["web/pair.mjs", "text/javascript; charset=utf-8"],
+  "/app/pair.css": ["web/pair.css", "text/css; charset=utf-8"],
+  "/app/remote.mjs": ["web/remote.mjs", "text/javascript; charset=utf-8"],
+  "/app/ledger.mjs": ["web/ledger.mjs", "text/javascript; charset=utf-8"],
+  "/app/sound-policy.mjs": ["web/sound-policy.mjs", "text/javascript; charset=utf-8"],
+  "/app/sound.mjs": ["web/sound.mjs", "text/javascript; charset=utf-8"],
+  // The browser's E2E envelope code (e2e.mjs) imports this shared protocol
+  // module; without it the whole client module graph fails and the UI
+  // renders blank. The relay SERVER is never served — only this client-side
+  // wire-contract module, which the local product ships anyway.
+  "/relay/protocol.mjs": ["relay/protocol.mjs", "text/javascript; charset=utf-8"]
 };
 
 // --- local-boundary security ------------------------------------------------
@@ -214,7 +233,7 @@ function requireAuth(req, res, token) {
 }
 
 async function readAsset(name) {
-  return fs.readFile(new URL("./web/" + name, import.meta.url), "utf8");
+  return fs.readFile(new URL("./" + name, import.meta.url), "utf8");
 }
 
 async function readBody(req, maxBytes = MAX_BODY_BYTES) {
@@ -242,12 +261,67 @@ async function readBody(req, maxBytes = MAX_BODY_BYTES) {
   return Buffer.concat(chunks).toString("utf8");
 }
 
+// Every mutating route reads its parameters from a JSON body, but several of
+// them are legitimately body-less: SEND BACK (rerun with no provider override),
+// like ALLOW/REJECT/CLOSE, is a bare POST. `JSON.parse("")` throws
+// `Unexpected end of JSON input`, which surfaced to the user as a generic 500
+// and made SEND BACK unusable from the Web UI. An absent body is an empty
+// parameter set; a malformed one is the client's error (400), never a 500.
+async function readJsonBody(req, maxBytes = MAX_BODY_BYTES) {
+  const text = (await readBody(req, maxBytes)).trim();
+  if (!text) return {};
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    throw new WorkError("Request body is not valid JSON.", 400);
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new WorkError("Request body must be a JSON object.", 400);
+  }
+  return parsed;
+}
+
+// Every API response is produced here, so this is the one place that can
+// observe what a route answered — the idempotency layer below hooks it to
+// remember a mutation's result without any route knowing about replay.
+const SENT_HOOK = Symbol("0x2f.sent");
+
 function json(res, value, status = 200) {
+  res[SENT_HOOK]?.(status, value);
   res.writeHead(status, {
     "content-type": "application/json; charset=utf-8",
     ...SECURITY_HEADERS
   });
   res.end(JSON.stringify(value));
+}
+
+// --- idempotent mutations ---------------------------------------------------
+//
+// The Web client mints a unique key per mutating request (x-0x2f-request-id).
+// The relay agent has always honored it through its persisted ack cache; the
+// LOCAL server ignored it, so a double tap or a retry after an ambiguous
+// failure could start a second run of the same task. This is the local
+// counterpart: same key -> same answer, executed exactly once.
+//
+// In-memory and bounded — a local server process is the trust and lifetime
+// boundary here, and a key is only useful for as long as a client might retry
+// it. Entries hold the in-flight promise, so a duplicate that arrives while
+// the first is still executing waits for it instead of racing it.
+const IDEMPOTENCY_HEADER = "x-0x2f-request-id";
+const MAX_IDEMPOTENCY_KEYS = 512;
+
+function createIdempotencyCache(limit = MAX_IDEMPOTENCY_KEYS) {
+  const entries = new Map();
+  return {
+    get: key => entries.get(key),
+    set(key, pending) {
+      entries.set(key, pending);
+      // Oldest-first eviction: Map preserves insertion order.
+      while (entries.size > limit) entries.delete(entries.keys().next().value);
+    },
+    drop: key => entries.delete(key)
+  };
 }
 
 function sendSse(res, event) {
@@ -324,7 +398,9 @@ export async function startServer(base = process.cwd(), port = 4242, opts = {}) 
   });
   tailer.start();
 
-  const server = http.createServer(async (req, res) => {
+  const idempotency = createIdempotencyCache();
+
+  const route = async (req, res) => {
     try {
       const url = new URL(req.url || "/", `http://${host}:${port}`);
 
@@ -446,7 +522,7 @@ export async function startServer(base = process.cwd(), port = 4242, opts = {}) 
       }
 
       if (req.method === "POST" && url.pathname === "/api/tasks") {
-        const body = JSON.parse(await readBody(req));
+        const body = await readJsonBody(req);
         const task = await actions.createWork({
           title: body.title,
           provider: body.provider,
@@ -463,7 +539,7 @@ export async function startServer(base = process.cwd(), port = 4242, opts = {}) 
       // the user pressing START (POST /api/tasks). The refinement model path
       // is the refiner's concern (runtime.refine), not the API's.
       if (req.method === "POST" && url.pathname === "/api/refine") {
-        const body = JSON.parse(await readBody(req));
+        const body = await readJsonBody(req);
         const refined = await runtime.refine.refineTaskPrompt(body.text);
         json(res, { refined });
         return;
@@ -480,7 +556,7 @@ export async function startServer(base = process.cwd(), port = 4242, opts = {}) 
       // of the shared actions — the CLI offers the same two operations.
       const rerunMatch = url.pathname.match(/^\/api\/tasks\/(\d+)\/rerun$/);
       if (req.method === "POST" && rerunMatch) {
-        const body = JSON.parse(await readBody(req));
+        const body = await readJsonBody(req);
         const task = await actions.rerunWork(Number(rerunMatch[1]), {
           provider: body.provider,
           model: body.model
@@ -514,7 +590,7 @@ export async function startServer(base = process.cwd(), port = 4242, opts = {}) 
       // for permissions). The answer is persisted with the task.
       const answerMatch = url.pathname.match(/^\/api\/tasks\/(\d+)\/answer$/);
       if (req.method === "POST" && answerMatch) {
-        const body = JSON.parse(await readBody(req));
+        const body = await readJsonBody(req);
         const task = await actions.answerWork(Number(answerMatch[1]), {
           answer: body.answer
         });
@@ -527,7 +603,7 @@ export async function startServer(base = process.cwd(), port = 4242, opts = {}) 
       // so the note reaches the next provider session automatically.
       const noteMatch = url.pathname.match(/^\/api\/tasks\/(\d+)\/note$/);
       if (req.method === "POST" && noteMatch) {
-        const body = JSON.parse(await readBody(req));
+        const body = await readJsonBody(req);
         const task = await actions.noteWork(Number(noteMatch[1]), {
           note: body.note
         });
@@ -541,8 +617,10 @@ export async function startServer(base = process.cwd(), port = 4242, opts = {}) 
         return;
       }
 
-      res.writeHead(404);
-      res.end("Not found");
+      // Every failure the API can produce is a JSON object with an `error`
+      // string — a client that always parses JSON never meets a partial body.
+      json(res, { error: `No such endpoint: ${req.method} ${url.pathname}` }, 404);
+      return;
     } catch (error) {
       if (error instanceof WorkError) {
         json(res, { error: error.message }, error.status);
@@ -553,6 +631,36 @@ export async function startServer(base = process.cwd(), port = 4242, opts = {}) 
           500
         );
       }
+    }
+  };
+
+  const server = http.createServer(async (req, res) => {
+    const key = req.method === "POST" ? req.headers[IDEMPOTENCY_HEADER] : null;
+    if (typeof key !== "string" || !key) return route(req, res);
+
+    const inFlight = idempotency.get(key);
+    if (inFlight) {
+      // Same key seen before: replay the first attempt's exact answer rather
+      // than executing the mutation a second time. A duplicate that arrives
+      // mid-execution awaits the original instead of racing it.
+      const first = await inFlight;
+      if (first) {
+        json(res, first.value, first.status);
+        return;
+      }
+    }
+
+    let settle;
+    idempotency.set(key, new Promise(resolve => { settle = resolve; }));
+    let answered = null;
+    res[SENT_HOOK] = (status, value) => { answered = { status, value }; };
+    try {
+      await route(req, res);
+    } finally {
+      // A request that produced no JSON answer is not replayable — forget the
+      // key so a retry is a fresh attempt rather than a hang.
+      if (!answered) idempotency.drop(key);
+      settle(answered);
     }
   });
 

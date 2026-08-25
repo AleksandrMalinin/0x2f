@@ -523,14 +523,17 @@ function flash(message) {
   }, 4000);
 }
 
+// Reports whether the action succeeded, so a composed gesture (ANSWER &
+// CONTINUE) can stop instead of continuing past a failed step.
 async function act(fn) {
   try {
     await fn();
   } catch (error) {
     flash(error.message);
-    return;
+    return false;
   }
   await reloadTasks();
+  return true;
 }
 
 const allow = id => {
@@ -553,8 +556,8 @@ const accept = id => {
 // input is rebuilt from current Task state (answers, notes, prior results),
 // so it is the "continue with my correction" gesture of the control loop.
 const sendBack = id => {
-  if (remoteBlocked()) return;
-  act(() => post("/api/tasks/" + id + "/rerun"));
+  if (remoteBlocked()) return Promise.resolve(false);
+  return act(() => post("/api/tasks/" + id + "/rerun"));
 };
 
 // CLOSE tells 0x2F this Work is no longer active — the same closeWork action
@@ -567,9 +570,9 @@ const close = id => accept(id);
 // ANSWER responds to a needs_you/decision block. A decision is answered,
 // never allowed/rejected; the answer is persisted with the task.
 async function answerDecision(id) {
-  if (remoteBlocked()) return;
+  if (remoteBlocked()) return false;
   const answer = (state.answers.get(id) ?? "").trim();
-  if (!answer) return;
+  if (!answer) return false;
   try {
     await api("/api/tasks/" + id + "/answer", {
       method: "POST",
@@ -578,10 +581,11 @@ async function answerDecision(id) {
     });
   } catch (error) {
     flash(error.message);
-    return;
+    return false;
   }
   state.answers.delete(id);
   await reloadTasks();
+  return true;
 }
 
 function toggleOpen(id) {
@@ -916,9 +920,10 @@ function closeButton(id) {
 
 // A needs_you/decision block: the agent cannot continue without the human's
 // judgment. The question is shown and the human ANSWERS — there is no
-// ALLOW/REJECT here, those verbs belong to permissions. When the provider
-// cannot resume sessions the limitation is stated plainly instead of faking
-// a continuation; CLOSE remains the way to remove the Work from attention.
+// ALLOW/REJECT here, those verbs belong to permissions. Answering and
+// continuing is ONE gesture (ANSWER & CONTINUE), the same model the mobile
+// surface uses; no provider can resume a decision in place, so "continue"
+// honestly means the next run, and the card says so.
 function renderDecisionCard(row, accent) {
   const provider = state.providers.find(p => p.id === row.providerId);
   const resumable = provider?.capabilities?.supportsResume === true;
@@ -931,22 +936,42 @@ function renderDecisionCard(row, accent) {
   });
   input.value = value;
 
+  // The primary gesture is ANSWER & CONTINUE: recording an answer and then
+  // continuing the task is one intention, and splitting it into two buttons
+  // pressed in the right order is what stranded decisions in NEEDS YOU.
+  // SAVE ONLY keeps the "record my decision without spending a run" path.
   const submit = el("button", {
     class: "act act-primary",
     "data-focus-key": "answer-" + row.id,
-    text: "ANSWER"
+    text: "ANSWER & CONTINUE"
   });
   submit.disabled = value.trim().length === 0;
   submit.addEventListener("click", e => {
     e.stopPropagation();
-    answerDecision(row.id);
-  });
-  input.addEventListener("input", () => {
-    state.answers.set(row.id, input.value);
-    submit.disabled = input.value.trim().length === 0;
+    submit.disabled = true;
+    answerAndContinue(row.id).finally(() => render());
   });
 
-  const acts = [submit];
+  const saveOnly = el("button", {
+    class: "act act-quiet",
+    "data-focus-key": "answer-save-" + row.id,
+    text: "SAVE ONLY"
+  });
+  saveOnly.disabled = value.trim().length === 0;
+  saveOnly.addEventListener("click", e => {
+    e.stopPropagation();
+    saveOnly.disabled = true;
+    answerDecision(row.id).finally(() => render());
+  });
+
+  input.addEventListener("input", () => {
+    state.answers.set(row.id, input.value);
+    const empty = input.value.trim().length === 0;
+    submit.disabled = empty;
+    saveOnly.disabled = empty;
+  });
+
+  const acts = [submit, saveOnly];
   if (row.permDetail) {
     acts.push(
       actionButton("INSPECT", "I", "act-outline", e => {
@@ -955,8 +980,8 @@ function renderDecisionCard(row, accent) {
       }, "inspect-" + row.id)
     );
   }
-  // ANSWER records the decision in Task context; SEND BACK reruns the task so
-  // the next run continues with the answer in context.
+  // SEND BACK stays available as the "rerun without answering" gesture — the
+  // escape hatch when the question itself is wrong and no answer applies.
   acts.push(
     actionButton("SEND BACK", "S", "act-outline", e => {
       e.stopPropagation();
@@ -980,7 +1005,7 @@ function renderDecisionCard(row, accent) {
             class: "decision-limitation",
             text:
               (provider?.displayName ?? "This provider") +
-              " cannot resume sessions — answering records your decision in this run's history. The task stays NEEDS YOU; close it to remove it from attention."
+              " cannot resume sessions in place — continuing starts a new run of this Task with your answer in context. SAVE ONLY records the answer and leaves the task in NEEDS YOU."
           })
         : null,
       state.inspectId === row.id && row.permDetail
@@ -2181,11 +2206,13 @@ function closeCorrection() {
 // the next run carries it in context — a decision is not resumable in
 // place, so "continue" genuinely means starting the next run.
 async function answerAndContinue(id) {
-  if (remoteBlocked()) return;
+  if (remoteBlocked()) return false;
   const answer = (state.answers.get(id) ?? "").trim();
-  if (!answer) return;
-  await answerDecision(id);
-  await sendBack(id);
+  if (!answer) return false;
+  // Never continue past a failed save: rerunning without the recorded answer
+  // would spend a run on the same question the agent already asked.
+  if (!(await answerDecision(id))) return false;
+  return sendBack(id);
 }
 
 // The CORRECTION / ADD A CONSTRAINT sheet shares the desktop NOTE action and
