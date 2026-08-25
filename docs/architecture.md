@@ -308,54 +308,68 @@ when the events actually contain them.
 Below 640px, `app.js` renders a dedicated mobile code path (the "Attention
 Stack"): an Overview (glance → understand → intervene) and a Task Detail, with
 the primary action under the thumb and all mutating controls disabled while
-the Mac is offline. The mobile client is served by the **relay**; it detects
-remote mode via `/api/status` and never queues commands.
+the Mac is offline. The mobile client is served by the **client origin** (the
+local runtime by default; a static host in deployment — never the relay); it
+detects remote mode from the stored pairing and never queues commands.
 
-## Remote control — `src/relay/`, `relay/`
+## Remote control — `src/relay/`, `relay/`, `src/web/`
 
 - `pair.mjs` — `2f pair`: ensures `.work/relay.json` (stable `deviceId` +
-  long-lived `deviceSecret`), generates a short-lived one-time token, ensures
-  the runtime is running, and prints the pairing URL. `2f pair --off`
-  disables remote control without touching device identity.
+  long-lived `deviceSecret`), rotates the credential at the relay, generates a
+  short-lived one-time token **and a pairing code**, and prints the client
+  origin URL + code. `2f pair --off` revokes remote access at the relay.
 - `agent.mjs` — the outbound link, an in-process module of the UI runtime.
-  It subscribes to the normalized event bus, forwards events, pushes a
-  snapshot on state-changing events and on every reconnect, backfills recent
-  events, and executes remote commands **through the shared core actions**.
-  Commands run strictly serially; a bounded idempotency cache means a
-  repeated `requestId` never executes a mutating action twice.
-- `protocol.mjs` — the versioned wire contract
-  `{ protocolVersion, deviceId, requestId, type, payload }`;
-  `deviceId`/`requestId` are protocol identity, deliberately separate from
-  credentials.
-- `relay/server.mjs` — the standalone relay. Pairing pages, session cookies,
-  a bounded last-known snapshot/event cache per device, SSE fan-out, and
-  command forwarding. Reads are forwarded to the Mac when online (else served
-  stale); **mutating commands are never queued** — offline is an explicit 503.
+  It subscribes to the normalized event bus, projects events to the REMOTE
+  (redacted) shape, encrypts them, and executes remote commands **through the
+  shared core actions** — but only after the command envelope passes
+  AES-GCM verification with the confirmed phone's key, a ±5 min freshness
+  window, and a **persisted** `requestId → ack` cache (one logical command =
+  one `requestId`; retries return the same ack and never execute twice; the
+  protection survives restarts).
+- `protocol.mjs` — the versioned wire contract. `hello` frames carry
+  transport auth (deviceSecret); `relay` frames are opaque AES-256-GCM
+  envelopes between the phone and the Mac.
+- `e2e.mjs` — the shared (Node + browser Web Crypto) primitives: pairing code
+  → PBKDF2-SHA256 (600k iterations, code + token salt) → AES-256-GCM with a
+  fixed byte encoding for the authenticated metadata.
+- `project.mjs` — the single data-minimization boundary: what the phone
+  receives (redacted tasks/events, relative paths, truncated prose) versus
+  what stays on the Mac (`blockedOn.raw`, complete tool inputs, edit diffs,
+  session ids, absolute paths, the workspace `base`).
+- `relay/server.mjs` — the standalone relay: an **opaque broker**. Pairing
+  tokens/sessions (expiry + generation-bound), Mac authentication, online/
+  offline status, and routing of opaque envelopes (`/api/command`, SSE). It
+  holds **no task/event/result content**, cannot decrypt or forge anything,
+  and **never queues commands** — offline is an explicit 503.
 
 ```text
-Phone browser ── HTTPS (existing API semantics) ──► Relay ◄── outbound
-                                                       WebSocket ── Mac
+Phone client (client origin, trusted) ── HTTPS + E2E envelopes ──► Relay ◄──
+                     outbound WSS ── Mac agent (verifies every command)
 ```
 
 ## Security boundary
 
-Three ownership rules, enforced by the transport:
+Phase 3A: **the relay is an untrusted transport, not an execution
+authority.** The phone and the Mac share a symmetric key derived from the
+pairing code (typed into the trusted client page — never transmitted).
+Every command, ack, event and snapshot is an AES-256-GCM envelope:
 
-> **Local 0x2F owns work.** Tasks, runs, agents, the repository and
-> credentials stay on the Mac; the relay never becomes the task source of
-> truth.
-> **Relay owns connectivity.** It forwards normalized events and proxies
-> commands; it is disposable, and a restart never loses task state (the Mac
-> restores the relay's view on reconnect).
-> **Web owns control.** The phone talks the same API semantics as the local
-> UI — no second task-control model.
+> The relay can route envelopes and report availability, but it cannot
+> construct a valid command, cannot decrypt any payload, and holds no task
+> content. The Mac executes a remote command only after cryptographic
+> verification (authenticity, freshness, idempotency) through the shared
+> actions.
+> Re-pairing (`2f pair`) rotates the Mac's credential AND the E2E key,
+> retiring every previous phone; `2f pair --off` revokes at the relay.
+> A compromised relay alone grants neither execution authority on the Mac
+> nor readable remote task content — only availability (dropping/delaying
+> traffic) and the phone's own served client (see below).
 
-The relay necessarily observes what the remote surface needs to render —
-task status, normalized events, progress/result text, file paths, NEEDS YOU
-details. It never receives provider credentials, arbitrary repository
-contents, or execution authority independent of the connected Mac. There is
-no E2E encryption beyond HTTPS/WSS; the pairing token is the only credential
-a phone presents, and it is consumed on first use. See
+Remaining assumptions, documented rather than hidden: the Mac, the phone
+device, and the client origin's served code are trusted; a relay that is
+malicious at the moment of pairing AND serves a modified client to the phone
+can capture the code (the ceremony is the trust anchor — ship the client from
+a static origin you control; a native app would fully remove this). See
 [`relay/README.md`](../relay/README.md) for the deployment statement.
 
 ## Persistence layout

@@ -255,11 +255,18 @@ test("GET / serves the 0x2F Web shell and its module assets", async () => {
     assert.match(html, /<script type="module" src="\/app\/app.js">/);
     assert.match(html, /0x2F/);
 
-    for (const path of ["/app/app.js", "/app/ledger.mjs", "/app/sound.mjs", "/app/sound-policy.mjs", "/app/app.css"]) {
+    for (const path of ["/app/app.js", "/app/ledger.mjs", "/app/sound.mjs", "/app/sound-policy.mjs", "/app/app.css", "/app/e2e.mjs", "/app/remote.mjs", "/app/pair.mjs", "/app/pair.css"]) {
       const asset = await apiFetch(handle.url + path);
       assert.equal(asset.status, 200, path);
       assert.match(asset.headers.get("content-type"), /javascript|text\/css/);
     }
+
+    // The pairing page is served by the client origin (the local runtime) —
+    // the relay never serves it.
+    const pairPage = await apiFetch(handle.url + "/pair");
+    assert.equal(pairPage.status, 200);
+    assert.match(pairPage.headers.get("content-type"), /text\/html/);
+    assert.match(await pairPage.text(), /<script type="module" src="\/app\/pair.mjs">/);
 
     // The browser imports the SAME projection module the tests import.
     const ledger = await apiFetch(handle.url + "/app/ledger.mjs").then(r => r.text());

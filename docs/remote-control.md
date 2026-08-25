@@ -10,10 +10,11 @@ Phone browser ── HTTPS + existing API semantics ──► 0x2F Relay ◄─�
 
 - **Local 0x2F owns work.** Tasks, runs, agents, repositories and credentials
   stay on the Mac. The relay never becomes the Task source of truth.
-- **Relay owns connectivity.** It forwards normalized events and proxies
-  commands. It is disposable — a restart never loses Task state.
-- **Web owns control.** The phone runs the same web client and speaks the
-  same API semantics as the local UI.
+- **Relay owns connectivity only.** It routes encrypted envelopes and reports
+  availability. It is disposable, holds no task content, and a restart never
+  loses Task state.
+- **Web owns control.** The phone runs the same web client (served by the
+  client origin — never the relay) and issues commands end-to-end encrypted.
 
 This document walks the full flow from a clean machine to the first remote
 `ACCEPT`. Deployment details live in [`relay/README.md`](../relay/README.md).
@@ -94,12 +95,17 @@ is gitignored and never committed.
 2f pair --relay http://127.0.0.1:8080
 ```
 
-Expected output — no warnings:
+Expected output — no warnings (the URL points at the CLIENT ORIGIN — the
+local runtime by default — and carries the relay + token; the code is typed
+into that trusted page and never crosses the relay):
 
 ```
-Pair this phone (open this URL on your phone):
-  http://127.0.0.1:8080/pair/XXXX...
-The pairing code expires ...
+Open this URL on your phone (the pairing page is served by the
+client origin — never by the relay):
+  http://127.0.0.1:4242/pair?relay=http%3A%2F%2F127.0.0.1%3A8080&token=XXXX...&device=...
+
+Pairing code:  XXXXXXXXXXXXXX
+It expires ...
 ```
 
 Verify the agent actually connected:
@@ -118,8 +124,8 @@ tail -5 .work/ui.log
 ## Step 4 — Open the pairing URL on your "phone"
 
 **Option A — quick check on the same Mac:** open the printed URL in a
-browser. The pairing page confirms the code automatically and opens the app.
-This exercises the entire loop except the actual second network.
+browser, type the pairing code into the page, and the app opens paired. This
+exercises the entire loop except the actual second network.
 
 **Option B — a real phone on the same Wi-Fi:** restart the relay with network
 access, then pair with the Mac's LAN address — but remember the relay URL
@@ -157,10 +163,11 @@ macOS may ask to allow incoming connections for `node` — allow it.
 pkill -f "server-entry.mjs"
 ```
 
-On the phone, within a couple of seconds: the **MAC OFFLINE** banner appears,
-action buttons are disabled, and mutating requests answer `503 Mac is
-offline…` (never queued — this is deliberate: an explicit failure beats "you
-tapped SEND BACK now and it runs 15 minutes later").
+On the phone, within a couple of seconds: the **MAC OFFLINE** banner appears
+over the phone's own last-known state, action buttons are disabled, and
+mutating requests answer `503 Mac is offline…` (never queued — this is
+deliberate: an explicit failure beats "you tapped SEND BACK now and it runs
+15 minutes later").
 
 To bring the Mac back, restart the runtime (`2f pair …` or `2f ui
 --no-browser`); the agent reconnects and the phone shows fresh state by
@@ -182,7 +189,7 @@ phone again, run `2f pair` again (this rotates the Mac's credential and
 starts a fresh pairing; the previous phone must claim the new code).
 
 Re-running `2f pair` at any time rotates the device credential + token and
-retires the previous phone — that is how you switch phones.
+the E2E key, and retires the previous phone — that is how you switch phones.
 
 ## Step 8 — Stop
 
@@ -213,6 +220,7 @@ npm run check   # syntax-check every source and test file
 | `No relay: online` in `.work/ui.log` | relay unreachable, or the token expired (10 min) | bring the relay up, re-run `2f pair` |
 | `Agent watches the wrong .work/relay.json` | a runtime on port 4242 belongs to another workspace | pair with `--port 4301` |
 | `Relay URL must use https://…` | a plain-HTTP relay address was given | use `https://`, or `http://127.0.0.1` for localhost dev |
+| Pairing page says the link is incomplete | the client origin is unreachable or the URL was truncated | run `2f pair` again and use `--client <url>` for a deployed client origin |
 | `The relay rejected the current device credential` | relay state was reset / identity mismatch | `2f pair` falls back to a fresh identity automatically |
 | Phone cannot open `http://…` | wrong network / no TLS | an HTTPS deployment, or localhost dev |
 | `503 Mac is offline` on actions | the Mac is unreachable — by design | restart the runtime and wait for reconnection |
@@ -222,13 +230,15 @@ npm run check   # syntax-check every source and test file
 
 ## Security boundary (short version)
 
-Pairing grants a phone a **session** (30-day TTL) that can observe task state
-and issue the same commands the local UI can — but only while the Mac's agent
-is connected (offline commands fail immediately, never queued). The relay
-observes what the remote surface needs to render (task status, normalized
-events, progress/result text, file paths, NEEDS YOU details) and never
-receives provider credentials, repository contents, or the deviceSecret's
-authority. Pairing tokens are one-time and expire (10 min); the deviceSecret
-is rotated on every `2f pair`; `2f pair --off` and re-pairing revoke all
-phone sessions at the relay. There is no E2E encryption beyond HTTPS/WSS —
-see [`relay/README.md`](../relay/README.md) for the full statement.
+Pairing grants a phone a **session** (30-day TTL) that can observe the
+REDACTED task/event projection and issue the same commands the local UI can —
+but only while the Mac's agent is connected (offline commands fail
+immediately, never queued) and only after the Mac verifies each command's
+AES-GCM tag, freshness and idempotency. **The relay is an untrusted
+transport**: every command, ack, event and snapshot is end-to-end encrypted
+with a key derived from the pairing code (which the relay never sees), so a
+compromised relay can neither read remote task content nor execute actions on
+the Mac. Pairing tokens are one-time and expire (10 min); the deviceSecret and
+the E2E key are rotated on every `2f pair`; `2f pair --off` and re-pairing
+revoke all phone sessions at the relay. See
+[`relay/README.md`](../relay/README.md) for the full statement.

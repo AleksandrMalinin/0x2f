@@ -147,20 +147,26 @@ running the work; the phone is a compact control surface:
 ```
 
 The runtime connects **outbound** to the relay (works behind NAT), rotates
-its device credential, prints a short-lived one-time pairing URL, and you
-open it on your phone. The phone serves the same Web UI from the relay — see
-NEEDS YOU / WORKING / READY / FAILED, open a task, and ANSWER / ALLOW /
-REJECT / NOTE / SEND BACK / ACCEPT. While the Mac is offline the phone shows
-the bounded last-known state with a **MAC OFFLINE** banner and disables
-actions; commands are never queued, and a double tap can never execute an
-action twice (unique `requestId` per command, idempotency on the Mac).
+its device credential, prints a short-lived pairing URL **plus a pairing
+code**, and you open the URL on your phone and type the code into the trusted
+client page (served by the client origin — the local runtime by default, a
+static host in deployment — **never by the relay**). The phone then speaks
+the same Web UI against the relay: see NEEDS YOU / WORKING / READY / FAILED,
+open a task, and ANSWER / ALLOW / REJECT / NOTE / SEND BACK / ACCEPT. Every
+command, ack, event and snapshot between the phone and the Mac is
+end-to-end encrypted (AES-256-GCM keyed by the pairing code), so the relay
+can route it but can neither read nor forge it — **a compromised relay does
+not grant execution authority on your Mac**. While the Mac is offline the
+phone shows its own last-known state with a **MAC OFFLINE** banner and
+disables actions; commands are never queued, and a retried command reuses
+its `requestId` so it can never execute twice.
 
 Pairing tokens are one-time and expire in 10 minutes; phone sessions live 30
 days and are revoked by `2f pair --off` (a real revocation at the relay, not
 just a local disconnect) or by re-pairing, which also rotates the Mac's
-credential — so a stale phone session can never silently come back after the
-Mac reconnects. The relay URL must be `https://` (plain `http://` only for
-localhost development).
+credential and the E2E key — so a stale phone session can never silently
+come back after the Mac reconnects. The relay URL must be `https://` (plain
+`http://` only for localhost development).
 
 The relay is **private infrastructure, not part of the local product**: it is
 a small standalone app that forwards normalized events and proxies commands,

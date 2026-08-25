@@ -25,6 +25,7 @@ import path from "node:path";
 import os from "node:os";
 import crypto from "node:crypto";
 import { ensureRuntime } from "../ui.mjs";
+import { generateCode } from "../web/e2e.mjs";
 
 export const PAIR_TTL_MS = 10 * 60 * 1000;
 // Only loopback hosts may use plain http:// — the secret crosses the wire.
@@ -102,6 +103,7 @@ export async function pairDevice({
   base,
   url,
   port = 4242,
+  client,
   tokenTtlMs = PAIR_TTL_MS,
   waitMs = 30000,
   pollMs = 750,
@@ -121,13 +123,26 @@ export async function pairDevice({
   const urlError = validateRelayUrl(relayUrl);
   if (urlError) throw new Error(urlError);
 
+  // The phone client origin: where the pairing page + client live. The relay
+  // never serves it — the E2E trust surface is outside the relay's control.
+  // Defaults to the local runtime (practical for local development: the same
+  // machine's browser pairs with a local relay).
+  const clientOrigin = (client ?? cfg.clientOrigin ?? `http://127.0.0.1:${port}`).replace(/\/+$/, "");
+  if (!/^https?:\/\//.test(clientOrigin)) {
+    throw new Error("Client origin must start with https:// (or http:// for localhost).");
+  }
+
   cfg.url = relayUrl;
+  cfg.clientOrigin = clientOrigin;
   cfg.enabled = true;
   cfg.deviceId ??= crypto.randomUUID();
   cfg.agentName ??= os.hostname?.() ?? "0x2f-mac";
 
   const token = crypto.randomBytes(16).toString("base64url");
   const tokenExpiresAt = new Date(Date.now() + tokenTtlMs).toISOString();
+  // The E2E pairing code: typed into the trusted client page, never sent
+  // anywhere. Key = PBKDF2(code, salt = token) on both the Mac and the phone.
+  const code = generateCode();
 
   if (cfg.deviceSecret) {
     // Re-pair: rotate the deviceSecret AND the token at the relay, authorized
@@ -169,6 +184,9 @@ export async function pairDevice({
 
   cfg.token = token;
   cfg.tokenExpiresAt = tokenExpiresAt;
+  cfg.code = code;
+  cfg.phoneId = null;
+  cfg.pairing = "pending";
 
   await writeConfig(configPath, cfg);
 
@@ -176,7 +194,9 @@ export async function pairDevice({
   // agent's hello to register the token at the relay.
   await ensure({ base, port });
 
-  const pairUrl = `${relayUrl}/pair/${token}`;
+  const pairUrl =
+    `${clientOrigin}/pair?relay=${encodeURIComponent(relayUrl)}` +
+    `&token=${encodeURIComponent(token)}&device=${encodeURIComponent(cfg.deviceId)}`;
   const deadline = Date.now() + waitMs;
   let registered = false;
   let lastError = null;
@@ -204,7 +224,7 @@ export async function pairDevice({
     );
   }
 
-  return { url: pairUrl, token, expiresAt: cfg.tokenExpiresAt, registered };
+  return { url: pairUrl, token, code, expiresAt: cfg.tokenExpiresAt, registered };
 }
 
 export async function pairOff({ base, fetchImpl = fetch, timeoutMs = 4000, log = console }) {
@@ -240,10 +260,14 @@ export async function pairOff({ base, fetchImpl = fetch, timeoutMs = 4000, log =
     }
   }
 
-  // Disable the local connection and drop the live token.
+  // Disable the local connection, drop the live token and the E2E ceremony
+  // state (the identity — deviceId/deviceSecret — is kept for re-pairing).
   cfg.enabled = false;
   delete cfg.token;
   delete cfg.tokenExpiresAt;
+  delete cfg.code;
+  delete cfg.phoneId;
+  delete cfg.pairing;
   await writeConfig(configPath, cfg);
   return configPath;
 }

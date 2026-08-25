@@ -18,9 +18,13 @@ src/
   refine.mjs          REFINE — pure text transform (no task, no execution)
   render.mjs          CLI rendering
   relay/
-    agent.mjs         remote-control agent: outbound WS, events up, commands down
-    pair.mjs          `2f pair`: one-time device pairing
-    protocol.mjs      the versioned Mac ↔ relay wire contract
+    agent.mjs         remote-control agent: outbound WS; verifies every command
+                      (AES-GCM + freshness + persisted idempotency), sends the
+                      redacted encrypted projection
+    pair.mjs          `2f pair`: pairing code + client-origin URL, credential
+                      rotation, revocation
+    protocol.mjs      the versioned wire contract (hello + opaque relay frames)
+    project.mjs       the remote data-minimization projection (what leaves the Mac)
   core/
     actions.mjs       the single implementation of Work's business rules
     lifecycle.mjs     task state machine (working → needs_you → ready/failed → done)
@@ -40,7 +44,10 @@ src/
     local.mjs         the local execution node (spawns the worker)
   web/
     index.html        Web shell
-    app.js            browser client (fetch + SSE + DOM)
+    pair.html/pair.mjs  the pairing ceremony page (client origin only)
+    app.js            browser client (fetch + SSE + DOM; remote mode adapter)
+    remote.mjs        the remote transport: E2E envelopes, SSE reader, cache
+    e2e.mjs           shared Node/browser crypto: PBKDF2 code → AES-256-GCM
     ledger.mjs        pure event → ledger projection (shared with tests)
     sound-policy.mjs  when 0x2F may make a sound (pure, testable)
     sound.mjs         the slash — Web Audio, no assets

@@ -1,49 +1,42 @@
-// Remote control protocol — the Mac ↔ relay wire contract.
+// Remote control protocol — the wire contract between the Mac agent, the
+// relay (an opaque broker), and the phone client.
 //
-// One versioned JSON envelope for every frame, both directions:
+// Two frame kinds share the version number:
 //
-//   { protocolVersion, deviceId, requestId, type, payload }
+//   hello frames  { protocolVersion, deviceId, requestId, type, payload }
+//                 Mac ↔ relay transport authentication only (deviceSecret).
 //
-//   protocolVersion   the wire protocol this frame speaks (hard gate)
-//   deviceId          the stable local 0x2F instance id (never a credential)
-//   requestId         correlation id — for `command`/`ack` it is the
-//                     client-generated idempotency key
-//   type              hello | snapshot | event | ack | command
-//   payload           type-specific object
+//   relay frames  { v, type: "relay", from, requestId, iv, data }
+//                 Opaque end-to-end envelopes between the Mac and the phone.
+//                 The relay routes them and correlates requestIds, but cannot
+//                 read or forge them (see src/web/e2e.mjs). `from` is the
+//                 phoneId (phone → Mac) or the deviceId (Mac → phone);
+//                 `iv`/`data` are the AES-256-GCM ciphertext.
 //
-// Mac → relay:
-//   hello     { protocolVersion, apiVersion, agentName, deviceSecret, token }
-//             deviceSecret is the long-lived Mac credential (generated at
-//             first pairing); token is the current one-time pairing token
-//             (used only to register an unregistered device, never to
-//             authenticate an already-registered one).
-//   snapshot  { base, tasks, at }            listWork shape
-//   event     { event }  |  { events: [...] }  normalized Work event(s)
-//   ack       { ok: true, status, body } | { ok: false, status, error }
-//             body is exactly what the local HTTP API would have returned.
+// End-to-end plaintext (encrypted inside the envelope):
+//   phone → Mac  { cmd: "pair-hello", token, phoneId, ts }   (one-time, at
+//                 pairing — binds + consumes the ceremony) or
+//                 { cmd: "command", op, taskId?, body?, requestId, ts }
+//                 where op ∈ COMMAND_OPS + "snapshot"; ts is the phone's
+//                 clock, validated by the Mac (±5 min) against a persisted
+//                 requestId → ack cache for replay protection.
+//   Mac → phone  { cmd: "ack", ok, status, body? } | { cmd: "ack", ok: false,
+//                 status, error }  (same requestId as the command) or
+//                 { cmd: "event", event } | { cmd: "snapshot", tasks,
+//                 eventsByTask, providers, routing, serverTime }
 //
-// Relay → Mac:
-//   hello     { ok: true, protocolVersion, apiVersion, serverTime }
-//             | { ok: false, error, protocolVersion? }
-//   command   { op, taskId?, body }
-//             op ∈ the existing local API routes: list, get, getRun, create,
-//             rerun, allow, reject, answer, note, close, refine, providers,
-//             routing. The Mac executes it through the SHARED core actions —
-//             the relay layer never reimplements Task logic.
-//
-// Frame identity is deliberately split: `deviceId`/`requestId` are stable
-// protocol concepts, while authentication (deviceSecret/token) lives in the
-// hello payload, so auth can evolve without replacing the transport.
+// The Mac executes commands ONLY after GCM verification of the envelope with
+// the confirmed phone's key — the relay cannot construct a valid command.
 
-export const PROTOCOL_VERSION = 1;
+export const PROTOCOL_VERSION = 2;
 
 // The 0x2f API surface version the agent implements. Bumped whenever the
-// command op set or ack shapes change. The relay records it and surfaces
-// mismatch loudly; it is NOT a hard gate like protocolVersion.
-export const API_VERSION = "0.6";
+// command op set or ack shapes change.
+export const API_VERSION = "0.7";
 
-// Ops map 1:1 onto the local HTTP API. The relay and agent share this list so
-// a new surface operation can never silently diverge from core actions.
+// Ops map 1:1 onto the local HTTP API, plus "snapshot" (the phone's initial
+// remote state pull — the redacted projection of tasks + recent events +
+// providers + routing). "snapshot" is remote-only; it has no local route.
 export const COMMAND_OPS = Object.freeze([
   "list",
   "get",
@@ -57,11 +50,12 @@ export const COMMAND_OPS = Object.freeze([
   "close",
   "refine",
   "providers",
-  "routing"
+  "routing",
+  "snapshot"
 ]);
 
-// Ops that mutate Task state. After one of these the agent pushes a fresh
-// snapshot so the relay's last-known view cannot drift from canonical state.
+// Ops that mutate Task state. Informational today (the phone re-pulls state
+// after them via the client's STATE_EVENTS handling); kept for documentation.
 export const MUTATING_OPS = Object.freeze([
   "create",
   "rerun",
@@ -82,9 +76,8 @@ export function makeFrame(type, deviceId, requestId, payload) {
   };
 }
 
-// Parse + validate an incoming frame string. Returns null for anything that
-// is not a well-formed frame (the caller decides whether that is an ignore or
-// a fatal error). A well-formed frame with a DIFFERENT protocolVersion is
+// Parse + validate an incoming hello frame. Returns null for anything that is
+// not well-formed. A well-formed frame with a DIFFERENT protocolVersion is
 // returned with `_protocolMismatch: true` so the receiver can answer with an
 // explicit version error instead of silently dropping it.
 export function parseFrame(text) {
@@ -101,4 +94,27 @@ export function parseFrame(text) {
   if (raw.payload === undefined || raw.payload === null) return null;
   if (typeof raw.payload !== "object") return null;
   return { ...raw, _protocolMismatch: raw.protocolVersion !== PROTOCOL_VERSION };
+}
+
+// Build an opaque relay frame (Mac ↔ phone envelope).
+export function makeRelayFrame(from, requestId, { iv, data }) {
+  return { v: PROTOCOL_VERSION, type: "relay", from, requestId, iv, data };
+}
+
+// Parse + validate an opaque relay frame. Returns null when malformed.
+export function parseRelayFrame(text) {
+  let raw;
+  try {
+    raw = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (!raw || typeof raw !== "object") return null;
+  if (raw.v !== PROTOCOL_VERSION) return null;
+  if (raw.type !== "relay") return null;
+  if (typeof raw.from !== "string" || !raw.from) return null;
+  if (typeof raw.requestId !== "string" || !raw.requestId) return null;
+  if (typeof raw.iv !== "string" || !raw.iv) return null;
+  if (typeof raw.data !== "string" || !raw.data) return null;
+  return raw;
 }

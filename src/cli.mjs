@@ -37,9 +37,11 @@ Commands:
   2f reject <id>    decline the requested change
   2f answer <id> <answer>   answer a NEEDS YOU decision (not allow/reject)
   2f close <id>      stop working on a task; moves it to DONE
-  2f pair [--relay <url>]   pair this Mac with the 0x2F relay for remote
-                          control from your phone (--off revokes remote
-                          access at the relay and disables the connection)
+  2f pair [--relay <url>] [--client <url>]   pair this Mac with the 0x2F relay for
+                          remote control from your phone (--off revokes remote
+                          access at the relay and disables the connection;
+                          --client sets the phone-client origin, default the
+                          local runtime)
   2f providers      list execution providers (native + configured)
   2f ui [port]      open the Web UI (start the runtime if needed; --no-browser
                     starts it without opening a browser)
@@ -68,6 +70,11 @@ function parseFlags(args) {
       i++;
     } else if (typeof arg === "string" && arg.startsWith("--relay=")) {
       flags.relay = arg.slice("--relay=".length);
+    } else if (arg === "--client") {
+      flags.client = args[i + 1];
+      i++;
+    } else if (typeof arg === "string" && arg.startsWith("--client=")) {
+      flags.client = arg.slice("--client=".length);
     } else if (arg === "--run") {
       flags.run = args[i + 1];
       i++;
@@ -432,28 +439,30 @@ async function main() {
     return;
   }
 
-  // `2f pair [--relay <url>] [--port <n>]` — one-time pairing for remote
-  // control from a phone. Prints a short-lived URL; the phone opens it once
-  // and gets a session scoped to this Mac. `--off` disables remote control.
+  // `2f pair [--relay <url>] [--client <url>] [--port <n>]` — one-time
+  // pairing for remote control from a phone. Prints a short-lived URL and the
+  // E2E pairing code; the phone opens the URL once and types the code into
+  // the trusted client page. `--off` revokes remote access.
   if (command === "pair") {
     await requireProject(base);
     const { flags } = parseFlags(args);
     if (flags.off) {
       await pairOff({ base });
-      console.log("Remote control disabled — the relay agent will disconnect on its next check.");
+      console.log("Remote control revoked at the relay and disabled locally.");
       console.log('Re-enable with: 2f pair --relay <url>');
       return;
     }
     const port = flags.port ? Number(flags.port) : 4242;
     if (!Number.isFinite(port)) {
-      throw new Error('Usage: 2f pair [--relay <url>] [--port <n>]');
+      throw new Error('Usage: 2f pair [--relay <url>] [--client <url>] [--port <n>]');
     }
-    const result = await pairDevice({ base, url: flags.relay, port });
-    console.log("Pair this phone (open this URL on your phone):");
+    const result = await pairDevice({ base, url: flags.relay, client: flags.client, port });
+    console.log("Open this URL on your phone (the pairing page is served by the");
+    console.log("client origin — never by the relay):");
     console.log(`  ${result.url}`);
-    console.log(
-      `The pairing code expires ${result.expiresAt}. It is one-time — a second phone re-pairs with 2f pair again.`
-    );
+    console.log("");
+    console.log(`Pairing code:  ${result.code}`);
+    console.log(`It expires ${result.expiresAt} and is one-time — a second phone re-pairs with 2f pair again.`);
     if (!result.registered) {
       console.log("The relay has not confirmed the token yet — it will register as soon as the agent connects.");
     }

@@ -318,19 +318,19 @@ test("re-pairing (rotate) retires old sessions; only the new token's session wor
 
   // The old secret no longer authenticates; the new one does.
   const oldHello = await rawHello(handle.url, {
-    protocolVersion: 1,
+    protocolVersion: 2,
     deviceId,
     requestId: "r-old",
     type: "hello",
-    payload: { protocolVersion: 1, deviceSecret }
+    payload: { protocolVersion: 2, deviceSecret }
   });
   assert.equal(oldHello.payload?.ok, false);
   const newHello = await rawHello(handle.url, {
-    protocolVersion: 1,
+    protocolVersion: 2,
     deviceId,
     requestId: "r-new",
     type: "hello",
-    payload: { protocolVersion: 1, deviceSecret: nextSecret }
+    payload: { protocolVersion: 2, deviceSecret: nextSecret }
   });
   assert.equal(newHello.payload?.ok, true);
 });

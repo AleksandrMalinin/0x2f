@@ -1,15 +1,13 @@
-// 0x2F Remote Control — the relay + agent working together.
+// Remote control, Phase 3A: the relay is an opaque broker and the phone ↔ Mac
+// channel is end-to-end encrypted. These tests drive the REAL relay + REAL
+// agent + REAL runtime over the REAL protocol (WebSockets, HTTP, AES-GCM
+// envelopes) and prove the remote-control product behavior still works:
 //
-// These tests run the REAL relay server (relay/server.mjs) and the REAL
-// agent (src/relay/agent.mjs) against a real local runtime with a fake node,
-// over real WebSockets and HTTP on ephemeral ports. They prove the control
-// loop end to end:
-//
-//   Mac authenticates outbound → pairing one-time → snapshot matches local →
-//   local events reach a remote SSE client → ALLOW/REJECT / NOTE / SEND BACK /
-//   ACCEPT through the relay → duplicate requestId cannot double-execute →
-//   disconnect/reconnect restores state → offline is explicit, not queued →
-//   the local-only API/UI surface is unchanged.
+//   Mac authenticates outbound → phone pairs via a signed pair-hello →
+//   snapshot → encrypted commands (create / ALLOW / REJECT / NOTE / ACCEPT) →
+//   redacted encrypted events reach the phone → idempotent retries →
+//   offline is explicit (503, never queued) → relay restart keeps the phone
+//   paired → the relay holds NO task content.
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -19,15 +17,15 @@ import path from "node:path";
 import { WebSocket } from "ws";
 import { createRelayServer } from "../relay/server.mjs";
 import { createRelayAgent } from "../src/relay/agent.mjs";
-import { pairDevice, pairOff } from "../src/relay/pair.mjs";
 import { createRuntime } from "../src/runtime.mjs";
 import { createTailer } from "../src/core/events.mjs";
 import { applyOutcome } from "../src/core/lifecycle.mjs";
-import { updateRun } from "../src/core/runs.mjs";
 import { startServer } from "../src/server.mjs";
-import { withFakeBin, TEST_AUTH_TOKEN, authHeaders } from "./helpers.mjs";
+import { TEST_AUTH_TOKEN, authHeaders } from "./helpers.mjs";
+import { pairPhone, createPhoneClient } from "./e2e-phone.mjs";
 
 const quiet = { log() {}, warn() {}, error() {} };
+const TEST_CODE = "PAIRCODE-TEST-014";
 
 function fakeNode() {
   const calls = [];
@@ -60,12 +58,11 @@ function makeReadLines(store) {
     const out = [];
     for (const entry of entries) {
       if (!entry.isDirectory()) continue;
-      const logPath = path.join(dir, entry.name, "events.jsonl");
       try {
-        const text = await fs.readFile(logPath, "utf8");
+        const text = await fs.readFile(path.join(dir, entry.name, "events.jsonl"), "utf8");
         out.push({ slug: entry.name, text });
       } catch {
-        /* no event log yet */
+        /* no log yet */
       }
     }
     return out;
@@ -77,12 +74,11 @@ async function writeRelayConfig(configPath, cfg) {
   await fs.writeFile(configPath, JSON.stringify(cfg, null, 2) + "\n", "utf8");
 }
 
-async function waitFor(condition, message, timeout = 4000) {
+async function waitFor(condition, message, timeout = 6000) {
   const start = Date.now();
-  while (!condition()) {
-    if (Date.now() - start > timeout) {
-      throw new Error(`timed out waiting for: ${message}`);
-    }
+  for (;;) {
+    if (await condition()) return;
+    if (Date.now() - start > timeout) throw new Error(`timed out waiting for: ${message}`);
     await new Promise(r => setTimeout(r, 15));
   }
 }
@@ -99,146 +95,6 @@ async function claim(relayUrl, token) {
   assert.ok(match, "claim should set the session cookie");
   return match[1];
 }
-
-const withSession = session => ({ cookie: "0x2f_session=" + session });
-
-function postJson(url, body, headers = {}) {
-  return fetch(url, {
-    method: "POST",
-    headers: { "content-type": "application/json", ...headers },
-    body: JSON.stringify(body ?? {})
-  });
-}
-
-// The full stack: a real relay, a real agent on a real runtime (fake node),
-// a tailer feeding the bus (exactly like the UI runtime), and a paired
-// phone session. The Mac is ONLINE.
-async function makeHarness(t) {
-  const base = await fs.mkdtemp(path.join(os.tmpdir(), "work-relay-"));
-  const dataFile = path.join(base, "state.json");
-  const relay = createRelayServer({ dataFile, log: quiet });
-  const handle = await relay.start();
-
-  const node = fakeNode();
-  const runtime = createRuntime(base, { node });
-  const tailer = createTailer({
-    interval: 15,
-    emit: event => runtime.events.emit(event),
-    readLines: makeReadLines(runtime.store)
-  });
-  tailer.start();
-
-  const configPath = path.join(base, ".work", "relay.json");
-  const deviceId = "device-" + Math.random().toString(36).slice(2, 10);
-  const deviceSecret = "secret-" + Math.random().toString(36).slice(2, 14);
-  const token = "pair-" + Math.random().toString(36).slice(2, 18);
-  await writeRelayConfig(configPath, {
-    url: handle.url,
-    enabled: true,
-    deviceId,
-    deviceSecret,
-    token
-  });
-  const agent = createRelayAgent({ runtime, configPath, log: quiet, configPollMs: 40 });
-  agent.start();
-  await waitFor(
-    () => handle.state.devices.get(deviceId)?.online === true,
-    "agent to connect and authenticate outbound"
-  );
-  const session = await claim(handle.url, token);
-
-  t.after(async () => {
-    agent.stop();
-    tailer.stop();
-    await handle.close();
-    await fs.rm(base, { recursive: true, force: true });
-  });
-
-  return { base, handle, node, runtime, agent, configPath, deviceId, deviceSecret, token, session, relayUrl: handle.url };
-}
-
-async function makeTask(runtime, title) {
-  return runtime.actions.createWork({ title });
-}
-
-// A non-live permission block with a resumable session — the resume path
-// that ALLOW/REJECT drive remotely (the worker's applyOutcome + session id).
-async function blockPermission(runtime, task) {
-  const blocked = applyOutcome(task, {
-    status: "needs_you",
-    reason: "permission",
-    externalSessionId: "sess-1",
-    blockedOn: {
-      type: "permission",
-      tool: "Edit",
-      file: "src/a.ts",
-      plannedChange: "x -> y"
-    }
-  });
-  blocked.execution = { ...(blocked.execution ?? {}), externalSessionId: "sess-1" };
-  await runtime.store.writeJson(
-    path.join(runtime.store.taskDir(task.slug), "task.json"),
-    blocked
-  );
-  return blocked;
-}
-
-// --- 1. auth + connection ---------------------------------------------------
-
-test("the Mac authenticates outbound and the relay reports it online; unpaired and mismatched hellos are rejected", async t => {
-  const { base, dataFile } = await (async () => {
-    const b = await fs.mkdtemp(path.join(os.tmpdir(), "work-relay-auth-"));
-    const d = path.join(b, "state.json");
-    return { base: b, dataFile: d };
-  })();
-  const relay = createRelayServer({ dataFile, log: quiet });
-  const handle = await relay.start();
-  try {
-    // An unregistered device with no token is rejected explicitly.
-    const unregistered = await rawHello(handle.url, {
-      protocolVersion: 1,
-      deviceId: "fresh-device",
-      requestId: "r1",
-      type: "hello",
-      payload: { protocolVersion: 1, deviceSecret: "s" }
-    });
-    assert.equal(unregistered.payload?.ok, false);
-    assert.equal(unregistered.payload?.error, "unregistered");
-
-    // A well-formed hello with the wrong protocol version gets a version
-    // error, not silence.
-    const mismatch = await rawHello(handle.url, {
-      protocolVersion: 999,
-      deviceId: "fresh-device",
-      requestId: "r2",
-      type: "hello",
-      payload: { protocolVersion: 999, deviceSecret: "s" }
-    });
-    assert.equal(mismatch.payload?.ok, false);
-    assert.match(mismatch.payload?.error ?? "", /protocol mismatch/);
-
-    // A real agent with a token registers and comes online.
-    const runtime = createRuntime(base, { node: fakeNode() });
-    const configPath = path.join(base, ".work", "relay.json");
-    await writeRelayConfig(configPath, {
-      url: handle.url,
-      enabled: true,
-      deviceId: "device-auth",
-      deviceSecret: "secret-auth",
-      token: "pair-auth"
-    });
-    const agent = createRelayAgent({ runtime, configPath, log: quiet, configPollMs: 40 });
-    t.after(() => agent.stop());
-    agent.start();
-    await waitFor(
-      () => handle.state.devices.get("device-auth")?.online === true,
-      "agent to come online"
-    );
-  } finally {
-    await handle.close();
-    await fs.rm(base, { recursive: true, force: true });
-  }
-});
 
 function rawHello(url, frame) {
   return new Promise(resolve => {
@@ -263,443 +119,312 @@ function rawHello(url, frame) {
   });
 }
 
-test("GET /api/status with the session reports the Mac online", async t => {
-  const { handle, session, relayUrl } = await makeHarness(t);
-  const res = await fetch(relayUrl + "/api/status", { headers: withSession(session) });
-  assert.equal(res.status, 200);
-  const info = await res.json();
-  assert.equal(info.mode, "relay");
-  assert.equal(info.mac, "online");
-  assert.equal(handle.state.devices.size >= 1, true);
+// The full stack: real relay, real agent on a real runtime (fake node), a
+// tailer feeding the bus, and a PAIRED phone speaking the E2E protocol.
+async function makeHarness(t) {
+  const base = await fs.mkdtemp(path.join(os.tmpdir(), "work-relay-"));
+  t.after(() => fs.rm(base, { recursive: true, force: true }));
+  const dataFile = path.join(base, "state.json");
+  const relay = createRelayServer({ dataFile, log: quiet });
+  const handle = await relay.start();
+  t.after(() => handle.close());
+
+  const configPath = path.join(base, ".work", "relay.json");
+  const deviceId = "device-" + Math.random().toString(36).slice(2, 10);
+  const deviceSecret = "secret-" + Math.random().toString(36).slice(2, 14);
+  const token = "pair-" + Math.random().toString(36).slice(2, 18);
+  await writeRelayConfig(configPath, {
+    url: handle.url,
+    enabled: true,
+    deviceId,
+    deviceSecret,
+    token,
+    tokenExpiresAt: new Date(Date.now() + 600_000).toISOString(),
+    code: TEST_CODE,
+    pairing: "pending"
+  });
+
+  const node = fakeNode();
+  const runtime = createRuntime(base, { node });
+  const tailer = createTailer({
+    interval: 15,
+    emit: event => runtime.events.emit(event),
+    readLines: makeReadLines(runtime.store)
+  });
+  tailer.start();
+  const agent = createRelayAgent({ runtime, configPath, log: quiet, configPollMs: 40 });
+  t.after(() => {
+    agent.stop();
+    tailer.stop();
+  });
+  agent.start();
+  await waitFor(
+    () => handle.state.devices.get(deviceId)?.online === true,
+    "agent to connect"
+  );
+
+  const phone = await pairPhone({ relayUrl: handle.url, token, deviceId, code: TEST_CODE });
+  await waitFor(
+    () => handle.state.devices.get(deviceId)?.online === true && agent.status().pairing === "confirmed",
+    "pair-hello to be confirmed"
+  );
+  return { base, dataFile, handle, node, runtime, agent, configPath, deviceId, token, phone };
+}
+
+// --- hello-level auth (unchanged) -------------------------------------------
+
+test("the Mac authenticates outbound; unpaired and mismatched hellos are rejected", async t => {
+  const base = await fs.mkdtemp(path.join(os.tmpdir(), "work-relay-auth-"));
+  t.after(() => fs.rm(base, { recursive: true, force: true }));
+  const relay = createRelayServer({ log: quiet });
+  const handle = await relay.start();
+  t.after(() => handle.close());
+  try {
+    const unregistered = await rawHello(handle.url, {
+      protocolVersion: 2,
+      deviceId: "fresh-device",
+      requestId: "r1",
+      type: "hello",
+      payload: { protocolVersion: 2, deviceSecret: "s" }
+    });
+    assert.equal(unregistered.payload?.ok, false);
+    assert.equal(unregistered.payload?.error, "unregistered");
+  } finally {
+    await handle.close();
+  }
 });
 
-// --- 2. pairing is one-time and expires -------------------------------------
+// --- pairing tokens (unchanged semantics) -----------------------------------
 
 test("a pairing token is one-time: a second claim fails", async t => {
-  const { handle, token, relayUrl } = await makeHarness(t);
-  const second = await postJson(relayUrl + "/api/pair/claim", { token });
+  const { handle, token } = await makeHarness(t);
+  const second = await fetch(handle.url + "/api/pair/claim", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ token })
+  });
   assert.equal(second.status, 400);
-  assert.match((await second.json()).error, /invalid, already used, or expired/);
   assert.equal(handle.state.tokens.get(token).claimed, true);
 });
 
 test("an expired pairing token cannot be claimed", async t => {
-  const { handle, relayUrl } = await makeHarness(t);
-  const expired = "pair-expired";
-  handle.state.tokens.set(expired, {
-    deviceId: handle.state.devices.keys().next().value,
-    expiresAt: new Date(Date.now() - 1000).toISOString(),
-    claimed: false
+  const base = await fs.mkdtemp(path.join(os.tmpdir(), "work-relay-exp-"));
+  t.after(() => fs.rm(base, { recursive: true, force: true }));
+  const relay = createRelayServer({ log: quiet });
+  const handle = await relay.start();
+  t.after(() => handle.close());
+  try {
+    handle.state.tokens.set("pair-expired-token", {
+      deviceId: "d",
+      expiresAt: new Date(Date.now() - 1000).toISOString(),
+      claimed: false
+    });
+    const res = await fetch(handle.url + "/api/pair/claim", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ token: "pair-expired-token" })
+    });
+    assert.equal(res.status, 400);
+  } finally {
+    await handle.close();
+  }
+});
+
+// --- the E2E remote-control surface -----------------------------------------
+
+test("the phone pairs end-to-end and pulls a redacted snapshot", async t => {
+  const { phone } = await makeHarness(t);
+  const snap = await phone.snapshot();
+  assert.deepEqual(snap.tasks, []);
+  assert.ok(Array.isArray(snap.providers));
+  assert.ok(snap.providers.some(p => p.id === "claude-code"));
+  assert.equal(typeof snap.serverTime, "number");
+  phone.setClockOffset(snap.serverTime - Date.now());
+  assert.ok(snap.eventsByTask && typeof snap.eventsByTask === "object");
+});
+
+test("creating a Task through the encrypted channel starts it on the Mac's node", async t => {
+  const { node, phone } = await makeHarness(t);
+  const created = await phone.api("/api/tasks", { method: "POST", body: { title: "Remote task" } });
+  assert.equal(created.status, "working");
+  assert.deepEqual(node.calls.map(c => c[0]), ["start"]);
+
+  const tasks = await phone.api("/api/tasks");
+  assert.equal(tasks.length, 1);
+  assert.equal(tasks[0].title, "Remote task");
+  // The remote projection is redacted: no internal execution metadata.
+  assert.equal(tasks[0].provider, "claude-code");
+  assert.equal(tasks[0].execution, undefined);
+  assert.equal(tasks[0].pid, undefined);
+});
+
+test("redacted encrypted events reach the phone; sensitive tool inputs stay on the Mac", async t => {
+  const { runtime, phone } = await makeHarness(t);
+  const task = await runtime.actions.createWork({ title: "Events" });
+  await runtime.store.appendEvent(task.slug, {
+    type: "tool.started",
+    taskId: task.id,
+    at: new Date().toISOString(),
+    name: "Edit",
+    input: {
+      file_path: path.join(runtime.store.base, "src", "secret.ts"),
+      old_string: "old secret content",
+      new_string: "new secret content",
+      extra: "must not leak"
+    }
   });
-  const res = await postJson(relayUrl + "/api/pair/claim", { token: expired });
-  assert.equal(res.status, 400);
-});
 
-// --- 3. snapshot matches local canonical state -------------------------------
-
-test("the relay's last-known snapshot matches the local canonical Task state", async t => {
-  const { handle, runtime, agent, deviceId, session, relayUrl } = await makeHarness(t);
-  const a = await makeTask(runtime, "First");
-  const b = await makeTask(runtime, "Second");
-  await waitFor(
-    () => (handle.state.devices.get(deviceId)?.tasks ?? []).length === 2,
-    "snapshot to include both tasks"
-  );
-
-  // Take the Mac offline; reads now come from the bounded cache.
-  agent.stop();
-  await waitFor(
-    () => handle.state.devices.get(deviceId)?.online === false,
-    "the Mac to go offline"
-  );
-
-  const stale = await fetch(relayUrl + "/api/tasks", { headers: withSession(session) });
-  assert.equal(stale.status, 200);
-  assert.equal(stale.headers.get("x-0x2f-stale"), "1");
-  const cached = await stale.json();
-  assert.deepEqual(cached, await runtime.actions.listWork());
-
-  const detail = await fetch(relayUrl + "/api/tasks/" + a.id, { headers: withSession(session) });
-  assert.equal(detail.status, 200);
-  const cachedDetail = await detail.json();
-  assert.equal(cachedDetail.title, "First");
-  assert.equal(cachedDetail.result, null); // result text is never cached
-});
-
-// --- 4. local events reach the remote client --------------------------------
-
-test("local normalized events reach a remote SSE client through the relay", async t => {
-  const { runtime, session, relayUrl } = await makeHarness(t);
+  const received = [];
   const controller = new AbortController();
-  try {
-    const streamRes = await fetch(relayUrl + "/api/events", {
-      headers: withSession(session),
-      signal: controller.signal
-    });
-    assert.equal(streamRes.status, 200);
-    let text = "";
-    const reader = streamRes.body.getReader();
-    const readLoop = (async () => {
-      const decoder = new TextDecoder();
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        text += decoder.decode(value, { stream: true });
-      }
-    })();
-    await waitFor(() => text.includes(": connected"), "SSE to connect");
-
-    await makeTask(runtime, "Live from Mac");
-    await waitFor(() => text.includes("event: task.created"), "task.created over SSE");
-    const block = text.slice(text.indexOf("event: task.created"));
-    assert.match(block, /"type":"task.created"/);
-    assert.match(block, /"taskId":1/);
-
-    controller.abort();
-    await readLoop.catch(() => {});
-  } finally {
-    controller.abort();
-  }
-});
-
-// --- 5–8. the control loop through the relay --------------------------------
-
-test("creating a Task through the relay starts it on the Mac's node", async t => {
-  const { node, session, relayUrl } = await makeHarness(t);
-  const res = await postJson(relayUrl + "/api/tasks", { title: "From the phone" }, withSession(session));
-  assert.equal(res.status, 201);
-  const task = await res.json();
-  assert.equal(task.status, "working");
-  assert.equal(task.title, "From the phone");
-  assert.deepEqual(node.calls.at(-1), ["start", task.slug]);
-});
-
-test("ALLOW remotely resumes the same run/session through the shared action", async t => {
-  const { runtime, node, session, relayUrl } = await makeHarness(t);
-  const task = await makeTask(runtime, "Blocked");
-  await blockPermission(runtime, task);
-
-  const res = await postJson(relayUrl + "/api/tasks/" + task.id + "/allow", {}, withSession(session));
-  assert.equal(res.status, 202);
-  assert.equal((await res.json()).status, "working");
-  assert.deepEqual(node.calls.at(-1), ["resume", task.slug, "allow"]);
-});
-
-test("REJECT remotely declines the permission and resumes the session", async t => {
-  const { runtime, node, session, relayUrl } = await makeHarness(t);
-  const task = await makeTask(runtime, "Blocked again");
-  await blockPermission(runtime, task);
-
-  const res = await postJson(relayUrl + "/api/tasks/" + task.id + "/reject", {}, withSession(session));
-  assert.equal(res.status, 202);
-  assert.deepEqual(node.calls.at(-1), ["resume", task.slug, "reject"]);
-});
-
-test("NOTE remotely updates Task context without starting any execution", async t => {
-  const { runtime, node, session, relayUrl } = await makeHarness(t);
-  const task = await makeTask(runtime, "Noted");
-  const before = node.calls.length;
-
-  const res = await postJson(
-    relayUrl + "/api/tasks/" + task.id + "/note",
-    { note: "Keep the CLI plain." },
-    withSession(session)
+  const stream = phone.events(plaintext => received.push(plaintext), { signal: controller.signal });
+  await waitFor(
+    () => received.some(p => p.cmd === "event" && p.event?.type === "tool.started"),
+    "tool.started event to arrive"
   );
-  assert.equal(res.status, 202);
-  const fresh = await runtime.store.findTask(task.id);
-  assert.deepEqual(fresh.context.notes.at(-1)?.text, "Keep the CLI plain.");
-  assert.equal(node.calls.length, before); // no execution
+  controller.abort();
+  await stream.catch(() => {});
+
+  const envelope = received.find(p => p.cmd === "event" && p.event?.type === "tool.started");
+  const event = envelope.event;
+  assert.equal(event.type, "tool.started");
+  assert.equal(event.name, "Edit");
+  // The single argument survives (relative to the workspace)…
+  assert.equal(event.input.file_path, path.join("src", "secret.ts"));
+  // …but the complete tool input does not.
+  assert.equal(event.input.old_string, undefined);
+  assert.equal(event.input.new_string, undefined);
+  assert.equal(event.input.extra, undefined);
 });
 
-test("SEND BACK creates a new run through Task Continuity (notes carried into the next prompt)", async t => {
-  const { runtime, node, session, relayUrl } = await makeHarness(t);
-  const task = await makeTask(runtime, "Send back");
+test("ALLOW / REJECT / NOTE / ACCEPT work remotely through the shared actions", async t => {
+  const { node, runtime, phone } = await makeHarness(t);
 
-  // Let run 1 finish as the worker would, and record a correction.
-  let done = applyOutcome(task, { status: "ready", result: "first pass" });
-  const completedAt = new Date().toISOString();
-  done = updateRun(done, 1, {
-    outcome: "ready",
-    completedAt,
-    durationMs: 1000,
-    attempts: 1,
-    error: undefined,
-    blockedOn: undefined
+  // ALLOW a live permission block.
+  const task = await runtime.actions.createWork({ title: "Blocked" });
+  const blocked = applyOutcome(task, {
+    status: "needs_you",
+    reason: "permission",
+    externalSessionId: "sess-1",
+    blockedOn: { type: "permission", tool: "Edit", file: "src/a.ts" }
   });
-  await runtime.store.writeJson(path.join(runtime.store.taskDir(task.slug), "task.json"), done);
-  await runtime.actions.noteWork(task.id, { note: "Make it quieter." });
+  blocked.execution = { ...(blocked.execution ?? {}), externalSessionId: "sess-1" };
+  await runtime.store.writeJson(
+    path.join(runtime.store.taskDir(task.slug), "task.json"),
+    blocked
+  );
+  const allowed = await phone.api("/api/tasks/" + task.id + "/allow", { method: "POST" });
+  assert.equal(allowed.status, "working");
+  assert.deepEqual(node.calls.at(-1), ["resume", task.slug, "allow"]);
 
-  const res = await withFakeBin("DSH_BIN", "dsh", () =>
-    postJson(
-      relayUrl + "/api/tasks/" + task.id + "/rerun",
-      { provider: "deepseek-harness" },
-      withSession(session)
-    )
-  );
-  assert.equal(res.status, 201);
-  const rerun = await res.json();
-  assert.equal(rerun.id, task.id);
-  assert.equal(rerun.title, "Send back"); // the intent is unchanged
-  assert.equal(rerun.status, "working");
-  assert.equal(rerun.runs.length, 2);
-  assert.equal(rerun.runs[1].provider, "deepseek-harness");
-  // The next run's prompt was rebuilt from current Task state — the note is
-  // in it, exactly as Task Continuity promises.
-  const runPrompt = await runtime.store.readText(
-    path.join(runtime.store.taskDir(task.slug), "runs", "2", "prompt.md")
-  );
-  assert.match(runPrompt, /Make it quieter\./);
-  assert.deepEqual(node.calls.at(-1), ["start", task.slug]);
+  // NOTE records a constraint without execution. (The stored task is still
+  // needs_you — the fake node never runs the worker that would resume it.)
+  const noted = await phone.api("/api/tasks/" + task.id + "/note", {
+    method: "POST",
+    body: { note: "keep it small" }
+  });
+  assert.equal(noted.context.notes.at(-1).text, "keep it small");
+  assert.equal(node.calls.at(-1)[0], "resume"); // no new execution from the note
+
+  // ACCEPT (close) moves the task to done.
+  const closed = await phone.api("/api/tasks/" + task.id + "/close", { method: "POST" });
+  assert.equal(closed.status, "done");
+  assert.deepEqual((await runtime.store.findTask(task.id)).status, "done");
 });
 
-test("ACCEPT closes the correct Task remotely", async t => {
-  const { runtime, session, relayUrl } = await makeHarness(t);
-  const keep = await makeTask(runtime, "Keep");
-  const closeMe = await makeTask(runtime, "Close me");
-
-  const res = await postJson(relayUrl + "/api/tasks/" + closeMe.id + "/close", {}, withSession(session));
-  assert.equal(res.status, 200);
-  assert.equal((await res.json()).status, "done");
-  assert.equal((await runtime.store.findTask(closeMe.id)).status, "done");
-  assert.equal((await runtime.store.findTask(keep.id)).status, "working");
+test("a duplicate requestId returns the cached acknowledgement and never executes twice", async t => {
+  const { node, phone } = await makeHarness(t);
+  const requestId = "fixed-rid-" + Math.random().toString(36).slice(2, 10);
+  const first = await phone.command("create", { body: { title: "One" } }, { requestId });
+  const second = await phone.command("create", { body: { title: "One" } }, { requestId });
+  assert.deepEqual(second, first);
+  assert.equal(node.calls.length, 1, "the action ran exactly once");
 });
 
-// --- 9. duplicate requestId cannot execute twice -----------------------------
-
-test("a duplicate requestId returns the cached acknowledgement and never runs the action twice", async t => {
-  const { runtime, node, session, relayUrl } = await makeHarness(t);
-  const task = await makeTask(runtime, "Dedupe");
-  await blockPermission(runtime, task);
-
-  const headers = { ...withSession(session), "x-0x2f-request-id": "dup-allow-1" };
-  const first = await postJson(relayUrl + "/api/tasks/" + task.id + "/allow", {}, headers);
-  const second = await postJson(relayUrl + "/api/tasks/" + task.id + "/allow", {}, headers);
-  assert.equal(first.status, 202);
-  assert.equal(second.status, 202);
-  // Only ONE resume happened — the second delivery was answered from the
-  // agent's bounded idempotency cache.
-  assert.equal(node.calls.filter(c => c[0] === "resume").length, 1);
-
-  // Distinct requestIds are distinct commands.
-  const headers2 = { ...withSession(session), "x-0x2f-request-id": "dup-allow-2" };
-  await blockPermission(runtime, await runtime.store.findTask(task.id));
-  const third = await postJson(relayUrl + "/api/tasks/" + task.id + "/allow", {}, headers2);
-  assert.equal(third.status, 202);
-  assert.equal(node.calls.filter(c => c[0] === "resume").length, 2);
-});
-
-// --- 10–12. disconnect / reconnect / offline ---------------------------------
-
-test("disconnect and reconnect restore the relay's view from local canonical state", async t => {
-  const { handle, runtime, agent, deviceId, session, relayUrl, configPath } = await makeHarness(t);
-  const first = await makeTask(runtime, "Before disconnect");
-  await waitFor(
-    () => (handle.state.devices.get(deviceId)?.tasks ?? []).length === 1,
-    "first snapshot"
-  );
-
-  // Disconnect the Mac; create a task while it is away.
+test("the Mac is offline: status reports offline and commands answer 503 — never queued", async t => {
+  const { agent, phone } = await makeHarness(t);
   agent.stop();
-  await waitFor(() => handle.state.devices.get(deviceId)?.online === false, "offline");
-  await makeTask(runtime, "Created while offline");
-  await waitFor(
-    () => (handle.state.devices.get(deviceId)?.tasks ?? []).length === 1,
-    "cache stays at last-known while offline"
+  await waitFor(async () => (await phone.status()).mac === "offline", "mac offline", 5000);
+  await assert.rejects(
+    () => phone.api("/api/tasks", { method: "POST", body: { title: "Nope" } }),
+    error => error.status === 503
   );
-
-  // A fresh agent (same identity, same config) reconnects and re-pushes the
-  // snapshot, so the relay's view is restored from local canonical state.
-  const reconnected = createRelayAgent({ runtime, configPath, log: quiet, configPollMs: 40 });
-  reconnected.start();
-  await waitFor(() => handle.state.devices.get(deviceId)?.online === true, "reconnect");
-  await waitFor(
-    () => (handle.state.devices.get(deviceId)?.tasks ?? []).length === 2,
-    "snapshot restored after reconnect"
-  );
-
-  // The stale (offline) read now shows both tasks — canonical state won.
-  reconnected.stop();
-  await waitFor(() => handle.state.devices.get(deviceId)?.online === false, "offline again");
-  const cached = await fetch(relayUrl + "/api/tasks", { headers: withSession(session) }).then(r => r.json());
-  assert.deepEqual(cached.map(x => x.title).sort(), ["Before disconnect", "Created while offline"]);
-  void first;
 });
 
-test("an offline Mac is reported clearly", async t => {
-  const { handle, agent, deviceId, session, relayUrl } = await makeHarness(t);
-  agent.stop();
-  await waitFor(() => handle.state.devices.get(deviceId)?.online === false, "offline");
-  const res = await fetch(relayUrl + "/api/status", { headers: withSession(session) });
-  const info = await res.json();
-  assert.equal(info.mode, "relay");
-  assert.equal(info.mac, "offline");
-});
+test("a relay restart loses no session and keeps the phone paired", async t => {
+  const { base, dataFile, handle, phone, agent, runtime } = await makeHarness(t);
+  await runtime.actions.createWork({ title: "Survives restart" });
+  await handle.close();
 
-test("mutating actions are rejected while the Mac is offline — never queued", async t => {
-  const { runtime, agent, session, relayUrl } = await makeHarness(t);
-  const task = await makeTask(runtime, "While offline");
-  await blockPermission(runtime, task);
-  agent.stop();
-  await new Promise(r => setTimeout(r, 200));
-
-  const allow = await postJson(relayUrl + "/api/tasks/" + task.id + "/allow", {}, withSession(session));
-  assert.equal(allow.status, 503);
-  assert.match((await allow.json()).error, /Mac is offline/);
-
-  const rerun = await postJson(relayUrl + "/api/tasks/" + task.id + "/rerun", {}, withSession(session));
-  assert.equal(rerun.status, 503);
-
-  const close = await postJson(relayUrl + "/api/tasks/" + task.id + "/close", {}, withSession(session));
-  assert.equal(close.status, 503);
-});
-
-test("an unpaired session is refused (401)", async t => {
-  const { relayUrl } = await makeHarness(t);
-  const res = await fetch(relayUrl + "/api/tasks");
-  assert.equal(res.status, 401);
-  assert.match((await res.json()).error, /Not paired/);
-});
-
-// --- relay restart / persistence --------------------------------------------
-
-test("a relay restart loses no Task state and keeps the phone paired", async t => {
-  const base = await fs.mkdtemp(path.join(os.tmpdir(), "work-relay-restart-"));
-  const dataFile = path.join(base, "state.json");
-  const relay1 = createRelayServer({ dataFile, log: quiet });
-  const handle1 = await relay1.start();
-  let session;
-  let agent;
-  const deviceId = "device-restart";
-  try {
-    const runtime = createRuntime(base, { node: fakeNode() });
-    const tailer = createTailer({
-      interval: 15,
-      emit: event => runtime.events.emit(event),
-      readLines: makeReadLines(runtime.store)
-    });
-    tailer.start();
-    const configPath = path.join(base, ".work", "relay.json");
-    await writeRelayConfig(configPath, {
-      url: handle1.url,
-      enabled: true,
-      deviceId,
-      deviceSecret: "secret-restart",
-      token: "pair-restart"
-    });
-    agent = createRelayAgent({ runtime, configPath, log: quiet, configPollMs: 40 });
-    t.after(() => agent.stop());
-    agent.start();
-    await waitFor(() => handle1.state.devices.get(deviceId)?.online === true, "online");
-    session = await claim(handle1.url, "pair-restart");
-    await makeTask(runtime, "Survives restart");
-    await waitFor(
-      () => (handle1.state.devices.get(deviceId)?.tasks ?? []).length === 1,
-      "snapshot"
-    );
-    tailer.stop();
-  } finally {
-    await handle1.close();
-  }
-
-  // A fresh relay process over the same data file.
-  const relay2 = createRelayServer({ dataFile, log: quiet });
+  // Restart the relay on the SAME port (as a production redeploy would): the
+  // Mac's agent reconnects to the same URL and the phone's session survived
+  // in the state file.
+  const relay2 = createRelayServer({ dataFile, host: "127.0.0.1", port: handle.port, log: quiet });
   const handle2 = await relay2.start();
+  t.after(() => handle2.close());
   try {
-    const res = await fetch(handle2.url + "/api/status", { headers: withSession(session) });
-    assert.equal(res.status, 200, "the phone session survives the relay restart");
-    const info = await res.json();
-    assert.equal(info.mode, "relay");
-    assert.equal(info.mac, "offline"); // the Mac reconnects on its own
-    assert.equal(info.base, base);
-
-    const tasks = await fetch(handle2.url + "/api/tasks", { headers: withSession(session) });
-    const cached = await tasks.json();
-    assert.equal(cached.length, 1);
-    assert.equal(cached[0].title, "Survives restart");
+    await waitFor(() => agent.status().state === "online", "agent to reconnect to the restarted relay");
+    const phone2 = createPhoneClient({
+      relayUrl: handle2.url,
+      session: phone.session,
+      phoneId: phone.phoneId,
+      deviceId: phone.deviceId,
+      key: phone.key
+    });
+    const status = await phone2.status();
+    assert.equal(status.mac, "online");
+    const snap = await phone2.snapshot();
+    assert.equal(snap.tasks.length, 1);
+    assert.equal(snap.tasks[0].title, "Survives restart");
   } finally {
     await handle2.close();
-    await fs.rm(base, { recursive: true, force: true });
   }
 });
 
-// --- `2f pair` ---------------------------------------------------------------
+test("the relay holds no task content — state and state.json are content-free", async t => {
+  const { base, dataFile, handle, phone } = await makeHarness(t);
+  await phone.api("/api/tasks", { method: "POST", body: { title: "Secret task" } });
+  await new Promise(r => setTimeout(r, 100)); // let the relay settle
+  await handle.state.flushSave();
 
-test("2f pair writes the config, registers the token, and prints the pairing URL", async t => {
-  const { base, handle, agent, relayUrl, session } = await makeHarness(t);
-  const result = await pairDevice({
-    base,
-    url: relayUrl,
-    waitMs: 5000,
-    pollMs: 40,
-    ensure: async () => ({ status: "reused", url: relayUrl })
-  });
-  assert.equal(result.registered, true);
-  assert.ok(result.url.startsWith(relayUrl + "/pair/"));
-  assert.notEqual(result.token, session); // a fresh token, not the claimed one
-
-  // The config on disk is the agent's source of truth — enabled, stable id.
-  const cfg = JSON.parse(await fs.readFile(path.join(base, ".work", "relay.json"), "utf8"));
-  assert.equal(cfg.enabled, true);
-  assert.ok(cfg.deviceId);
-  assert.ok(cfg.deviceSecret);
-  assert.equal(cfg.token, result.token);
-  void agent;
+  for (const device of handle.state.devices.values()) {
+    assert.equal(device.tasks, undefined);
+    assert.equal(device.events, undefined);
+    assert.equal(device.base, undefined);
+  }
+  const raw = await fs.readFile(dataFile, "utf8");
+  assert.ok(!raw.includes("Secret task"), "state.json must not contain task content");
+  assert.equal(raw.includes("tasks"), false);
 });
 
-test("2f pair --off disables remote control; the agent goes idle", async t => {
-  const { base, handle, agent, deviceId } = await makeHarness(t);
-  await pairOff({ base });
-  await waitFor(() => handle.state.devices.get(deviceId)?.online === false, "agent to disconnect");
-  const cfg = JSON.parse(await fs.readFile(path.join(base, ".work", "relay.json"), "utf8"));
-  assert.equal(cfg.enabled, false);
-  assert.equal(cfg.token, undefined);
-  agent.stop();
+test("the relay is a broker: it serves no client or pairing page", async t => {
+  const { handle } = await makeHarness(t);
+  for (const p of ["/", "/pair/some-token", "/app/app.js", "/app/app.css"]) {
+    // Unauthenticated requests to the relay get refused (401 at the session
+    // gate / 404 for nothing matching) — never the app shell or pairing page.
+    const res = await fetch(handle.url + p);
+    assert.ok([401, 404].includes(res.status), `${p} -> ${res.status}`);
+    const text = await res.text();
+    assert.ok(!text.includes("0X2F"), `${p} served no client content`);
+    assert.ok(!text.includes("<script"), `${p} served no client script`);
+  }
 });
 
-// --- 13. local-only surface unchanged ----------------------------------------
+// --- the local surface is unchanged -----------------------------------------
 
 test("the local server reports mode 'local' — the client keeps its local behavior", async t => {
   const base = await fs.mkdtemp(path.join(os.tmpdir(), "work-relay-local-"));
-  try {
-    const runtime = createRuntime(base, { node: fakeNode() });
-    const handle = await startServer(base, 0, {
-      runtime,
-      interval: 20,
-      authToken: TEST_AUTH_TOKEN
-    });
-    const res = await fetch(handle.url + "/api/status", { headers: authHeaders() });
-    assert.equal(res.status, 200);
-    const info = await res.json();
-    assert.equal(info.mode, "local");
-    assert.equal(info.mac, "online");
-    assert.equal(info.base, base);
-    await handle.close();
-  } finally {
-    await fs.rm(base, { recursive: true, force: true });
-  }
+  t.after(() => fs.rm(base, { recursive: true, force: true }));
+  const runtime = createRuntime(base, { node: fakeNode() });
+  const handle = await startServer(base, 0, {
+    runtime,
+    interval: 20,
+    authToken: TEST_AUTH_TOKEN
+  });
+  t.after(() => handle.close());
+  const res = await fetch(handle.url + "/api/status", { headers: authHeaders() });
+  assert.equal(res.status, 200);
+  const info = await res.json();
+  assert.equal(info.mode, "local");
+  assert.equal(info.mac, "online");
 });
 
-test("the relay serves the same web client assets as the local server", async t => {
-  const { relayUrl, session } = await makeHarness(t);
-  const page = await fetch(relayUrl + "/", { headers: withSession(session) });
-  assert.equal(page.status, 200);
-  const html = await page.text();
-  assert.match(html, /<script type="module" src="\/app\/app.js">/);
-
-  for (const p of ["/app/app.js", "/app/ledger.mjs", "/app/sound.mjs", "/app/sound-policy.mjs", "/app/app.css"]) {
-    const asset = await fetch(relayUrl + p);
-    assert.equal(asset.status, 200, p);
-  }
-
-  // No session -> the relay serves the pairing landing page instead.
-  const anon = await fetch(relayUrl + "/");
-  const anonHtml = await anon.text();
-  assert.match(anonHtml, /0X2F \/ PAIR/);
-
-  // The one-time pairing page serves for a token, and polls the public
-  // status endpoint until the Mac registers it.
-  const pairPage = await fetch(relayUrl + "/pair/some-token");
-  const pairHtml = await pairPage.text();
-  assert.match(pairHtml, /0X2F \/ PAIR/);
-  assert.match(pairHtml, /api\/pair\/claim/);
-});

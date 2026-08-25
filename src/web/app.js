@@ -23,6 +23,7 @@ import {
 } from "/app/ledger.mjs";
 import { createSoundPolicy } from "/app/sound-policy.mjs";
 import { createSlashPlayer } from "/app/sound.mjs";
+import { loadRemoteState, createRemoteClient } from "/app/remote.mjs";
 
 const EVENT_TYPES = [
   "task.created",
@@ -190,7 +191,27 @@ function richBody(text) {
 
 // --- transport -------------------------------------------------------------
 
+// Remote mode: this page is served by the client origin (not the relay) and
+// talks to the relay as an opaque broker over E2E-encrypted envelopes. When
+// a previous pairing is stored, every API call is a signed command the Mac
+// verifies; the relay cannot read or forge anything.
+const remoteState = loadRemoteState();
+let remoteClient = null;
+if (remoteState) {
+  createRemoteClient(remoteState).then(client => {
+    remoteClient = client;
+  }).catch(() => {
+    // Key material unusable — drop the pairing and fall back to local mode.
+    try {
+      localStorage.removeItem("0x2f.remote");
+    } catch {
+      /* storage unavailable */
+    }
+  });
+}
+
 async function api(path, options) {
+  if (remoteClient) return remoteClient.api(path, options);
   const opts = { ...options };
   // Every mutating request carries a unique idempotency key. The relay
   // forwards it as the command requestId and the Mac never executes the same
@@ -220,23 +241,33 @@ function requestId() {
   }
 }
 
-// Remote mode: the client is served by the relay, which exposes the Mac's
-// presence through /api/status. While the Mac is offline, mutating controls
-// are unavailable — explicit failure beats "taps SEND BACK now, it executes
-// 15 minutes later".
+// Remote mode: the phone polls the relay for the Mac's presence. While the
+// Mac is offline, mutating controls are unavailable — explicit failure beats
+// "taps SEND BACK now, it executes 15 minutes later".
 async function checkStatus() {
   let info = null;
   try {
-    const res = await fetch("/api/status");
-    if (res.status === 401) {
-      location.href = "/"; // session lost — the relay serves the pairing page
+    if (remoteClient) {
+      info = await remoteClient.status();
+      if (info) info.mode = "relay";
+    } else {
+      const res = await fetch("/api/status");
+      if (res.status === 401) {
+        location.href = "/"; // session lost — the relay serves the pairing page
+        return;
+      }
+      if (res.ok) info = await res.json();
+    }
+  } catch (error) {
+    if (remoteClient && error.status === 401) {
+      // The session was revoked or expired — drop it and ask for a re-pair.
+      remoteClient.clear();
+      location.href = "/pair";
       return;
     }
-    if (res.ok) info = await res.json();
-  } catch {
     info = null; // server unreachable — treat as offline if we were remote
   }
-  const remote = info?.mode === "relay";
+  const remote = remoteClient ? true : info?.mode === "relay";
   const macOnline = remote ? info?.mac === "online" : true;
   // Remembers the moment the Mac went unreachable, purely for the mobile
   // Attention Stack's "LAST KNOWN ..." labelling — it freezes elapsed clocks
@@ -395,7 +426,57 @@ function recordEvent(event) {
   return true;
 }
 
+// Apply a remote snapshot (from the Mac, or from the phone's own last-known
+// cache when the Mac is offline). The remote projection is already redacted
+// and paths are relative — base stays empty so the ledger renders them as-is.
+function applySnapshot(snap) {
+  state.tasks = Array.isArray(snap.tasks) ? snap.tasks : [];
+  policy.seed(state.tasks);
+  state.base = "";
+  state.eventsByTask = new Map();
+  state.seen = new Map();
+  for (const [id, events] of Object.entries(snap.eventsByTask ?? {})) {
+    for (const event of events) recordEvent({ ...event, taskId: Number(id) });
+  }
+  if (Array.isArray(snap.providers)) state.providers = snap.providers;
+  // Halted tasks open themselves; make sure the one on screen has its result.
+  const halted = state.tasks.find(t => t.status === "needs_you");
+  if (halted && state.selectedId === null) state.selectedId = halted.id;
+  render();
+  if (state.openId !== null) ensureDetail(state.openId);
+}
+
+function persistRemoteCache() {
+  if (!remoteClient) return;
+  remoteClient.persistCache({
+    tasks: state.tasks,
+    eventsByTask: Object.fromEntries(state.eventsByTask),
+    providers: state.providers
+  });
+}
+
 async function loadAll() {
+  if (remoteClient) {
+    try {
+      const snap = await remoteClient.snapshot();
+      if (typeof snap.serverTime === "number") {
+        remoteClient.setClockOffset(snap.serverTime - Date.now());
+      }
+      applySnapshot(snap);
+      persistRemoteCache();
+      return;
+    } catch (error) {
+      if (error.status === 503) {
+        // Mac offline: render the phone's own last-known state instead of the
+        // relay's (the relay holds no content anymore).
+        const cache = remoteClient.loadCache();
+        if (cache) applySnapshot(cache);
+        else throw error;
+        return;
+      }
+      throw error;
+    }
+  }
   const [tasks, history] = await Promise.all([
     api("/api/tasks"),
     api("/api/events/history")
@@ -416,7 +497,7 @@ async function loadAll() {
 }
 
 async function reloadTasks() {
-  state.tasks = await api("/api/tasks");
+  state.tasks = remoteClient ? await remoteClient.api("/api/tasks") : await api("/api/tasks");
   policy.seed(state.tasks);
   render();
   // State changed — re-read any selected runs so their details (outcome,
@@ -427,6 +508,7 @@ async function reloadTasks() {
   // The mobile Task Detail screen keeps its own open-task id (state.openId
   // is desktop's inline-expand); refresh its cached detail the same way.
   if (mobile.screen === "detail" && mobile.detailId !== null) ensureDetail(mobile.detailId);
+  persistRemoteCache();
 }
 
 // --- actions ---------------------------------------------------------------
@@ -1926,6 +2008,10 @@ function onKeyDown(event) {
 // --- live stream -----------------------------------------------------------
 
 function connect() {
+  if (remoteClient) {
+    remoteConnect();
+    return;
+  }
   const source = new EventSource("/api/events");
 
   source.addEventListener("open", () => {
@@ -1958,6 +2044,50 @@ function connect() {
         render();
       }
     });
+  }
+}
+
+// Remote live stream: fetch-based SSE (bearer auth — EventSource cannot set
+// headers). Every envelope is GCM-verified before use; reconnects re-pull the
+// snapshot so the phone reconciles with the Mac's canonical state.
+let remoteStreamAbort = null;
+let remoteReconnectTimer = null;
+
+async function remoteConnect() {
+  if (remoteStreamAbort) return; // a stream is already up
+  const controller = new AbortController();
+  remoteStreamAbort = controller;
+  state.connected = true;
+  try {
+    await remoteClient.events(handleRemoteEnvelope, {
+      signal: controller.signal,
+      onOpen: () => {
+        loadAll().catch(error => flash(error.message));
+      }
+    });
+  } catch (error) {
+    if (error?.name === "AbortError") return;
+  }
+  if (remoteStreamAbort !== controller) return;
+  remoteStreamAbort = null;
+  state.connected = false;
+  render();
+  clearTimeout(remoteReconnectTimer);
+  remoteReconnectTimer = setTimeout(remoteConnect, 2000 + Math.random() * 1000);
+}
+
+function handleRemoteEnvelope(plaintext) {
+  if (!plaintext || plaintext.cmd !== "event") return;
+  const event = plaintext.event;
+  if (!event || typeof event.type !== "string") return;
+  const added = recordEvent(event);
+  policy.observe(event);
+  if (STATE_EVENTS.has(event.type)) {
+    reloadTasks()
+      .then(() => ensureDetail(state.openId))
+      .catch(() => {});
+  } else if (added) {
+    render();
   }
 }
 

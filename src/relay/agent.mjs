@@ -1,32 +1,35 @@
 // Remote control agent — the outbound link from a local 0x2F runtime to the
-// 0x2F relay.
+// 0x2F relay, and the Mac-side enforcement point of the E2E remote-control
+// protocol.
 //
 // The agent is an in-process module of the UI runtime (server-entry.mjs). It
 // deliberately contains NO Task logic: it subscribes to the existing
-// normalized event bus, forwards events, and executes remote commands through
-// the SHARED core actions (core/actions.mjs). The relay layer never
-// reimplements lifecycle, runs, or persistence.
+// normalized event bus, projects events to the REMOTE (redacted) shape, and
+// executes remote commands through the SHARED core actions
+// (core/actions.mjs).
+//
+// Trust model (Phase 3A): the relay is an OPAQUE BROKER. Every command, ack,
+// event and snapshot is an AES-256-GCM envelope (src/web/e2e.mjs) protected
+// by the pairing key — the shared secret derived from the short code the user
+// typed into the trusted client page. The relay cannot read or forge any of
+// it. A remote command executes ONLY after:
+//
+//   1. GCM verification with the confirmed phone's key (authenticity);
+//   2. the requestId is not in the persisted ack cache, or a fresh timestamp
+//      is inside the ±5 min window (replay protection, survives restart);
+//   3. the op is executed by the shared actions, serially, with the ack
+//      cached under the requestId so a legitimate retry returns the SAME ack
+//      and never executes twice.
+//
+// The pairing ceremony is bound and consumed: a `pair-hello` is accepted only
+// while pairing is pending AND its token matches the current config token AND
+// the token has not expired; after confirmation a replayed pair-hello cannot
+// re-establish trust.
 //
 //   config file  <workspace>/.work/relay.json
-//     { url, enabled, deviceId, deviceSecret, token, tokenExpiresAt, agentName }
-//
-//   url           https://relay.example.com  (the agent connects to /ws)
-//   deviceId      stable per-workspace id — protocol identity, never a
-//                 credential
-//   deviceSecret  long-lived Mac credential, generated at first pairing
-//   token         current one-time pairing token (rotated by `2f pair`)
-//
-// The agent polls the config file, so `2f pair` can rotate the token or
-// disable remote control while the runtime keeps running — no restart needed.
-//
-// Reliability contract:
-//   - reconnect with exponential backoff + jitter; on every reconnect the
-//     agent re-authenticates (hello), re-pushes the Task snapshot, and
-//     backfills recent events, so the relay's view is restored from local
-//     canonical state.
-//   - commands execute strictly serially (consistent with 0x2f's sequential
-//     runs), each with an idempotency key: a repeated requestId returns the
-//     cached acknowledgement and never executes a mutating action twice.
+//     { url, enabled, deviceId, deviceSecret, token, tokenExpiresAt,
+//       agentName, code?, phoneId?, pairing? }
+//   ack cache    <workspace>/.work/relay-acks.json  (mode 0600)
 
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -36,46 +39,36 @@ import {
   PROTOCOL_VERSION,
   API_VERSION,
   COMMAND_OPS,
-  MUTATING_OPS,
   makeFrame,
-  parseFrame
+  parseFrame,
+  makeRelayFrame,
+  parseRelayFrame
 } from "./protocol.mjs";
 import { validateRelayUrl } from "./pair.mjs";
 import { WorkError } from "../core/errors.mjs";
+import { deriveKeyRaw, importKey, encrypt, decrypt } from "../web/e2e.mjs";
+import { projectSnapshot, projectEvent, projectTask, projectRun, projectResult } from "./project.mjs";
 
-// Events that change what a task IS (task.json): after one of these the
-// agent pushes a fresh snapshot so the relay's last-known view cannot drift
-// from canonical state. progress/tool.started/file.changed never touch
-// task.json and never trigger a snapshot.
-const STATE_EVENTS = new Set([
-  "task.created",
-  "task.updated",
-  "task.closed",
-  "task.answered",
-  "task.note",
-  "needs_user",
-  "permission.resolved",
-  "run.completed",
-  "run.failed"
-]);
-
-const MAX_IDEMPOTENT = 500; // bounded idempotency cache (per process lifetime)
-const BACKFILL_EVENTS_PER_TASK = 500;
-const BACKFILL_TOTAL = 5000;
 const HELLO_TIMEOUT_MS = 10000;
 const PING_INTERVAL_MS = 30000;
 const PONG_TIMEOUT_MS = 90000;
 const CONFIG_POLL_MS = 2000;
-const SNAPSHOT_DEBOUNCE_MS = 150;
+
+// Replay + idempotency (survives Mac/runtime restart — persisted to disk).
+const TS_WINDOW_MS = 5 * 60 * 1000; // commands older than this are stale
+const ACK_MAX = 1000; // bounded ack cache
+const ACK_TTL_MS = 24 * 60 * 60 * 1000; // retries/duplicates within a day
+const ACK_SAVE_DEBOUNCE_MS = 500;
+
+const SNAPSHOT_EVENTS_PER_TASK = 200; // recent remote events in a snapshot
 
 export function createRelayAgent({
   runtime,
   configPath,
   log = console,
-  configPollMs = CONFIG_POLL_MS
+  configPollMs = CONFIG_POLL_MS,
+  now = Date.now
 }) {
-  // Accept either a console-shaped object ({ log, warn, error }) or a plain
-  // callable; never assume which the caller passed.
   const info =
     typeof log === "function"
       ? log
@@ -94,6 +87,7 @@ export function createRelayAgent({
       : typeof log === "function"
         ? log
         : () => {};
+
   let cfg = null; // last loaded config (null = disabled/absent)
   let ws = null;
   let state = "idle"; // idle | connecting | online | reconnecting | unpaired
@@ -103,15 +97,79 @@ export function createRelayAgent({
   let unsubscribe = null;
   let configTimer = null;
   let reconnectTimer = null;
-  let snapshotTimer = null;
   let keepaliveTimer = null;
   let lastPongAt = 0;
-  let seenConfig = ""; // JSON snapshot of the last applied config
-
-  const idempotent = new Map(); // requestId -> ack payload (bounded)
+  let seenConfig = ""; // connection-relevant config fingerprint
+  let sessionKey = null; // CryptoKey derived from code + token (AES-GCM)
+  let ackCache = null; // Map requestId -> { ack, at } (persisted)
+  let ackSaveTimer = null;
   let commandChain = Promise.resolve();
 
+  // --- ack cache (replay protection that survives restart) ------------------
+
+  const ackCachePath = () => path.join(path.dirname(path.dirname(configPath)), ".work", "relay-acks.json");
+
+  async function loadAckCache() {
+    try {
+      const raw = JSON.parse(await fs.readFile(ackCachePath(), "utf8"));
+      const map = new Map();
+      for (const [id, entry] of Object.entries(raw ?? {})) {
+        if (entry && typeof entry.at === "number" && now() - entry.at <= ACK_TTL_MS) {
+          map.set(id, entry);
+        }
+      }
+      return map;
+    } catch {
+      return new Map();
+    }
+  }
+
+  async function saveAckCache() {
+    try {
+      const obj = Object.fromEntries([...ackCache.entries()].map(([id, e]) => [id, e]));
+      await fs.mkdir(path.dirname(ackCachePath()), { recursive: true });
+      await fs.writeFile(ackCachePath(), JSON.stringify(obj) + "\n", {
+        encoding: "utf8",
+        mode: 0o600
+      });
+      await fs.chmod(ackCachePath(), 0o600);
+    } catch (err) {
+      error(`relay: could not persist the ack cache: ${err.message}`);
+    }
+  }
+
+  function scheduleAckSave() {
+    if (ackSaveTimer) return;
+    ackSaveTimer = setTimeout(() => {
+      ackSaveTimer = null;
+      saveAckCache();
+    }, ACK_SAVE_DEBOUNCE_MS);
+  }
+
+  function rememberAck(requestId, ack) {
+    ackCache.set(requestId, { ack, at: now() });
+    if (ackCache.size > ACK_MAX) {
+      // Drop the oldest entries beyond the bound.
+      const oldest = [...ackCache.entries()].sort((a, b) => a[1].at - b[1].at);
+      for (const [id] of oldest.slice(0, ackCache.size - ACK_MAX)) ackCache.delete(id);
+    }
+    scheduleAckSave();
+  }
+
   // --- config ---------------------------------------------------------------
+
+  async function writeConfig(next) {
+    try {
+      await fs.mkdir(path.dirname(configPath), { recursive: true });
+      await fs.writeFile(configPath, JSON.stringify(next, null, 2) + "\n", {
+        encoding: "utf8",
+        mode: 0o600
+      });
+      await fs.chmod(configPath, 0o600);
+    } catch (err) {
+      error(`relay: could not write config: ${err.message}`);
+    }
+  }
 
   async function loadConfig() {
     try {
@@ -119,8 +177,6 @@ export function createRelayAgent({
       const c = JSON.parse(text);
       if (!c || c.enabled === false) return null;
       if (!c.url || !c.deviceId || !c.deviceSecret) return null;
-      // The deviceSecret must never cross a plaintext path: refuse non-loopback
-      // http:// relays even if the config was hand-edited after pairing.
       const urlError = validateRelayUrl(c.url);
       if (urlError) {
         warn(`relay: not connecting — ${urlError}`);
@@ -132,14 +188,30 @@ export function createRelayAgent({
     }
   }
 
-  function configKey(c) {
+  // What requires reconnecting the WebSocket (identity/transport changes).
+  function connectionKey(c) {
     if (!c) return "";
-    return [c.url, c.deviceId, c.deviceSecret, c.token ?? "", c.enabled].join("\n");
+    return [c.url, c.deviceId, c.deviceSecret, c.enabled].join("\n");
   }
 
-  function wsUrl() {
-    const base = cfg.url.replace(/\/+$/, "");
-    return base.replace(/^http/, "ws") + "/ws";
+  // What requires re-deriving the E2E key (a new pairing ceremony).
+  function cryptoKey(c) {
+    if (!c) return "";
+    return [c.code ?? "", c.token ?? ""].join("\n");
+  }
+
+  async function applyKey(next) {
+    if (!next?.code || !next?.token) {
+      sessionKey = null;
+      return;
+    }
+    try {
+      const raw = await deriveKeyRaw(next.code, next.token);
+      sessionKey = await importKey(raw);
+    } catch (err) {
+      error(`relay: could not derive the pairing key: ${err.message}`);
+      sessionKey = null;
+    }
   }
 
   // --- transport ------------------------------------------------------------
@@ -154,6 +226,26 @@ export function createRelayAgent({
       }
     }
     return false;
+  }
+
+  // Encrypt + send one Mac → phone envelope.
+  async function sendEnvelope(plaintext, requestId) {
+    if (!sessionKey || !cfg) return false;
+    try {
+      const { iv, data } = await encrypt(sessionKey, plaintext, {
+        from: cfg.deviceId,
+        requestId
+      });
+      return send(makeRelayFrame(cfg.deviceId, requestId, { iv, data }));
+    } catch (err) {
+      error(`relay: could not encrypt a message: ${err.message}`);
+      return false;
+    }
+  }
+
+  function wsUrl() {
+    const base = cfg.url.replace(/\/+$/, "");
+    return base.replace(/^http/, "ws") + "/ws";
   }
 
   function connect() {
@@ -186,11 +278,7 @@ export function createRelayAgent({
           agentName: cfg.agentName ?? "0x2f-mac",
           deviceSecret: cfg.deviceSecret,
           token: cfg.token ?? null,
-          // The relay stores every pairing token with an expiry; the Mac's own
-          // config expiry (10 minutes) is the authoritative one.
-          tokenExpiresAt: cfg.tokenExpiresAt ?? null,
-          providers: currentProviders(),
-          routing: currentRouting()
+          tokenExpiresAt: cfg.tokenExpiresAt ?? null
         })
       );
     });
@@ -201,32 +289,34 @@ export function createRelayAgent({
 
     sock.on("message", (data, isBinary) => {
       if (isBinary) return;
-      const frame = parseFrame(data.toString());
-      if (!frame) {
-        warn("relay: dropped malformed frame");
-        return;
-      }
-      if (frame._protocolMismatch) {
-        // The relay speaks a different wire protocol — explicit failure
-        // instead of silent misbehavior; retry in case it upgrades.
-        lastError = `protocol version mismatch (relay speaks ${frame.protocolVersion}, agent speaks ${PROTOCOL_VERSION})`;
-        error(`relay: ${lastError}`);
-        state = "reconnecting";
-        try {
-          sock.close();
-        } catch {
-          /* already closing */
+      const text = data.toString();
+      const frame = parseFrame(text);
+      if (frame) {
+        if (frame._protocolMismatch) {
+          lastError = `protocol version mismatch (relay speaks ${frame.protocolVersion}, agent speaks ${PROTOCOL_VERSION})`;
+          error(`relay: ${lastError}`);
+          state = "reconnecting";
+          try {
+            sock.close();
+          } catch {
+            /* already closing */
+          }
+          return;
+        }
+        if (frame.type === "hello") {
+          clearTimeout(helloTimer);
+          onHelloAck(frame);
+        } else {
+          warn(`relay: unexpected frame type "${frame.type}"`);
         }
         return;
       }
-      if (frame.type === "hello") {
-        clearTimeout(helloTimer);
-        onHelloAck(frame);
-      } else if (frame.type === "command") {
-        queueCommand(frame);
-      } else {
-        warn(`relay: unexpected frame type "${frame.type}"`);
+      const relayFrame = parseRelayFrame(text);
+      if (relayFrame) {
+        onRelayFrame(relayFrame);
+        return;
       }
+      warn("relay: dropped malformed frame");
     });
 
     sock.on("close", () => {
@@ -245,7 +335,7 @@ export function createRelayAgent({
 
   function scheduleReconnect() {
     if (stopped || !cfg) return;
-    if (state === "unpaired") return; // wait for a token/config change
+    if (state === "unpaired") return;
     if (reconnectTimer) clearTimeout(reconnectTimer);
     const base = Math.min(60000, 1000 * 2 ** attempt);
     const jitter = 0.8 + Math.random() * 0.4;
@@ -263,13 +353,12 @@ export function createRelayAgent({
       state = "online";
       attempt = 0;
       lastError = null;
-      info(`relay: online (${cfg.url})`);
-      sendSnapshot().then(() => sendBackfill());
+      info(
+        `relay: online (${cfg.url})` +
+          (cfg.pairing === "pending" ? " — waiting for the phone to pair" : "")
+      );
       return;
     }
-    // Rejected. "unregistered" means the relay has no record of this device
-    // and no usable pairing token was presented — retrying is pointless
-    // until `2f pair` rotates the token, so idle until the config changes.
     lastError = p.error ?? "hello rejected";
     if (p.error === "unregistered") {
       state = "unpaired";
@@ -288,7 +377,97 @@ export function createRelayAgent({
     }
   }
 
-  // --- snapshot / events ----------------------------------------------------
+  // --- the E2E channel ------------------------------------------------------
+
+  function confirmed() {
+    return Boolean(cfg && cfg.pairing === "confirmed" && cfg.phoneId && sessionKey);
+  }
+
+  async function onRelayFrame(frame) {
+    if (!sessionKey) return; // no pairing key — nothing to verify against
+    const plaintext = await decrypt(sessionKey, frame, {
+      from: frame.from,
+      requestId: frame.requestId
+    });
+    if (!plaintext || typeof plaintext !== "object") {
+      // Wrong key, tampered payload, or a mismatched from/requestId — the
+      // relay cannot produce a valid envelope, so this is dropped.
+      return;
+    }
+    if (plaintext.cmd === "pair-hello") {
+      await onPairHello(frame, plaintext);
+      return;
+    }
+    if (plaintext.cmd === "command") {
+      queueCommand(frame, plaintext);
+    }
+  }
+
+  // Bind + consume the pairing ceremony: accepted only while pending, with
+  // the exact current token, and before the token expires. A replayed
+  // pair-hello (after confirmation or rotation) cannot establish trust.
+  async function onPairHello(frame, plaintext) {
+    const valid =
+      cfg &&
+      cfg.pairing === "pending" &&
+      plaintext.token === cfg.token &&
+      typeof plaintext.phoneId === "string" &&
+      plaintext.phoneId.length >= 8 &&
+      frame.from === plaintext.phoneId &&
+      (!cfg.tokenExpiresAt || Date.parse(cfg.tokenExpiresAt) > Date.now());
+    if (!valid) {
+      warn("relay: rejected a pair-hello — pairing is not pending or the token does not match");
+      return;
+    }
+    cfg.phoneId = plaintext.phoneId;
+    cfg.pairing = "confirmed";
+    await writeConfig(cfg);
+    info(`relay: phone paired (${cfg.phoneId}) — remote control is on`);
+    await sendEnvelope({ cmd: "ack", ok: true, status: 200, body: { phoneId: cfg.phoneId } }, frame.requestId);
+  }
+
+  // --- commands -------------------------------------------------------------
+
+  function queueCommand(frame, plaintext) {
+    const { requestId, op, taskId, body, ts } = plaintext;
+    if (!confirmed()) return; // no phone has completed pairing
+    if (frame.from !== cfg.phoneId) return; // envelope not from our phone
+
+    const cached = ackCache.get(requestId);
+    if (cached) {
+      // Duplicate delivery (retry, double tap, reconnect) — the action already
+      // ran; answer with the stored acknowledgement, never execute again.
+      sendEnvelope({ cmd: "ack", ...cached.ack }, requestId);
+      return;
+    }
+    if (typeof ts !== "number" || Math.abs(now() - ts) > TS_WINDOW_MS) {
+      // A command with an old timestamp cannot be a fresh legitimate request —
+      // this is the replay bound once the ack cache evicts the requestId.
+      sendEnvelope(
+        { cmd: "ack", ok: false, status: 400, error: "Command is stale or replayed." },
+        requestId
+      );
+      return;
+    }
+    commandChain = commandChain
+      .then(async () => {
+        const result = await runCommand({ op, taskId, body });
+        rememberAck(requestId, result);
+        await sendEnvelope({ cmd: "ack", ...result }, requestId);
+      })
+      .catch(async error => {
+        const result = { ok: false, status: 500, error: String(error?.message ?? error) };
+        await sendEnvelope({ cmd: "ack", ...result }, requestId);
+      });
+  }
+
+  function ok(status, body) {
+    return { ok: true, status, body };
+  }
+
+  function fail(status, error) {
+    return { ok: false, status, error };
+  }
 
   function currentProviders() {
     try {
@@ -296,7 +475,6 @@ export function createRelayAgent({
         id: p.id,
         displayName: p.displayName,
         integrationType: p.integrationType,
-        capabilities: p.capabilities,
         available: runtime.providers.available(p.id)
       }));
     } catch {
@@ -316,112 +494,43 @@ export function createRelayAgent({
     }
   }
 
-  async function sendSnapshot() {
-    if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    try {
-      const tasks = await runtime.actions.listWork();
-      send(
-        makeFrame("snapshot", cfg.deviceId, crypto.randomUUID(), {
-          base: runtime.store.base,
-          tasks,
-          at: new Date().toISOString()
-        })
-      );
-    } catch (error) {
-      error(`relay: snapshot failed: ${error.message}`);
+  // The phone's initial/reconnect state pull: the redacted projection of
+  // tasks + recent events per task + provider descriptors + routing + the
+  // Mac clock (for phone clock-skew correction on commands).
+  async function buildSnapshot() {
+    const tasks = await runtime.actions.listWork();
+    const eventsByTask = {};
+    for (const task of tasks) {
+      const all = await runtime.store.readEvents(task.slug);
+      eventsByTask[String(task.id)] = all.slice(-SNAPSHOT_EVENTS_PER_TASK);
     }
-  }
-
-  // The relay's event ring is bounded and may have missed events while this
-  // agent was disconnected; on every reconnect the agent backfills the recent
-  // tail of each task's normalized log (one batched frame).
-  async function sendBackfill() {
-    if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    try {
-      const tasks = await runtime.actions.listWork();
-      const events = {};
-      let total = 0;
-      for (const task of tasks) {
-        if (total >= BACKFILL_TOTAL) break;
-        const all = await runtime.store.readEvents(task.slug);
-        const tail = all.slice(-BACKFILL_EVENTS_PER_TASK);
-        if (tail.length) {
-          events[String(task.id)] = tail;
-          total += tail.length;
-        }
-      }
-      if (Object.keys(events).length) {
-        send(makeFrame("event", cfg.deviceId, crypto.randomUUID(), { events }));
-      }
-    } catch (error) {
-      error(`relay: backfill failed: ${error.message}`);
-    }
-  }
-
-  function scheduleSnapshot() {
-    if (snapshotTimer) return;
-    snapshotTimer = setTimeout(() => {
-      snapshotTimer = null;
-      sendSnapshot();
-    }, SNAPSHOT_DEBOUNCE_MS);
-  }
-
-  function onBusEvent(event) {
-    if (state !== "online") return;
-    send(makeFrame("event", cfg.deviceId, crypto.randomUUID(), { event }));
-    if (STATE_EVENTS.has(event.type)) scheduleSnapshot();
-  }
-
-  // --- commands -------------------------------------------------------------
-
-  function queueCommand(frame) {
-    const { requestId, payload } = frame;
-    const cached = idempotent.get(requestId);
-    if (cached) {
-      // Duplicate delivery (double tap, network retry, reconnect) — the
-      // action already ran; answer with the stored acknowledgement.
-      send(makeFrame("ack", cfg.deviceId, requestId, cached));
-      return;
-    }
-    commandChain = commandChain
-      .then(async () => {
-        const result = await runCommand(payload);
-        if (idempotent.size >= MAX_IDEMPOTENT) {
-          idempotent.delete(idempotent.keys().next().value);
-        }
-        idempotent.set(requestId, result);
-        send(makeFrame("ack", cfg.deviceId, requestId, result));
-        if (result.ok && MUTATING_OPS.includes(payload.op)) {
-          await sendSnapshot();
-        }
-      })
-      .catch(error => {
-        // runCommand never throws; this is a guard for the chain itself.
-        const result = { ok: false, status: 500, error: String(error?.message ?? error) };
-        send(makeFrame("ack", cfg.deviceId, requestId, result));
-      });
-  }
-
-  function ok(status, body) {
-    return { ok: true, status, body };
-  }
-
-  function fail(status, error) {
-    return { ok: false, status, error };
+    return projectSnapshot({
+      tasks,
+      eventsByTask,
+      providers: currentProviders(),
+      routing: currentRouting(),
+      base: runtime.store.base,
+      serverTime: Date.now()
+    });
   }
 
   async function runCommand({ op, taskId, body }) {
     if (!COMMAND_OPS.includes(op)) {
       return fail(400, `Unknown remote op: "${op}".`);
     }
+    const base = runtime.store.base;
     try {
       switch (op) {
         case "list":
-          return ok(200, await runtime.actions.listWork());
-        case "get":
-          return ok(200, await runtime.actions.getWork(taskId));
-        case "getRun":
-          return ok(200, await runtime.actions.getRun(taskId, Number(body?.run)));
+          return ok(200, (await runtime.actions.listWork()).map(t => projectTask(t, base)));
+        case "get": {
+          const full = await runtime.actions.getWork(taskId);
+          return ok(200, { ...projectTask(full, base), result: projectResult(full.result, base) });
+        }
+        case "getRun": {
+          const full = await runtime.actions.getRun(taskId, Number(body?.run));
+          return ok(200, { ...projectRun(full, base), result: projectResult(full.result, base) });
+        }
         case "create":
           return ok(
             201,
@@ -455,6 +564,8 @@ export function createRelayAgent({
           return ok(200, currentProviders());
         case "routing":
           return ok(200, currentRouting());
+        case "snapshot":
+          return ok(200, await buildSnapshot());
         default:
           return fail(400, `Unhandled remote op: "${op}".`);
       }
@@ -466,15 +577,27 @@ export function createRelayAgent({
     }
   }
 
+  // --- events ---------------------------------------------------------------
+
+  function onBusEvent(event) {
+    if (state !== "online" || !confirmed()) return;
+    const projected = projectEvent(event, runtime.store.base);
+    if (!projected) return;
+    sendEnvelope({ cmd: "event", event: projected }, crypto.randomUUID());
+  }
+
   // --- lifecycle ------------------------------------------------------------
 
   async function tickConfig() {
     const next = await loadConfig();
-    const key = configKey(next);
-    if (key !== seenConfig) {
-      seenConfig = key;
-      const changed = cfg && next && (cfg.url !== next.url || cfg.deviceId !== next.deviceId || cfg.deviceSecret !== next.deviceSecret || cfg.token !== next.token);
+    const connKey = connectionKey(next);
+    const cryptoChanged = cryptoKey(next) !== cryptoKey(cfg);
+
+    if (connKey !== seenConfig) {
+      seenConfig = connKey;
+      const disable = cfg && next === null;
       cfg = next;
+      if (cryptoChanged) await applyKey(next);
       if (!cfg) {
         if (ws) {
           try {
@@ -486,10 +609,10 @@ export function createRelayAgent({
         }
         state = "idle";
         attempt = 0;
+        sessionKey = null;
+        if (disable) info("relay: remote control disabled");
         return;
       }
-      // Config appeared or changed (first pairing, token rotation, disable).
-      // Drop the old connection (if any) and connect with the new identity.
       if (ws) {
         try {
           ws.close();
@@ -501,6 +624,11 @@ export function createRelayAgent({
       state = "idle";
       attempt = 0;
       connect();
+    } else if (cryptoChanged) {
+      // New pairing code/token without a transport change: re-derive the key
+      // in place; the pending ceremony waits for the phone's pair-hello.
+      cfg = next;
+      await applyKey(next);
     } else if (cfg && state === "idle") {
       connect();
     }
@@ -508,6 +636,9 @@ export function createRelayAgent({
 
   function start() {
     if (stopped) return agent;
+    loadAckCache().then(cache => {
+      ackCache = cache;
+    });
     unsubscribe = runtime.events.on(onBusEvent);
     configTimer = setInterval(tickConfig, configPollMs);
     keepaliveTimer = setInterval(() => {
@@ -538,7 +669,10 @@ export function createRelayAgent({
     clearInterval(configTimer);
     clearInterval(keepaliveTimer);
     clearTimeout(reconnectTimer);
-    clearTimeout(snapshotTimer);
+    if (ackSaveTimer) {
+      clearTimeout(ackSaveTimer);
+      ackSaveTimer = null;
+    }
     if (unsubscribe) unsubscribe();
     if (ws) {
       try {
@@ -549,6 +683,7 @@ export function createRelayAgent({
       ws = null;
     }
     state = "idle";
+    if (ackCache) saveAckCache();
   }
 
   function status() {
@@ -556,6 +691,8 @@ export function createRelayAgent({
       state,
       url: cfg?.url ?? null,
       deviceId: cfg?.deviceId ?? null,
+      pairing: cfg?.pairing ?? null,
+      phoneId: cfg?.phoneId ?? null,
       lastError
     };
   }

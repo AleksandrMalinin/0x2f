@@ -1,0 +1,32 @@
+/* 0x2F · pair — the pairing ceremony page.
+   Served by the CLIENT ORIGIN (the local runtime by default; a static host in
+   deployment) — never by the relay. The E2E pairing code is typed into THIS
+   trusted page; the relay never sees it. */
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; background: #e4e8ec; }
+body {
+  font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: #2f2f2f;
+  -webkit-font-smoothing: antialiased;
+}
+.pair-card {
+  max-width: 460px; margin: 10vh auto 0; padding: 28px 26px;
+  background: #f6f8fa; border: 1px solid #ccd4da;
+}
+.pair-k { font-size: 10px; letter-spacing: .2em; color: #5c6771; font-weight: 600; }
+.pair-hint { margin-top: 14px; font-size: 13px; line-height: 1.6; color: #37424c; }
+.pair-input {
+  display: block; width: 100%; margin-top: 16px; padding: 12px;
+  font-family: inherit; font-size: 18px; letter-spacing: .12em;
+  border: 1px solid #c6d3ea; background: #fff; outline: none; border-radius: 0;
+  text-transform: uppercase;
+}
+.pair-input:focus { border-color: #2f5fa8; }
+.pair-btn {
+  margin-top: 12px; padding: 13px 20px; font-family: inherit; font-size: 11px;
+  letter-spacing: .16em; background: #2f2f2f; color: #f6f8fa; border: none;
+  cursor: pointer;
+}
+.pair-btn:disabled { opacity: .5; cursor: default; }
+.pair-status { margin-top: 16px; font-size: 13px; line-height: 1.6; color: #37424c; white-space: pre-wrap; }
+.pair-status.err { color: #b8532a; }

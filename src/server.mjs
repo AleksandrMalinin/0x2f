@@ -76,8 +76,13 @@ import { MAX_BODY_BYTES } from "./core/limits.mjs";
 // user-supplied paths, nothing outside src/web can be requested.
 const ASSETS = {
   "/": ["index.html", "text/html; charset=utf-8"],
+  "/pair": ["pair.html", "text/html; charset=utf-8"],
   "/app/app.css": ["app.css", "text/css; charset=utf-8"],
   "/app/app.js": ["app.js", "text/javascript; charset=utf-8"],
+  "/app/e2e.mjs": ["e2e.mjs", "text/javascript; charset=utf-8"],
+  "/app/pair.mjs": ["pair.mjs", "text/javascript; charset=utf-8"],
+  "/app/pair.css": ["pair.css", "text/css; charset=utf-8"],
+  "/app/remote.mjs": ["remote.mjs", "text/javascript; charset=utf-8"],
   "/app/ledger.mjs": ["ledger.mjs", "text/javascript; charset=utf-8"],
   "/app/sound-policy.mjs": ["sound-policy.mjs", "text/javascript; charset=utf-8"],
   "/app/sound.mjs": ["sound.mjs", "text/javascript; charset=utf-8"]
@@ -102,14 +107,18 @@ const AUTH_COOKIE = "0x2f_auth";
 const AUTH_HEADER = "x-0x2f-auth";
 
 // Restrictive CSP for the Web surface. The client is module scripts + CSS +
-// fetch/EventSource, all same-origin; it renders with textContent only and
-// plays a synthesized Web Audio slash (no assets, no media, no frames).
+// fetch/EventSource, all same-origin in LOCAL mode; in REMOTE mode the same
+// client (served from this origin or a static client host) talks to the
+// user-configured relay origin, so connect-src is loosened to any http(s)/ws
+// endpoint. script-src/style-src 'self' remain the hard boundary against
+// injected code; the client renders with textContent only and plays a
+// synthesized Web Audio slash (no assets, no media, no frames).
 const CSP = [
   "default-src 'none'",
   "script-src 'self'",
   "style-src 'self'",
   "img-src 'self' data:",
-  "connect-src 'self'",
+  "connect-src 'self' http: https: ws: wss:",
   "font-src 'self'",
   "media-src 'none'",
   "object-src 'none'",
