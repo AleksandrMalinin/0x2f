@@ -28,7 +28,13 @@ import {
   relativePath,
   blockedTitle,
   eventsForRun,
-  projectRuns
+  projectRuns,
+  firstSentence,
+  restAfterFirstSentence,
+  inferFailureKind,
+  authFailureCopy,
+  authFailureLine,
+  parseRich
 } from "../src/web/ledger.mjs";
 import { workEvent } from "../src/core/events.mjs";
 
@@ -909,4 +915,157 @@ test("time parked on a human is not counted in the trace's tail selection", () =
   });
   const marks = row.trace.cells.filter(c => !c.isHalt);
   assert.equal(marks.length, 2);
+});
+
+// --- §03: the decision question is prose, not a label -----------------------
+
+test("firstSentence: a one-line question is the whole heading, nothing left over", () => {
+  const q = "Should the retry budget be per-run or per-task?";
+  assert.equal(firstSentence(q), q);
+  assert.equal(restAfterFirstSentence(q), "");
+});
+
+test("firstSentence: splits a multi-paragraph question at its first sentence", () => {
+  const q =
+    "Should the retry budget be per-run or per-task?\n\n" +
+    "Run 2 restarted the whole pipeline because the budget is attached to the run record.";
+  assert.equal(firstSentence(q), "Should the retry budget be per-run or per-task?");
+  assert.equal(
+    restAfterFirstSentence(q),
+    "Run 2 restarted the whole pipeline because the budget is attached to the run record."
+  );
+});
+
+test("firstSentence: a question with no terminal punctuation is still a valid heading", () => {
+  assert.equal(firstSentence("pick a database"), "pick a database");
+  assert.equal(restAfterFirstSentence("pick a database"), "");
+});
+
+test("projectRow splits a decision's question into heading + body for the card to render", () => {
+  const blocked = task({
+    status: "needs_you",
+    blockedOn: {
+      type: "decision",
+      text:
+        "Which backend should we standardize on? Postgres is already used elsewhere; " +
+        "SQLite would need no new infra."
+    }
+  });
+  const row = projectRow(blocked, [], { open: true });
+  assert.equal(row.permQuestionHeading, "Which backend should we standardize on?");
+  assert.equal(
+    row.permQuestionBody,
+    "Postgres is already used elsewhere; SQLite would need no new infra."
+  );
+  // permWhy is kept verbatim too — existing consumers (the mobile queue
+  // preview) are unaffected by the new split fields.
+  assert.equal(row.permWhy, blocked.blockedOn.text);
+});
+
+test("a permission halt (not a decision) has no question split — permWhy is used as-is", () => {
+  const blocked = task({
+    status: "needs_you",
+    blockedOn: { type: "permission", file: "a.ts", plannedChange: "old  →  new" }
+  });
+  const row = projectRow(blocked, [], { open: true });
+  assert.equal(row.permQuestionHeading, "");
+  assert.equal(row.permQuestionBody, "");
+});
+
+// --- §01: provider-not-authenticated is not a task breakage ------------------
+
+const WITH_NAMES = {
+  "claude-code": { displayName: "Claude Code", capabilities: RICH["claude-code"].capabilities }
+};
+
+test("inferFailureKind: an explicit task.failure.kind is trusted as-is", () => {
+  assert.equal(inferFailureKind({ failure: { kind: "auth" }, error: "irrelevant" }), "auth");
+  assert.equal(inferFailureKind({ failure: { kind: "crashed" }, error: "" }), "crashed");
+});
+
+test("inferFailureKind: legacy tasks with no failure field are inferred from the stored error", () => {
+  assert.equal(
+    inferFailureKind({
+      error: "Failed to authenticate. API Error: 401 OAuth access token has expired. Re-authenticate to continue."
+    }),
+    "auth"
+  );
+  assert.equal(inferFailureKind({ error: "npm test failed" }), null);
+  assert.equal(inferFailureKind({ error: "" }), null);
+});
+
+test("authFailureCopy: with a remedy, the hint is shown verbatim in its own slot", () => {
+  const copy = authFailureCopy("Claude Code", "MBP-14", "claude /login");
+  assert.equal(
+    copy.sentence,
+    "Claude Code's authentication is no longer valid. 0x2F cannot authenticate a provider for you."
+  );
+  assert.equal(copy.hintLabel, "ON MBP-14");
+  assert.equal(copy.hint, "claude /login");
+});
+
+test("authFailureCopy: without a remedy, a generic sign-in sentence names the provider and machine", () => {
+  const copy = authFailureCopy("Gemini CLI", "MBP-14", null);
+  assert.equal(copy.hintLabel, null);
+  assert.equal(copy.hint, null);
+  assert.equal(
+    copy.instruction,
+    "Sign in to Gemini CLI on MBP-14, then RETRY. The task and its runs are kept."
+  );
+});
+
+test("authFailureLine: the one-line summary shared by the compact row, arg and mobile", () => {
+  assert.equal(authFailureLine("Claude Code", "MBP-14"), "claude code is not authenticated on MBP-14");
+  assert.equal(authFailureLine("Claude Code", ""), "claude code is not authenticated");
+});
+
+test("projectRow: a classified auth failure reads STOPPED AT, not FAILED AT", () => {
+  const failed = task({
+    status: "failed",
+    error: "Failed to authenticate. API Error: 401 OAuth access token has expired. Re-authenticate to continue.",
+    failure: { kind: "auth", remedy: "claude /login" }
+  });
+  const row = projectRow(failed, [], { open: true, providers: WITH_NAMES, node: "MBP-14" });
+  assert.equal(row.phaseLabel, "STOPPED AT");
+  assert.equal(row.arg, "claude code is not authenticated on MBP-14");
+  assert.equal(row.sub, "claude code is not authenticated on MBP-14");
+  assert.equal(row.failureKind, "auth");
+  assert.equal(row.failureRemedy, "claude /login");
+  assert.equal(row.failureProviderName, "Claude Code");
+  assert.equal(row.failureCopy.hint, "claude /login");
+  // The raw vendor text is never discarded — it's demoted, not deleted.
+  assert.equal(row.error, failed.error);
+});
+
+test("projectRow: an unclassified failure is completely unaffected by the new fields", () => {
+  const failed = task({ status: "failed", error: "npm test failed with 3 failing specs" });
+  const row = projectRow(failed, [], { open: true, providers: WITH_NAMES, node: "MBP-14" });
+  assert.equal(row.phaseLabel, "FAILED AT");
+  assert.equal(row.arg, "npm test failed with 3 failing specs");
+  assert.equal(row.failureKind, null);
+  assert.equal(row.failureCopy, null);
+});
+
+// Guard (§03, section 04's implementation notes): a decision question's body
+// can legitimately contain a fenced code block (the agent quoting the exact
+// snippet the tradeoff turns on) — the heading/body split must not corrupt
+// it, and the shared rich-text parser must still recognize it as a distinct
+// code block once it lands in the body.
+test("a decision question with a fenced code block in its body renders intact", () => {
+  const question =
+    "Should retries back off exponentially?\n\n" +
+    "Today's loop is:\n\n" +
+    "```js\nfor (let i = 0; i < 3; i++) attempt();\n```\n\n" +
+    "A flat retry storms the API under sustained failure.";
+  const blocked = task({ status: "needs_you", blockedOn: { type: "decision", text: question } });
+  const row = projectRow(blocked, [], { open: true });
+  assert.equal(row.permQuestionHeading, "Should retries back off exponentially?");
+  assert.ok(row.permQuestionBody.includes("```js"));
+  assert.ok(row.permQuestionBody.includes("for (let i = 0; i < 3; i++) attempt();"));
+
+  const blocks = parseRich(row.permQuestionBody);
+  const code = blocks.find(b => b.type === "code");
+  assert.ok(code, "the fence must still parse as a distinct code block, not paragraph prose");
+  assert.equal(code.lang, "js");
+  assert.equal(code.text, "for (let i = 0; i < 3; i++) attempt();");
 });

@@ -33,6 +33,10 @@
   .brand { display: flex; align-items: center; gap: 13px; }
   .brand-mark { font-size: 15.5px; letter-spacing: .02em; color: #f4f6f8; font-weight: 500; }
   .brand-slash { font-size: 15.5px; color: #79838c; }
+  /* §02: completes the path the mark was already drawing — "0x2F /
+     <workspace>" — at brand weight, on the darkest surface in the app. Full
+     absolute path only on hover (native title), never printed. */
+  .brand-workspace { font-size: 14.5px; color: #f4f6f8; letter-spacing: -.004em; }
   .brand-scope { font-size: 11px; letter-spacing: .22em; color: #c3ccd3; }
   .chrome-div { width: 1px; height: 22px; background: rgba(255,255,255,.16); display: block; margin-left: 3px; }
   .runtime { display: flex; align-items: center; gap: 9px; }
@@ -147,9 +151,22 @@
   .halt-path { margin-top: 7px; font-size: 20px; color: #2f2f2f; letter-spacing: -.012em; font-weight: 500; word-break: break-all; }
   .halt-why { margin-top: 14px; font-size: 13px; color: #37424c; overflow-wrap: anywhere; }
   .halt-detail { margin-top: 16px; padding: 14px; background: #f6f8fa; border: 1px solid #c6d3ea; font-size: 12px; color: #37424c; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 260px; overflow: auto; }
+
+  /* §03: the decision question is prose, not a path — its own class,
+     deliberately NOT .halt-path (no break-all, no fixed size, no clamp). The
+     first sentence is the heading (the largest thing in the card); anything
+     after it is body prose that grows the card. overflow-wrap: anywhere
+     breaks only where a real line would otherwise overflow — never mid-word
+     the way break-all does. */
+  .decision-question { margin-top: 16px; }
+  .decision-question-heading {
+    font-family: "Instrument Sans", system-ui, sans-serif; font-size: 22px; font-weight: 600;
+    color: #2f2f2f; letter-spacing: -.014em; line-height: 1.3;
+    overflow-wrap: anywhere; text-wrap: pretty;
+  }
+  .decision-question-body { margin-top: 10px; font-size: 14px; line-height: 1.62; color: #37424c; max-width: 680px; }
   /* a needs_you/decision block: the question is asked and answered, not
      allowed/rejected — the card keeps the ledger's restrained vocabulary */
-  .halt-card.decision .decision-question { font-weight: 600; }
   .decision-limitation { margin-top: 12px; font-size: 12px; line-height: 1.55; color: #5c6771; max-width: 620px; }
   .decision-answer-wrap { margin-top: 16px; }
   .decision-answer { display: block; width: 100%; max-width: 620px; font-family: inherit; font-size: 13px; line-height: 1.55; color: #2f2f2f; background: #f6f8fa; border: 1px solid #c6d3ea; padding: 10px 12px; resize: vertical; border-radius: 0; outline: none; }
@@ -185,6 +202,19 @@
   .result { border-top: 1px solid #2f2f2f; padding: 24px 0 6px; display: grid; grid-template-columns: 148px 1fr; }
   .result-k { font-size: 10px; letter-spacing: .16em; color: #2f2f2f; font-weight: 600; }
   .result-body { margin-top: 0; font-size: 13.5px; line-height: 1.65; color: #2f2f2f; overflow-wrap: anywhere; max-height: 420px; overflow: auto; }
+
+  /* §01: the AUTHENTICATION band — 0x2F's own instruction, the vendor text
+     demoted to its own "<PROVIDER> SAID" slot below, never discarded. */
+  .failure-sentence { font-family: "Instrument Sans", system-ui, sans-serif; font-size: 19px; letter-spacing: -.014em; line-height: 1.3; color: #2f2f2f; max-width: 60ch; text-wrap: pretty; }
+  .failure-hint-wrap { margin-top: 16px; display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; }
+  .failure-hint-label { font-size: 10px; letter-spacing: .16em; color: #5c6771; flex: none; }
+  /* The adapter's remedy, shown verbatim — never composed or interpolated. */
+  .failure-hint { font-size: 17px; color: #2f2f2f; letter-spacing: -.01em; background: #e9edf1; padding: 3px 8px; }
+  .failure-instruction { margin-top: 16px; font-size: 13px; line-height: 1.6; color: #37424c; max-width: 620px; text-wrap: pretty; }
+  .failure-said { margin-top: 18px; background: #f0eeec; border: 1px solid #ddd2ca; padding: 12px 14px; max-width: 620px; }
+  .failure-said-label { font-size: 9.5px; letter-spacing: .16em; color: #8a7d74; }
+  .failure-said-body { margin-top: 7px; font-size: 12px; line-height: 1.55; color: #37424c; overflow-wrap: anywhere; }
+  .failure-said-body > *:first-child { margin-top: 0; }
 
   /* the one capability-driven sentence the ledger ever shows (§09) */
   .capability-note { margin-top: 12px; font-size: 11.5px; color: #8f9aa4; max-width: 860px; }
@@ -296,6 +326,11 @@
   .composer-hint.armed { color: #2f5fa8; }
   .composer-hint.refining { color: #c3ccd3; animation: wk-live 1.5s ease-in-out infinite; }
   .composer-hint.error { color: #b8532a; }
+  /* §02: "RUNS IN <workspace> ON <node>" — the destination reads in the same
+     saccade as the intent being typed. Dim sentence, bright workspace name,
+     the same weighting the chrome mark uses for its own workspace label. */
+  .composer-hint.workspace { color: #9aa6b0; }
+  .composer-hint-emph { color: #f2f5f7; }
   .composer-meta-divider { width: 1px; height: 11px; background: rgba(255,255,255,.18); flex: none; display: block; }
   .composer-meta { font-size: 10px; letter-spacing: .16em; color: #79838c; flex: 0 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .composer-btn {
@@ -383,11 +418,15 @@
     .m-bar-inner { height: 46px; padding: 0 14px; display: flex; align-items: center; gap: 9px; }
     .m-mark { font-size: 15px; color: #f4f6f8; font-weight: 500; letter-spacing: .02em; }
     .m-slash { font-size: 15px; color: #79838c; }
+    /* §02: project takes the bright slot; host drops to the dim one (see
+       renderMobileBar) — nowrap + ellipsis, same clipping rule as the
+       desktop mark's hover-for-full-path treatment. */
+    .m-workspace { font-size: 13px; color: #f4f6f8; letter-spacing: .01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
     .m-bar-spacer { flex: 1; }
     .m-dot { width: 6px; height: 6px; background: #5fd0a0; display: block; animation: wk-live 2.4s ease-in-out infinite; flex: none; }
     .m-dot.off { background: none; border: 1px solid #b8532a; animation: none; }
-    .m-host { font-size: 12px; color: #dde4e9; }
-    .m-host.dim { color: #9aa6b0; }
+    .m-host { font-size: 11.5px; color: #9aa6b0; flex: none; }
+    .m-host.dim { color: #6b747c; }
 
     .m-offline-bar { flex: none; background: #b8532a; color: #f6f8fa; padding: 8px 14px; font-size: 10px; letter-spacing: .16em; text-align: center; }
 
@@ -450,7 +489,15 @@
     .m-ask-line { background: #e9eefb; border-bottom: 1px solid #2f5fa8; padding: 14px 14px 15px; display: flex; align-items: center; gap: 12px; cursor: pointer; min-height: 52px; }
     .m-ask-line-body { flex: 1; min-width: 0; }
     .m-ask-line-kind { font-size: 10px; letter-spacing: .2em; color: #2f5fa8; font-weight: 600; }
-    .m-ask-line-title { margin-top: 7px; font-family: "Instrument Sans", system-ui, sans-serif; font-size: 15px; font-weight: 500; letter-spacing: -.012em; color: #2f2f2f; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    /* §03: a decision's queue preview is the question's first sentence, not
+       the task title — it must not clip mid-sentence the way a single-line
+       ellipsis does, so this wraps to at most two lines instead. */
+    .m-ask-line-title {
+      margin-top: 7px; font-family: "Instrument Sans", system-ui, sans-serif; font-size: 15px;
+      font-weight: 500; letter-spacing: -.012em; color: #2f2f2f;
+      display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+      overflow: hidden; overflow-wrap: anywhere;
+    }
     .m-ask-line-preview { margin-top: 5px; font-size: 11.5px; color: #37424c; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .m-ask-line-t { flex: none; font-size: 11.5px; color: #2f5fa8; font-variant-numeric: tabular-nums; }
     .m-ask-line-chev { flex: none; font-size: 13px; color: #2f5fa8; }
@@ -514,7 +561,14 @@
 
     .m-dpre { margin-top: 12px; background: #eef1f4; border: 1px solid #dbe2e7; padding: 12px 14px; font-size: 12px; line-height: 1.6; color: #2f2f2f; white-space: pre-wrap; overflow-wrap: anywhere; overflow-x: auto; }
 
-    .m-dquestion { margin-top: 20px; border-top: 1px solid #2f5fa8; padding-top: 18px; font-family: "Instrument Sans", system-ui, sans-serif; font-size: 18px; font-weight: 600; color: #2f2f2f; letter-spacing: -.014em; line-height: 1.35; overflow-wrap: anywhere; text-wrap: pretty; }
+    /* §03: the outer wrapper is now just the border/spacing — typography
+       lives in .decision-question-heading/-body (shared with desktop), sized
+       for mobile here. No clamp, no max-height: the screen scrolls, the card
+       doesn't need to. */
+    .m-dquestion { margin-top: 20px; border-top: 1px solid #2f5fa8; padding-top: 18px; }
+    .m-dquestion .decision-question { margin-top: 0; }
+    .m-dquestion .decision-question-heading { font-size: 18px; }
+    .m-dquestion .decision-question-body { font-size: 15px; line-height: 1.55; max-width: none; }
     .m-dtradeoff { margin-top: 12px; font-size: 12.5px; color: #37424c; line-height: 1.62; overflow-wrap: anywhere; }
     .m-dlimit { margin-top: 12px; font-size: 12px; line-height: 1.55; color: #5c6771; }
 

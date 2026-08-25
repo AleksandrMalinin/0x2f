@@ -86,6 +86,26 @@ When you finish, return the same markdown sections as the original task:
 // vocabulary is allowed to decide what counts as a change.
 const MUTATING = new Set(["Edit", "MultiEdit", "Write", "NotebookEdit"]);
 
+// Dogfooding found a FAILED task presenting a vendor 401 as if it were the
+// task's own breakage — the same words a person would see if they ran
+// `claude` in a terminal themselves, styled as an execution failure instead
+// of the "go run one command outside 0x2F" instruction it actually is. The
+// provider is the ONLY place vendor vocabulary is legal to read, so
+// classification happens here, once, from Claude Code's own failure text —
+// never in core or the UI. Only "auth" is classified today; anything else
+// stays unclassified and renders exactly as before.
+const AUTH_FAILURE_RE =
+  /\b401\b|unauthenticated|not authenticated|re-?authenticate|invalid api key|invalid x-api-key|authentication_error|oauth[^.\n]*(expired|invalid|revoked)/i;
+
+export function classifyClaudeFailure(text) {
+  if (AUTH_FAILURE_RE.test(String(text ?? ""))) {
+    // The one concrete, adapter-authored recovery step: shown verbatim by
+    // the UI, never composed or guessed at by a general surface.
+    return { kind: "auth", remedy: "claude /login" };
+  }
+  return null;
+}
+
 const CONTINUE_PROMPT = `Continue the task from where you left off.
 
 When you finish, return the same markdown sections as the original task:
@@ -199,12 +219,11 @@ function runClaude({ cwd, args, onEvent }) {
           reject(error);
         }
       } else if (code !== 0) {
-        resolve({
-          status: "failed",
-          error:
-            stderr.trim() ||
-            `claude exited with code ${code} before producing a result.`
-        });
+        const error =
+          stderr.trim() ||
+          `claude exited with code ${code} before producing a result.`;
+        const failure = classifyClaudeFailure(error);
+        resolve({ status: "failed", error, ...(failure ? { failure } : {}) });
       } else {
         resolve({
           status: "failed",
@@ -298,14 +317,17 @@ export function normalizeOutcome(result, { sessionId = null } = {}) {
     const errors = Array.isArray(result.errors)
       ? result.errors.join("; ")
       : "";
+    const error =
+      errors ||
+      (typeof result.result === "string" && result.result.trim()
+        ? result.result
+        : "Claude Code reported an execution error.");
+    const failure = classifyClaudeFailure(error);
     return {
       status: "failed",
       externalSessionId: result.session_id ?? sessionId,
-      error:
-        errors ||
-        (typeof result.result === "string" && result.result.trim()
-          ? result.result
-          : "Claude Code reported an execution error.")
+      error,
+      ...(failure ? { failure } : {})
     };
   }
 

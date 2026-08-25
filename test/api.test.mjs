@@ -284,6 +284,120 @@ test("GET / serves the 0x2F Web shell and its module assets", async () => {
   }
 });
 
+// --- workspace identity (dogfood review §02) --------------------------------
+//
+// Two 0x2F tabs against different repositories were visually identical: the
+// chrome answered "which machine" and never "which checkout". The client
+// needs the workspace label before its first paint (waiting for the first
+// /api/status poll would flicker the identity in exactly the moment it
+// matters), so GET / embeds it directly in the HTML instead of leaving the
+// client to fetch it.
+
+// A <meta> tag, not an inline <script>: this app's own CSP (below) is
+// `script-src 'self'` with no 'unsafe-inline' — an inline bootstrap script
+// would be silently blocked by the app's own security boundary and never
+// run (a real regression caught by hand: the value never reached
+// window.__X__, and only the async /api/status fallback papered over it —
+// exactly the flicker this feature exists to avoid).
+const BOOTSTRAP_META_RE = /<meta name="0x2f-bootstrap" content="([^"]*)">/;
+
+function unescapeAttr(value) {
+  return value.replace(/&quot;/g, '"').replace(/&lt;/g, "<").replace(/&amp;/g, "&");
+}
+
+test("GET / embeds the workspace label in a bootstrap <meta> tag the client can read before first paint", async () => {
+  const { base, handle } = await startTestServer();
+  try {
+    const page = await apiFetch(handle.url + "/");
+    const html = await page.text();
+    const expectedLabel = path.basename(base);
+
+    // Meta tags are parsed before ANY script (inline or module) runs, so
+    // ordering relative to the module script is not what guarantees no
+    // flicker here — presence and CSP-compliance are. Confirm both.
+    assert.match(html, /<meta name="0x2f-bootstrap" content="/, "the bootstrap meta tag must be present");
+    assert.doesNotMatch(
+      html,
+      /<script>\s*window\.__0X2F_BOOTSTRAP__/,
+      "must not regress to an inline script — this app's CSP (script-src 'self', no unsafe-inline) silently blocks it"
+    );
+
+    const match = html.match(BOOTSTRAP_META_RE);
+    assert.ok(match, "the bootstrap payload must be present as a meta content attribute");
+    const bootstrap = JSON.parse(unescapeAttr(match[1]));
+    assert.equal(bootstrap.workspace.label, expectedLabel);
+    assert.equal(bootstrap.workspace.path, base);
+    // The node label is a real machine identity (os.hostname()), not the
+    // browser's connection target — meaningless for "sign in on <node>".
+    assert.equal(typeof bootstrap.node, "string");
+    assert.ok(bootstrap.node.length > 0);
+  } finally {
+    await handle.close();
+    await fs.rm(base, { recursive: true, force: true });
+  }
+});
+
+test("the bootstrap meta tag survives this server's own CSP — a real browser would actually read it", async () => {
+  // The regression this test exists to catch: a payload that is PRESENT in
+  // the HTML but unreachable at runtime because the response's own
+  // Content-Security-Policy header refuses to execute it. A <meta> tag is
+  // plain markup — nothing here needs a script-src exception at all — but
+  // if a future change put this back behind an inline <script>, this test
+  // fails even though "GET / embeds..." above would still pass.
+  const { base, handle } = await startTestServer();
+  try {
+    const page = await apiFetch(handle.url + "/");
+    const csp = page.headers.get("content-security-policy") ?? "";
+    assert.match(csp, /script-src 'self'/);
+    assert.doesNotMatch(csp, /unsafe-inline/, "no CSP exception exists for inline scripts");
+    const html = await page.text();
+    assert.doesNotMatch(html, /<script>(?!<\/script>)[^<]/, "no inline script content — everything executable is `src=`-loaded");
+  } finally {
+    await handle.close();
+    await fs.rm(base, { recursive: true, force: true });
+  }
+});
+
+test("GET /api/status also carries workspace + node (symmetry with the bootstrap payload)", async () => {
+  const { base, handle } = await startTestServer();
+  try {
+    const res = await apiFetch(handle.url + "/api/status");
+    const status = await res.json();
+    assert.equal(status.workspace.label, path.basename(base));
+    assert.equal(status.workspace.path, base);
+    assert.equal(typeof status.node, "string");
+    assert.ok(status.node.length > 0);
+  } finally {
+    await handle.close();
+    await fs.rm(base, { recursive: true, force: true });
+  }
+});
+
+test("a workspace directory name that could break out of the meta attribute is escaped safely", async () => {
+  // A directory basename is attacker-influenced on a shared machine; the
+  // bootstrap must never let it close the meta tag or inject a new attribute
+  // early via an embedded quote or angle bracket.
+  const parent = await fs.mkdtemp(path.join(os.tmpdir(), "work-api-"));
+  const trickyBase = path.join(parent, '"><script>window.pwned=1</script><meta x="');
+  await fs.mkdir(trickyBase, { recursive: true });
+  const node = fakeNode();
+  const runtime = createRuntime(trickyBase, { node });
+  const handle = await startServer(trickyBase, 0, { runtime, interval: 20, authToken: TEST_AUTH_TOKEN });
+  try {
+    const html = await apiFetch(handle.url + "/").then(r => r.text());
+    // No literal, unescaped '>' inside the injected attribute value — the
+    // hostile basename must not be able to close the tag early.
+    const match = html.match(BOOTSTRAP_META_RE);
+    assert.ok(match, "the meta tag must still be present and well-formed despite the hostile basename");
+    assert.doesNotMatch(html, /<script>window\.pwned/, "the payload must never execute as a script");
+    const parsed = JSON.parse(unescapeAttr(match[1])); // must not throw
+    assert.ok(parsed.workspace.label.includes("script"));
+  } finally {
+    await handle.close();
+    await fs.rm(parent, { recursive: true, force: true });
+  }
+});
+
 test("the browser client's full module graph is served (no blank-page regressions)", async () => {
   const { base, handle } = await startTestServer();
   try {

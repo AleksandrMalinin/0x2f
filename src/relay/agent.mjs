@@ -32,6 +32,7 @@
 //   ack cache    <workspace>/.work/relay-acks.json  (mode 0600)
 
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
 import { WebSocket } from "ws";
@@ -510,6 +511,11 @@ export function createRelayAgent({
       providers: currentProviders(),
       routing: currentRouting(),
       base: runtime.store.base,
+      // §01/§02: the same machine identity the local runtime shows —
+      // preferring the name the user set at pairing time (cfg.agentName,
+      // which itself defaults to os.hostname() — see pair.mjs), falling back
+      // to this process's own hostname when no config is loaded yet.
+      node: cfg?.agentName ?? os.hostname?.() ?? null,
       serverTime: Date.now()
     });
   }

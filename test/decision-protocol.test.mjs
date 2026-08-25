@@ -116,13 +116,62 @@ test("the signal is case-insensitive; keys may be lowercase", () => {
   );
 });
 
-test("a long question is capped, never dropped", () => {
-  const question = "q".repeat(500) + "?";
+test("a long question is capped at a generous storage guard (4000), never dropped", () => {
+  // Well past the old 400-char cut but nowhere near a real question's length
+  // — this is a storage guard, not a display decision (see §03 of the
+  // dogfood review: the display layer must never re-clip this).
+  const question = "q".repeat(5000) + "?";
   const section = decisionSection(
     `## Needs human decision\nREQUIRED: yes\nQUESTION: ${question}`
   );
   assert.ok(section.length < question.length);
+  assert.equal(section.length, 4001); // 4000 chars + the truncation marker
   assert.match(section, /q+…/);
+});
+
+test("a question well under the storage guard is never truncated", () => {
+  const question = "q".repeat(3999) + "?"; // 4000 chars, exactly at the bound
+  const section = decisionSection(
+    `## Needs human decision\nREQUIRED: yes\nQUESTION: ${question}`
+  );
+  assert.equal(section, question);
+});
+
+// REGRESSION (dogfood review §03): the parser used to capture only
+// QUESTION:'s first line (a single-line regex) and then flatten every
+// newline in the whole question to a single space — a multi-paragraph
+// question (the concrete question plus the tradeoff that makes it
+// non-obvious, exactly the shape the agent is asked to write) silently lost
+// everything past its first line before any surface had a chance to show it.
+test("a multi-paragraph question after QUESTION: is preserved verbatim, newlines and all", () => {
+  const text =
+    "## Result\ninvestigated\n\n## Needs human decision\nREQUIRED: yes\n" +
+    "QUESTION: Should the retry budget be per-run or per-task?\n\n" +
+    "Run 2 restarted the whole pipeline because the budget is attached to " +
+    "the run record. Making it per-task caps total work but breaks handoff.\n\n" +
+    "I cannot pick this without knowing whether provider handoff is normal.";
+  const section = decisionSection(text);
+  assert.equal(
+    section,
+    "Should the retry budget be per-run or per-task?\n\n" +
+      "Run 2 restarted the whole pipeline because the budget is attached to " +
+      "the run record. Making it per-task caps total work but breaks handoff.\n\n" +
+      "I cannot pick this without knowing whether provider handoff is normal."
+  );
+});
+
+// The same regression for the no-QUESTION:-field fallback path: paragraph
+// breaks (blank lines) must survive, not collapse into one run-on sentence.
+test("a multi-paragraph question with no QUESTION: field keeps its paragraph breaks", () => {
+  const text =
+    "## Needs human decision\nREQUIRED: yes\n" +
+    "Which backend should we standardize on?\n\n" +
+    "Postgres is already used elsewhere; SQLite would need no new infra.";
+  assert.equal(
+    decisionSection(text),
+    "Which backend should we standardize on?\n\n" +
+      "Postgres is already used elsewhere; SQLite would need no new infra."
+  );
 });
 
 test("a decision block is the LAST section: later ## headings bound it", () => {

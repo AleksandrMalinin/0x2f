@@ -66,6 +66,7 @@
 
 import http from "node:http";
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
 import { URL } from "node:url";
@@ -234,6 +235,65 @@ function requireAuth(req, res, token) {
 
 async function readAsset(name) {
   return fs.readFile(new URL("./" + name, import.meta.url), "utf8");
+}
+
+// --- workspace identity (dogfood review §02) --------------------------------
+//
+// The chrome already answers "which machine" (the runtime host) and never
+// answered "which checkout" — two 0x2F tabs against different repositories
+// are visually identical. `base` was already returned by /api/status, but
+// nothing rendered it. `label` is the basename the client displays; `path`
+// is the full absolute path, used ONLY as a local `title` attribute (never
+// sent to the relay — see src/relay/project.mjs, which deliberately strips
+// `base` from every remote payload).
+function deriveWorkspace(base) {
+  const label = path.basename(base) || base;
+  return { label, path: base };
+}
+
+// "Which machine" for a message that must say so ("<provider> needs to be
+// re-authenticated on <node>" — §01). os.hostname() works with no pairing
+// required, unlike the paired-only relay agent name (src/relay/pair.mjs),
+// so a purely local, never-paired runtime still gets a real machine name
+// instead of the browser's connection target (which is meaningless here —
+// 127.0.0.1 is not a machine identity).
+function localNodeLabel() {
+  try {
+    return os.hostname() || "this machine";
+  } catch {
+    return "this machine";
+  }
+}
+
+// The Web shell, with the workspace/node bootstrap injected. The client
+// needs the workspace label before its first paint — waiting for the first
+// /api/status poll would flicker the identity in exactly the moment it is
+// needed — so it is embedded directly in the HTML response, alongside the
+// auth cookie, rather than fetched.
+//
+// A <meta> tag, not an inline <script>: the CSP this server sends is
+// deliberately `script-src 'self'` with no 'unsafe-inline' (see CSP below) —
+// an inline bootstrap script would be silently blocked by the app's own
+// security boundary and never run. A meta tag is plain markup, not
+// executable content, so it needs no CSP exception; app.js reads it
+// synchronously from `document` before its first render. The content
+// attribute is HTML-escaped by the same `el()`-style rule the rest of the
+// client follows — quotes and `<`/`&` cannot break out of the attribute.
+function escapeAttr(value) {
+  return String(value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/"/g, "&quot;");
+}
+
+async function readShell(base) {
+  const html = await readAsset(ASSETS["/"][0]);
+  const bootstrap = JSON.stringify({
+    workspace: deriveWorkspace(base),
+    node: localNodeLabel()
+  });
+  const meta = `<meta name="0x2f-bootstrap" content="${escapeAttr(bootstrap)}">`;
+  return html.replace("</head>", `${meta}\n</head>`);
 }
 
 async function readBody(req, maxBytes = MAX_BODY_BYTES) {
@@ -423,7 +483,7 @@ export async function startServer(base = process.cwd(), port = 4242, opts = {}) 
           "set-cookie":
             `${AUTH_COOKIE}=${authToken}; Path=/; HttpOnly; SameSite=Strict`
         });
-        res.end(await readAsset(name));
+        res.end(await readShell(store.base));
         return;
       }
 
@@ -456,7 +516,13 @@ export async function startServer(base = process.cwd(), port = 4242, opts = {}) 
       // the web client can tell where it is running and disable actions when
       // the Mac cannot be reached.
       if (req.method === "GET" && url.pathname === "/api/status") {
-        json(res, { mode: "local", mac: "online", base: store.base });
+        json(res, {
+          mode: "local",
+          mac: "online",
+          base: store.base,
+          workspace: deriveWorkspace(store.base),
+          node: localNodeLabel()
+        });
         return;
       }
 

@@ -79,6 +79,28 @@ function persistFlag(key, value) {
   }
 }
 
+// §02: the workspace identity, read synchronously at module load — BEFORE
+// the first render() call at the bottom of this file — from the <meta
+// name="0x2f-bootstrap"> tag the server embeds directly in the HTML
+// (src/server.mjs). A <meta> tag, not window.__X__ set by an inline
+// <script>: this app's own CSP is `script-src 'self'` with no
+// 'unsafe-inline', so an inline bootstrap script would be silently blocked
+// by the app's own security boundary and never run — plain markup needs no
+// exception. Waiting for the first /api/status poll instead would flicker
+// the identity in exactly the moment it matters (two tabs against different
+// repositories are otherwise visually identical). Absent in REMOTE mode (the
+// client is served by a static origin, not this server) — populated there
+// from the Mac's snapshot once it arrives (see applySnapshot below).
+function readBootstrap() {
+  try {
+    const content = document.querySelector('meta[name="0x2f-bootstrap"]')?.content;
+    return content ? JSON.parse(content) : null;
+  } catch {
+    return null; // malformed/absent — the checkStatus() fallback fills in later
+  }
+}
+const bootstrap = readBootstrap();
+
 const state = {
   tasks: [],
   eventsByTask: new Map(),
@@ -95,6 +117,13 @@ const state = {
   connected: false,
   width: window.innerWidth,
   base: "",
+  // { label, path } | null. `label` is what renders; `path` is a local
+  // `title` attribute only — never sent anywhere (see relay/project.mjs).
+  workspace: bootstrap?.workspace ?? null,
+  // "Which machine" — os.hostname() locally, the paired Mac's agent name
+  // remotely. Used identically by the chrome mark and by the provider
+  // failure band (§01: "<provider> is not authenticated on <node>").
+  node: bootstrap?.node ?? null,
   // Remote mode (the client is served by the 0x2F Relay): `macOnline` tracks
   // whether the Mac itself is reachable — distinct from `connected`, which
   // only says the SSE stream to whatever server served this page is alive.
@@ -108,6 +137,13 @@ const state = {
   // re-renders the ledger; a re-render must never drop a half-typed answer).
   answers: new Map()
 };
+
+// §02: the tab strip and the ⌘~ switcher are where the wrong-repo mistake is
+// actually made, before the ledger itself is even looked at.
+function setWorkspaceTitle() {
+  document.title = state.workspace?.label ? state.workspace.label + " · 0x2F" : "0x2F";
+}
+setWorkspaceTitle();
 
 // --- tiny DOM helper -------------------------------------------------------
 
@@ -269,6 +305,15 @@ async function checkStatus() {
   }
   const remote = remoteClient ? true : info?.mode === "relay";
   const macOnline = remote ? info?.mac === "online" : true;
+  // Defensive fallback only: LOCAL mode already has the workspace/node from
+  // the bootstrap payload before first paint (see `bootstrap` above) — this
+  // just fills them in if that ever came back empty, so the mark degrades
+  // instead of staying blank forever.
+  if (!remote) {
+    if (!state.workspace && info?.workspace) state.workspace = info.workspace;
+    if (!state.node && info?.node) state.node = info.node;
+    setWorkspaceTitle();
+  }
   // Remembers the moment the Mac went unreachable, purely for the mobile
   // Attention Stack's "LAST KNOWN ..." labelling — it freezes elapsed clocks
   // against this timestamp instead of the live one (see renderMobile).
@@ -439,6 +484,12 @@ function applySnapshot(snap) {
     for (const event of events) recordEvent({ ...event, taskId: Number(id) });
   }
   if (Array.isArray(snap.providers)) state.providers = snap.providers;
+  // §02: REMOTE mode has no server-injected bootstrap (the client is served
+  // by a static origin, not the Mac) — the workspace/node identity arrives
+  // here instead, on first connect and every reconnect.
+  if (snap.workspace) state.workspace = snap.workspace;
+  if (snap.node) state.node = snap.node;
+  setWorkspaceTitle();
   // Halted tasks open themselves; make sure the one on screen has its result.
   const halted = state.tasks.find(t => t.status === "needs_you");
   if (halted && state.selectedId === null) state.selectedId = halted.id;
@@ -449,6 +500,8 @@ function applySnapshot(snap) {
 function persistRemoteCache() {
   if (!remoteClient) return;
   remoteClient.persistCache({
+    workspace: state.workspace,
+    node: state.node,
     tasks: state.tasks,
     eventsByTask: Object.fromEntries(state.eventsByTask),
     providers: state.providers
@@ -918,6 +971,24 @@ function closeButton(id) {
   }, "close-" + id);
 }
 
+// §03: the decision question is prose, not a label — a blocking question is
+// the one thing on screen allowed to be as long as it is. The first sentence
+// renders plain as a heading (the same split the agent's own writing
+// already has: a concrete question, then the tradeoff that makes it
+// non-obvious); everything after it renders through the shared rich-text
+// subset (paragraphs, lists, inline code, fenced code survive). No clamp, no
+// max-height, no break-all — the card grows with the question. Shared by the
+// desktop card and the mobile detail screen so the two never drift.
+function renderDecisionQuestion(row) {
+  if (!row.permQuestionHeading) return null;
+  return el("div", { class: "decision-question" }, [
+    el("div", { class: "decision-question-heading", text: row.permQuestionHeading }),
+    row.permQuestionBody
+      ? el("div", { class: "decision-question-body" }, [richBody(row.permQuestionBody)])
+      : null
+  ].filter(Boolean));
+}
+
 // A needs_you/decision block: the agent cannot continue without the human's
 // judgment. The question is shown and the human ANSWERS — there is no
 // ALLOW/REJECT here, those verbs belong to permissions. Answering and
@@ -997,9 +1068,7 @@ function renderDecisionCard(row, accent) {
     [
       el("div", { class: "halt-kind", style: { color: accent }, text: "DECISION REQUIRED" }),
       el("div", { class: "halt-verb", text: "the agent cannot continue without your answer" }),
-      row.permWhy
-        ? el("div", { class: "halt-path decision-question" }, inlineEls(parseInline(row.permWhy)))
-        : null,
+      renderDecisionQuestion(row),
       !resumable
         ? el("div", {
             class: "decision-limitation",
@@ -1141,7 +1210,56 @@ function renderSections(row) {
   return parts.length ? el("div", { class: "bands" }, parts) : null;
 }
 
+// §01: a provider-not-authenticated stop is not a task breakage. The band
+// spends its space on the four things the user needs — which provider,
+// where to fix it (outside 0x2F), what survives, how to continue — instead
+// of the vendor's error string standing in as the whole story. The vendor
+// text is kept, demoted to "<PROVIDER> SAID", never discarded. RETRY (not
+// SEND BACK) because the intent hasn't changed: 0x2F re-runs the same task
+// rather than sending anything back to the agent.
+function renderFailureBand(row) {
+  const copy = row.failureCopy;
+  const said = (row.failureProviderName || "the provider").toUpperCase() + " SAID";
+  return el("div", { class: "result" }, [
+    el("div", {}, [el("div", { class: "result-k", style: { color: COLORS.fail }, text: "AUTHENTICATION" })]),
+    el(
+      "div",
+      { class: "band-right" },
+      [
+        el(
+          "div",
+          { class: "failure-band" },
+          [
+            el("div", { class: "failure-sentence", text: copy.sentence }),
+            copy.hintLabel
+              ? el("div", { class: "failure-hint-wrap" }, [
+                  el("div", { class: "failure-hint-label", text: copy.hintLabel }),
+                  el("div", { class: "failure-hint", text: copy.hint })
+                ])
+              : null,
+            el("div", { class: "failure-instruction", text: copy.instruction }),
+            el("div", { class: "failure-said" }, [
+              el("div", { class: "failure-said-label", text: said }),
+              el("div", { class: "failure-said-body" }, [richBody(row.error)])
+            ])
+          ].filter(Boolean)
+        ),
+        el("div", { class: "acts" }, [
+          actionButton("RETRY", "S", "act-primary", e => {
+            e.stopPropagation();
+            e.currentTarget.disabled = true;
+            sendBack(row.id).finally(() => render());
+          }, "retry-" + row.id),
+          closeButton(row.id)
+        ])
+      ]
+    )
+  ]);
+}
+
 function renderResult(row, detail) {
+  if (row.failed && row.failureKind === "auth") return renderFailureBand(row);
+
   const body = detail && detail.result && detail.result.trim()
     ? el("div", { class: "result-body" }, [richBody(detail.result.trim())])
     : row.error
@@ -1368,12 +1486,22 @@ function renderChrome(ledger, accent) {
       el("div", { class: "brand" }, [
         el("span", { class: "brand-mark", text: "0x2F" }),
         el("span", { class: slashClass, style: slashDelay ? { animationDelay: slashDelay } : {}, text: "/" }),
+        // §02: the mark completes the path it was already drawing — "0x2F /
+        // <workspace>" — instead of ending at the slash with nothing after
+        // it. Full absolute path on hover (native title), never printed.
+        state.workspace?.label
+          ? el("span", { class: "brand-workspace", title: state.workspace.path || "", text: state.workspace.label })
+          : null,
         el("span", { class: "brand-scope", text: state.remote ? "REMOTE" : "LOCAL" }),
         el("span", { class: "chrome-div" }),
         el("span", { class: "runtime" }, [
           el("span", { class: "runtime-label", text: "RUNTIME" }),
           el("span", { class: "runtime-dot" + (state.connected ? "" : " off") }),
-          el("span", { class: "runtime-host", text: location.host })
+          // The same machine identity used everywhere else (§01's failure
+          // band, the mobile bar): os.hostname() locally, the paired Mac's
+          // agent name remotely — falling back to the connection target only
+          // if that identity hasn't arrived yet.
+          el("span", { class: "runtime-host", text: state.node || location.host })
         ])
       ]),
       el("div", { class: "chrome-settings" }, [
@@ -1487,21 +1615,36 @@ function buildComposer() {
     const startKey = multiline ? (mac() ? "⌘↵" : "^↵") : "↵";
     startKeyEl.textContent = startKey;
 
-    let hintText = "BACKGROUND JOB";
+    let hintNodes = ["BACKGROUND JOB"];
     let hintClass = "composer-hint";
     if (refining) {
-      hintText = "REVISING… 0:" + two(refineElapsedSec) + "   ESC CANCEL";
+      hintNodes = ["REVISING… 0:" + two(refineElapsedSec) + "   ESC CANCEL"];
       hintClass = "composer-hint refining";
     } else if (refineError) {
-      hintText = refineError;
+      hintNodes = [refineError];
       hintClass = "composer-hint error";
     } else if (revised && !dirtySinceRefine) {
-      hintText = "REVISED · REVIEW AND START";
+      hintNodes = ["REVISED · REVIEW AND START"];
     } else if (armed) {
-      hintText = startKey + " START";
-      hintClass = "composer-hint armed";
+      // §02: the moment right before START is the moment that would have
+      // prevented the dogfood incident — the destination read in the same
+      // saccade as the intent being typed. This replaces the keyboard tip
+      // that used to occupy this slot; the shortcut itself stays visible on
+      // the START button (startKeyEl), so nothing is actually lost.
+      if (state.workspace?.label) {
+        hintClass = "composer-hint workspace";
+        hintNodes = [
+          "RUNS IN ",
+          el("span", { class: "composer-hint-emph", text: state.workspace.label }),
+          state.node ? " ON " + state.node : ""
+        ];
+      } else {
+        hintClass = "composer-hint armed";
+        hintNodes = [startKey + " START"];
+      }
     }
-    composerHint.textContent = hintText;
+    composerHint.textContent = "";
+    composerHint.append(...hintNodes);
     composerHint.className = hintClass;
 
     const showMeta = !refining && multiline && !narrow;
@@ -1857,6 +2000,10 @@ function currentLedger(now = Date.now()) {
     mid: state.width >= 900,
     accent: COLORS.accent,
     base: state.base,
+    // §01: the same machine identity the chrome mark and mobile bar show —
+    // threaded through so ledger.mjs (DOM-free, testable) can compose
+    // "<provider> is not authenticated on <node>" without importing the DOM.
+    node: state.node || location.host,
     // Declared provider capabilities drive progressive fidelity. Keyed by
     // id so a new provider needs no client change.
     providers: Object.fromEntries(state.providers.map(p => [p.id, p]))
@@ -2268,13 +2415,19 @@ function mobileTraceEls(cells, frozen) {
 // --- mobile chrome -----------------------------------------------------------
 
 function renderMobileBar(frozen) {
+  // §02: project takes the bright slot, host drops to the dim one — on the
+  // phone you are always somewhere else, so "which repo" outranks "which
+  // Mac" (see renderChrome's desktop equivalent).
   return el("div", { class: "m-bar" }, [
     el("div", { class: "m-bar-inner" }, [
       el("span", { class: "m-mark", text: "0x2F" }),
       el("span", { class: "m-slash", text: "/" }),
+      state.workspace?.label
+        ? el("span", { class: "m-workspace", title: state.workspace.path || "", text: state.workspace.label })
+        : null,
       el("span", { class: "m-bar-spacer" }),
       el("span", { class: "m-dot" + (frozen ? " off" : "") }),
-      el("span", { class: "m-host" + (frozen ? " dim" : ""), text: location.host })
+      el("span", { class: "m-host" + (frozen ? " dim" : ""), text: state.node || location.host })
     ])
   ]);
 }
@@ -2376,15 +2529,22 @@ function renderMobileAskCard(row, frozen) {
 // renders this way, even when it is the only one — answering it needs more
 // room than a line, so it opens Task Detail rather than expanding in place.
 function renderMobileAskLine(row, frozen) {
-  const kind = row.permType === "decision" ? "NEEDS YOU · DECISION" : "NEEDS YOU";
-  const preview = row.permType === "decision" ? row.permWhy : row.permPath ? "wants to modify " + row.permPath : row.permWhy;
+  const isDecision = row.permType === "decision";
+  const kind = isDecision ? "NEEDS YOU · DECISION" : "NEEDS YOU";
+  // §03: a decision ask promotes the QUESTION's first sentence over the task
+  // title — the title is the disambiguator, the question is the decision —
+  // and the line wraps to at most two lines instead of clipping mid-sentence
+  // (see .m-ask-line-title in app.css). Every other halt is unchanged: the
+  // task title stays primary, "wants to modify X" (or the raw why) previews.
+  const primaryText = isDecision && row.permQuestionHeading ? row.permQuestionHeading : row.title;
+  const preview = isDecision ? row.title : row.permPath ? "wants to modify " + row.permPath : row.permWhy;
   return el(
     "div",
     { class: "m-ask-line", onClick: frozen ? null : () => openMobileDetail(row.id) },
     [
       el("div", { class: "m-ask-line-body" }, [
         el("span", { class: "m-ask-line-kind", text: kind }),
-        el("div", { class: "m-ask-line-title" }, inlineEls(parseInline(row.title))),
+        el("div", { class: "m-ask-line-title" }, inlineEls(parseInline(primaryText))),
         preview ? el("div", { class: "m-ask-line-preview", text: preview }) : null
       ]),
       el("span", { class: "m-ask-line-t", text: row.elapsed }),
@@ -2426,13 +2586,22 @@ function renderMobileReadyRow(row) {
 }
 
 function renderMobileFailedRow(row) {
+  // §01: the same one-line auth sentence ledger.mjs composes for the desktop
+  // compact row and the status-line `arg` — parameterised identically by
+  // provider display name and node, plus " · task kept" (mobile-only, the
+  // one thing this row adds).
+  const isAuth = row.failureKind === "auth";
   return el("div", { class: "m-row-tap", onClick: () => openMobileDetail(row.id) }, [
     el("div", { class: "m-row-head" }, [
-      el("span", { class: "m-row-state", text: "FAILED" }),
+      el("span", { class: "m-row-state", text: isAuth ? "FAILED · SIGN IN NEEDED" : "FAILED" }),
       el("span", { class: "m-row-t", text: row.elapsed })
     ]),
     el("div", { class: "m-row-title" }, inlineEls(parseInline(row.title))),
-    el("div", { class: "m-row-sub-muted", style: { marginTop: "9px" }, text: row.sub || "execution failed" })
+    el("div", {
+      class: "m-row-sub-muted",
+      style: { marginTop: "9px" },
+      text: (row.sub || "execution failed") + (isAuth ? " · task kept" : "")
+    })
   ]);
 }
 
@@ -2633,7 +2802,7 @@ function renderMobileDecisionContent(row) {
   });
 
   return el("div", {}, [
-    row.permWhy ? el("div", { class: "m-dquestion" }, inlineEls(parseInline(row.permWhy))) : null,
+    row.permQuestionHeading ? el("div", { class: "m-dquestion" }, [renderDecisionQuestion(row)]) : null,
     !resumable
       ? el("div", {
           class: "m-dlimit",
@@ -2721,6 +2890,34 @@ function renderMobileDetailContent(row, detail, accent, frozen) {
       parts.push(el("div", { class: "m-dsection" }, [renderProvenance(row, accent)]));
     }
     parts.push(renderMobileRunHistory(row, detail, accent));
+  } else if (row.failed && row.failureKind === "auth") {
+    // §01: the same generic copy the desktop failure band shows — which
+    // provider, where to fix it, what survives, how to continue — instead
+    // of the raw vendor text standing in as the whole story.
+    const copy = row.failureCopy;
+    const said = (row.failureProviderName || "the provider").toUpperCase() + " SAID";
+    parts.push(
+      el("div", { class: "m-dsection first" }, [
+        el("div", { class: "m-dsection-k strong", text: "AUTHENTICATION" }),
+        el("div", { class: "m-dmeta", style: { marginTop: "10px", fontSize: "14.5px", color: COLORS.ink }, text: copy.sentence }),
+        copy.hintLabel
+          ? el("div", { class: "m-dmeta", style: { marginTop: "10px", fontSize: "11px", letterSpacing: ".14em", color: COLORS.muted }, text: copy.hintLabel })
+          : null,
+        copy.hint ? el("div", { class: "m-dpre", style: { marginTop: "6px" }, text: copy.hint }) : null,
+        el("div", { class: "m-dmeta", style: { marginTop: "12px", fontSize: "13px" }, text: copy.instruction })
+      ].filter(Boolean))
+    );
+    parts.push(
+      el("div", { class: "m-dsection" }, [
+        el("div", { class: "m-dsection-k strong", text: said }),
+        el("div", { class: "m-dpre", text: row.error || "Execution failed" })
+      ])
+    );
+    parts.push(renderMobileFilesBox(row));
+    if (row.provenance?.total > 0) {
+      parts.push(el("div", { class: "m-dsection" }, [renderProvenance(row, accent)]));
+    }
+    parts.push(renderMobileRunHistory(row, detail, accent));
   } else if (row.failed) {
     parts.push(el("div", { class: "m-dmeta", style: { marginTop: "14px", fontSize: "12.5px" }, text: "Run stopped. The Task is still open — nothing was reverted." }));
     parts.push(
@@ -2802,6 +2999,23 @@ function renderMobileActionBar(row, frozen) {
     const correctBtn = el("button", { class: "m-abar-btn m-abar-secondary", text: "CORRECT" });
     correctBtn.addEventListener("click", () => openCorrection(row.id));
     return el("div", { class: "m-abar" }, [el("div", { class: "m-abar-row" }, [acceptBtn, correctBtn])]);
+  }
+  if (row.failed && row.failureKind === "auth") {
+    // §01: RETRY, not RUN AGAIN/CORRECT — the intent hasn't changed, there is
+    // nothing to correct, only the provider's own sign-in needs fixing
+    // outside 0x2F. CLOSE replaces CORRECT: the same rerun action, honest
+    // labels.
+    const retryBtn = el("button", { class: "m-abar-btn m-abar-primary", text: "RETRY" });
+    retryBtn.addEventListener("click", () => {
+      retryBtn.disabled = true;
+      sendBack(row.id).finally(() => render());
+    });
+    const closeBtn = el("button", { class: "m-abar-btn m-abar-secondary", text: "CLOSE" });
+    closeBtn.addEventListener("click", () => {
+      closeBtn.disabled = true;
+      close(row.id);
+    });
+    return el("div", { class: "m-abar" }, [el("div", { class: "m-abar-row" }, [retryBtn, closeBtn])]);
   }
   if (row.failed) {
     const runBtn = el("button", { class: "m-abar-btn m-abar-primary", text: "RUN AGAIN" });

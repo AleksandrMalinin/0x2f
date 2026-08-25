@@ -713,6 +713,77 @@ export function relativePath(base, file) {
   return file.startsWith(prefix) ? file.slice(prefix.length) : file;
 }
 
+// --- the decision question (§03) --------------------------------------------
+//
+// A blocking question is prose, not a label: the heading is its first
+// sentence (the same split the agent's own writing already has — a concrete
+// question, then the tradeoff that makes it non-obvious), and everything
+// after that renders as body prose through the shared rich-text subset. A
+// one-line question renders as heading only — this is a render-time
+// derivation, never a stored value, so raising the storage cap (see
+// core/lifecycle.mjs) needed no migration here.
+const SENTENCE_END_RE = /^(.+?[.?!])(\s|$)/s;
+
+export function firstSentence(text) {
+  const s = String(text ?? "").trim();
+  const m = s.match(SENTENCE_END_RE);
+  return m ? m[1] : s;
+}
+
+// The prose after the first sentence — "" for a one-line question, which
+// callers treat as "heading only, no body".
+export function restAfterFirstSentence(text) {
+  const s = String(text ?? "").trim();
+  const heading = firstSentence(s);
+  return s.slice(heading.length).trim();
+}
+
+// --- provider failure classification (§01) ----------------------------------
+//
+// A failure is classified at the provider boundary (task.failure.kind, set
+// by the adapter — see core/lifecycle.mjs) or, for legacy tasks and adapters
+// that predate the field, conservatively inferred here from the stored error
+// text. Inference lives ONLY at projection time, never in the adapter
+// contract, so no migration of persisted tasks is ever needed. Only "auth"
+// changes presentation today.
+const AUTH_INFERENCE_RE =
+  /\b401\b|unauthenticated|not authenticated|re-?authenticate|invalid api key|invalid x-api-key|authentication_error|oauth[^.\n]*(expired|invalid|revoked)/i;
+
+export function inferFailureKind(task) {
+  if (task?.failure?.kind) return task.failure.kind;
+  if (AUTH_INFERENCE_RE.test(task?.error ?? "")) return "auth";
+  return null;
+}
+
+// The failure band's copy for a provider-not-authenticated stop: one string
+// built from exactly the provider's display name and the node label —
+// nothing provider-shaped reaches the caller. `remedy` is optional,
+// adapter-authored, shown verbatim in its own slot (or the slot is omitted
+// and a generic sign-in instruction names the provider and the machine
+// instead — a third-party manifest provider gets a comprehensible state
+// without 0x2F knowing anything about how it authenticates).
+export function authFailureCopy(providerDisplayName, node, remedy) {
+  const who = providerDisplayName || "This provider";
+  const where = node || "this machine";
+  return {
+    sentence: who + "'s authentication is no longer valid. 0x2F cannot authenticate a provider for you.",
+    hintLabel: remedy ? "ON " + where.toUpperCase() : null,
+    hint: remedy || null,
+    instruction: remedy
+      ? "The task and its runs are kept. Re-authenticate, then RETRY."
+      : "Sign in to " + who + " on " + where + ", then RETRY. The task and its runs are kept."
+  };
+}
+
+// The one-line summary used identically wherever a failure reads as a single
+// row/line — the desktop compact row, the status-line `arg`, and the mobile
+// row (which appends " · task kept" itself, nothing else): parameterised by
+// exactly the provider display name and the node, never provider vocabulary.
+export function authFailureLine(providerDisplayName, node) {
+  const who = (providerDisplayName || "this provider").toLowerCase();
+  return node ? who + " is not authenticated on " + node : who + " is not authenticated";
+}
+
 // --- run history ------------------------------------------------------------
 //
 // A task can hold several runs (same intent, different providers). Run-level
@@ -787,12 +858,18 @@ export function projectRow(task, events, opts = {}) {
     mid = true,
     accent = COLORS.accent,
     base = "",
-    providers = {}
+    providers = {},
+    // "Which machine" — the same identity the chrome mark already shows
+    // (os.hostname() locally, the paired Mac's agent name remotely). Passed
+    // in rather than read here so this module stays DOM-free and testable.
+    node = ""
   } = opts;
 
   const capabilities = providers[task.execution?.provider]?.capabilities ?? {};
   const level = fidelity(task.execution?.provider, providers);
   const coarse = level === "coarse";
+  const providerDisplayName =
+    providers[task.execution?.provider]?.displayName ?? task.execution?.provider ?? "";
 
   const { origin, lastAt, steps, activity, sessionId } = toSteps(task, events, { base });
 
@@ -875,6 +952,20 @@ export function projectRow(task, events, opts = {}) {
   const stateLabel = STATE_LABELS[task.status] ?? String(task.status).toUpperCase();
   const stateColor = halted ? accent : failedStatus ? COLORS.fail : done ? COLORS.muted : COLORS.ink;
 
+  // §01: a provider-not-authenticated stop is not a task breakage — 0x2F
+  // shows what it knows (which provider, where to fix it, what survives)
+  // instead of the vendor's error string standing in as the whole story.
+  // Only "auth" changes anything below; every other/absent kind renders
+  // exactly as before.
+  const failureKind = failedStatus ? inferFailureKind(task) : null;
+  const failureRemedy = failedStatus ? task.failure?.remedy ?? null : null;
+  const failureCopy =
+    failedStatus && failureKind === "auth"
+      ? authFailureCopy(providerDisplayName, node, failureRemedy)
+      : null;
+  const failureLine =
+    failedStatus && failureKind === "auth" ? authFailureLine(providerDisplayName, node) : null;
+
   let phaseLabel = "";
   let arg = "";
   if (halted) {
@@ -889,8 +980,8 @@ export function projectRow(task, events, opts = {}) {
     phaseLabel = "CLOSED";
     arg = task.error ?? "";
   } else if (failedStatus) {
-    phaseLabel = "FAILED AT";
-    arg = task.error ?? "Execution failed";
+    phaseLabel = failureLine ? "STOPPED AT" : "FAILED AT";
+    arg = failureLine || task.error || "Execution failed";
   } else {
     // No phase to report — the current activity line (or the last observed
     // step) is the honest thing to show here, never an inferred stage.
@@ -907,7 +998,7 @@ export function projectRow(task, events, opts = {}) {
   // padding must be non-breaking: CSS collapses plain spaces (white-space:
   // nowrap still collapses), which would silently undo the fixed width.
   if (done) sub = "closed · " + fmtDuration(elapsed / 1000).padStart(7, " ");
-  else if (failedStatus) sub = task.error ?? "failed";
+  else if (failedStatus) sub = failureLine || task.error || "failed";
   else if (ready) {
     sub = filesSection
       ? filesSection.paths.length + (filesSection.paths.length === 1 ? " file" : " files") + " · ready for you"
@@ -988,6 +1079,15 @@ export function projectRow(task, events, opts = {}) {
       task.blockedOn?.text ||
       task.blockedOn?.description ||
       "",
+    // §03: a decision question is prose, not a label. The heading is its
+    // first sentence (rendered plain, at heading size); the body is
+    // everything after it, rendered through the shared rich-text subset —
+    // never truncated, never break-all (see app.css). A one-line question
+    // has an empty body: callers render heading-only.
+    permQuestionHeading:
+      task.blockedOn?.type === "decision" ? firstSentence(task.blockedOn?.text) : "",
+    permQuestionBody:
+      task.blockedOn?.type === "decision" ? restAfterFirstSentence(task.blockedOn?.text) : "",
     permDetail: task.blockedOn?.raw ? JSON.stringify(task.blockedOn.raw, null, 2) : "",
     // Interactive ACP permission: which actions can be offered without
     // guessing, and the actual options the agent supplied.
@@ -1004,7 +1104,15 @@ export function projectRow(task, events, opts = {}) {
             reason: task.runs.at(-1).routing.reason
           }
         : null,
-    error: task.error ?? ""
+    error: task.error ?? "",
+    // §01: null unless this is a classified provider-not-authenticated stop
+    // — every other failure renders exactly as it did before this field
+    // existed. `failureProviderName` is the raw display name (for the
+    // "<PROVIDER> SAID" label); `failureCopy` is the composed band copy.
+    failureKind,
+    failureRemedy,
+    failureProviderName: failureKind ? providerDisplayName : null,
+    failureCopy
   };
 }
 

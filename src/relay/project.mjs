@@ -17,13 +17,21 @@
 // tool, the (relative) file, the planned-change snippet, the description and
 // the offered options. Only `raw` (the full tool input JSON) is removed.
 
+import { FAILURE_KINDS } from "../core/lifecycle.mjs";
+
 const TRUNC = {
   text: 500, // progress activity line
   arg: 200, // one tool argument
   path: 300, // file paths
   error: 500, // failure text
   result: 100_000, // READY result shown on the phone
-  decision: 400, // decision question text
+  // §03: raised to match the storage cap (core/lifecycle.mjs) — the question
+  // is agent-authored prose about the user's own repo, not sensitive
+  // metadata, and it was the SECOND of two cuts that destroyed it before any
+  // surface (including the phone) could render it in full.
+  decision: 4000,
+  workspaceLabel: 40, // §02: basename only, never the absolute path
+  node: 60, // machine display name (os.hostname() or the paired agent name)
   plannedChange: 200 // allow/reject change summary
 };
 
@@ -35,6 +43,19 @@ function trunc(value, max, base) {
     s = s.split(base).join("…");
   }
   return s.length > max ? s.slice(0, max) + "…" : s;
+}
+
+// The decision question is prose a human must read in full — if the relay's
+// generous 4000-char bound is ever actually hit, that must read as an
+// explicit "the relay cut this", never as a bare "…" indistinguishable from
+// the agent's own writing. Still strips an absolute workspace path first,
+// exactly like every other field (a question can quote a path in prose).
+function truncDecision(value, base) {
+  let s = typeof value === "string" ? value.trim() : "";
+  if (base && s.includes(base)) s = s.split(base).join("…");
+  return s.length > TRUNC.decision
+    ? s.slice(0, TRUNC.decision) + "\n\n[truncated by the relay]"
+    : s;
 }
 
 // Paths: inside the workspace → relative; outside → basename only. Either way
@@ -89,7 +110,7 @@ export function projectBlockedOn(blockedOn, base) {
       }));
     }
   } else if (blockedOn.type === "decision") {
-    out.text = trunc(blockedOn.text, TRUNC.decision, base);
+    out.text = truncDecision(blockedOn.text, base);
   }
   return out;
 }
@@ -118,6 +139,20 @@ export function projectResult(text, base) {
   return trunc(text, TRUNC.result, base);
 }
 
+// §01: only a recognized kind crosses the relay boundary — the same rule
+// core/lifecycle.mjs enforces when a provider outcome is first applied to
+// the task. This is defense in depth, not trust: a value that already
+// passed that gate is re-checked here rather than assumed.
+function projectFailure(failure) {
+  if (!failure || !FAILURE_KINDS.includes(failure.kind)) return undefined;
+  return {
+    kind: failure.kind,
+    ...(typeof failure.remedy === "string" && failure.remedy.trim()
+      ? { remedy: trunc(failure.remedy, TRUNC.arg) }
+      : {})
+  };
+}
+
 export function projectTask(task, base) {
   if (!task || typeof task !== "object") return null;
   return {
@@ -129,6 +164,7 @@ export function projectTask(task, base) {
     createdAt: task.createdAt ?? null,
     updatedAt: task.updatedAt ?? null,
     error: trunc(task.error, TRUNC.error, base),
+    failure: projectFailure(task.failure),
     blockedOn: projectBlockedOn(task.blockedOn, base),
     runs: Array.isArray(task.runs) ? task.runs.map(r => projectRun(r, base)).filter(Boolean) : undefined
   };
@@ -185,10 +221,22 @@ export function projectEvent(event, base) {
   }
 }
 
+// §02: the basename ONLY — never the absolute path (that stays on the Mac,
+// exactly like `base` itself). Truncated from the LEFT so the distinguishing
+// tail survives a long name, matching how the desktop mark would rather
+// lose a prefix than the part that actually tells two workspaces apart.
+export function projectWorkspaceLabel(base) {
+  if (!base) return null;
+  const label = String(base).split(/[\\/]/).filter(Boolean).pop() || String(base);
+  return label.length > TRUNC.workspaceLabel
+    ? "…" + label.slice(-(TRUNC.workspaceLabel - 1))
+    : label;
+}
+
 // The full remote state pull the phone issues on connect/reconnect:
 // redacted tasks, recent redacted events per task, provider descriptors,
 // routing, and the Mac's clock (so the phone can correct skew on commands).
-export async function projectSnapshot({ tasks, eventsByTask, providers, routing, base, serverTime }) {
+export async function projectSnapshot({ tasks, eventsByTask, providers, routing, base, serverTime, node }) {
   return {
     tasks: tasks.map(t => projectTask(t, base)),
     eventsByTask: Object.fromEntries(
@@ -207,6 +255,12 @@ export async function projectSnapshot({ tasks, eventsByTask, providers, routing,
       default: routing?.default ?? null,
       prefer: Array.isArray(routing?.prefer) ? routing.prefer : []
     },
+    // §02/§01: bounded, pairing-scoped identity — never the absolute path
+    // (workspace.path stays Mac-only; see src/server.mjs's LOCAL bootstrap).
+    // `node` is a device name (os.hostname() or the paired agent name), the
+    // same class of exposure as a provider's displayName.
+    workspace: base ? { label: projectWorkspaceLabel(base) } : null,
+    node: node ? trunc(node, TRUNC.node) : null,
     serverTime: serverTime ?? null
   };
 }
