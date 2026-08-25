@@ -80,6 +80,22 @@ export function providerExecutable(provider, env = process.env) {
   return provider.command?.[0] ?? null;
 }
 
+// The user-facing refusal for a provider that exists but cannot run on this
+// machine right now. One message shape for every surface: the action boundary
+// (explicit manual selections) and the CLI's `2f new` preflight (the
+// configured/runtime default on first use) print the same "install or
+// configure X, then retry." so a refusal is never development-shaped.
+export function unavailableMessage(id, providers) {
+  const provider = providers.getProvider(id);
+  const display = provider?.displayName ?? id;
+  const executable = providers.executable(id);
+  return [
+    `Execution provider "${id}" is unavailable on this machine.`,
+    executable ? `Expected executable: ${executable}` : "",
+    `Install or configure ${display}, then retry.`
+  ].filter(Boolean).join("\n");
+}
+
 // Build the registry for one workspace. Loads manifests from
 // <base>/.work/providers/ (throwing loudly on invalid configuration),
 // then merges any `extra` providers (the plugin seam).

@@ -171,36 +171,85 @@ come back after the Mac reconnects. The relay URL must be `https://` (plain
 The relay is **private infrastructure, not part of the local product**: it is
 a small standalone app that forwards normalized events and proxies commands,
 and it never holds task state or provider credentials. Deployment details
-live in [`relay/README.md`](relay/README.md); a full setup-and-test
-walkthrough is in [`docs/remote-control.md`](docs/remote-control.md).
+live in [`relay/README.md`](https://github.com/AleksandrMalinin/0x2f/blob/main/relay/README.md);
+a full setup-and-test walkthrough is in
+[`docs/remote-control.md`](https://github.com/AleksandrMalinin/0x2f/blob/main/docs/remote-control.md).
 
-## Quick start
+## Install
 
-Prerequisites: Node.js ≥ 20 and at least one coding harness —
+Requires **Node.js ≥ 20** and at least one coding harness on your PATH:
 [Claude Code](https://code.claude.com/docs) (`claude`) is the built-in
 default, [DeepSeek Harness](https://github.com/deepseek-ai/DeepSeek-Harness)
 (`dsh`) is also built in, and any ACP-compatible agent or headless executable
-can be added per-project (see [Providers](#providers)).
+can be added per project (see [Providers](#providers)). 0x2F itself is one
+small package — `ws` is its only dependency, no build step, no accounts, no
+daemon.
 
-0x2F is not published to a registry yet — install from source:
+```bash
+npm install -g 0x2f        # the `2f` command lands on your PATH
+```
+
+0x2F is not on the public registry yet — until then, install the packed
+artifact from this repository:
 
 ```bash
 git clone https://github.com/AleksandrMalinin/0x2f.git
 cd 0x2f
-npm install -g .        # puts the `2f` command on your PATH
+npm pack                   # builds 0x2f-0.5.0.tgz
+npm install -g ./0x2f-0.5.0.tgz
 ```
 
-Then, inside the repository you want to work on:
+`npx --yes 0x2f ...` works for a one-off, but install globally for regular
+use — `2f` is a local app you invoke repeatedly, not a one-shot script.
+
+## Quick start
+
+Inside the repository you want to work on:
 
 ```bash
 2f init                          # create .work/ with project.md and rules.md
 2f new "Investigate why retries restart the whole run"
 2f                               # list tasks
 2f open 1                        # run detail, history, result
+2f ui                            # open the Web UI (starts the local runtime)
 ```
 
-`2f init` creates `.work/` with a `project.md` and `rules.md` — edit them
-once; every task prompt is built from them.
+`2f init` creates `.work/` with `project.md`, `rules.md`, `knowledge.md`,
+`decisions.md` and `providers/` — edit `project.md` and `rules.md` once;
+every task prompt is built from them. It also tells you which provider will
+run, or what to install if none is available.
+
+If `2f new` refuses with "Execution provider ... is unavailable", no harness
+is on PATH — install one, or configure a provider (see
+[Providers](#providers)).
+
+## Where your work lives
+
+Everything 0x2F knows about a project lives in `.work/` inside that
+repository — nothing is stored globally, and nothing leaves your machine
+unless you opt into remote pairing:
+
+| What | Where |
+| --- | --- |
+| task state + run history | `.work/tasks/<slug>/` |
+| project context every prompt is built from | `project.md` · `rules.md` · `knowledge.md` · `decisions.md` |
+| routing policy | `.work/routing.json` |
+| extra providers | `.work/providers/*.json` |
+| UI runtime log | `.work/ui.log` |
+| pairing credentials (only if you pair) | `.work/relay.json` |
+
+Delete `.work/` to remove 0x2F's state from a project — your source files
+are never touched.
+
+## Updating and uninstalling
+
+```bash
+npm update -g 0x2f              # or: npm install -g 0x2f@latest
+npm uninstall -g 0x2f           # removes the CLI; project .work/ stays
+```
+
+Project `.work/` state survives uninstalls — it belongs to the project, not
+to the install.
 
 ## Providers
 
@@ -229,7 +278,7 @@ ACP manifests may set `"permissions"`: `"interactive"` (default — a permission
 request pauses the run and asks you), `"deny"`, or `"approve"` (headless
 auto-resolution). Command manifests must pass the task through the `{prompt}`
 placeholder. Commands are spawned as argv arrays, never through a shell.
-Verified example manifests live in [`examples/providers/`](examples/providers/README.md);
+Verified example manifests live in [`examples/providers/`](https://github.com/AleksandrMalinin/0x2f/blob/main/examples/providers/README.md);
 `2f providers` lists every provider with its integration type and availability.
 
 By default `2f new` uses the configured routing default. When it is `auto`,
@@ -326,9 +375,10 @@ npm run check     # syntax-check every source and test file
 npm start         # run the CLI: node src/cli.mjs
 ```
 
-See [`docs/development.md`](docs/development.md) for the repository layout and
-how the pieces fit; [`docs/architecture.md`](docs/architecture.md) traces a
-task through the whole system.
+See [`docs/development.md`](https://github.com/AleksandrMalinin/0x2f/blob/main/docs/development.md)
+for the repository layout and how the pieces fit;
+[`docs/architecture.md`](https://github.com/AleksandrMalinin/0x2f/blob/main/docs/architecture.md)
+traces a task through the whole system.
 
 ## License
 

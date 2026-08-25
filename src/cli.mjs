@@ -20,6 +20,7 @@ import {
 } from "./render.mjs";
 import { launchUi } from "./ui.mjs";
 import { pairDevice, pairOff } from "./relay/pair.mjs";
+import { unavailableMessage } from "./providers/index.mjs";
 
 function help() {
   console.log(`2f — task-native coding-agent wrapper
@@ -243,7 +244,29 @@ async function main() {
   if (command === "init") {
     const wd = await initProject();
     console.log(`Initialized ${wd}`);
-    console.log("Edit .work/project.md and .work/rules.md, then create a task.");
+    console.log("  project.md     describe the project once — every task prompt starts from it");
+    console.log("  rules.md       working rules for every run");
+    console.log("  knowledge.md   results you promote from finished tasks");
+    console.log("  decisions.md   past decisions, carried into future runs");
+    console.log("  providers/     manifests for extra ACP/command providers");
+    console.log("");
+    console.log('Next: 2f new "<your first task>"  ·  2f ui to open the Web UI');
+
+    // First use: say which provider will actually run, or what to install.
+    // The availability fact is the same cheap executable resolution the
+    // router and the action boundary use — never a spawn.
+    const runtime = createRuntime(base);
+    const available = runtime.providers
+      .listProviders()
+      .filter(p => runtime.providers.available(p.id))
+      .map(p => p.id);
+    if (available.length) {
+      console.log(`Provider: ${available.join(", ")} detected and ready.`);
+    } else {
+      console.log("No coding harness detected on PATH — install Claude Code (`claude`) or");
+      console.log("DeepSeek Harness (`dsh`), or add a manifest to .work/providers/.");
+      console.log("(2f providers lists what 0x2F sees and whether each is available.)");
+    }
     return;
   }
 
@@ -253,6 +276,18 @@ async function main() {
     if (!title) throw new Error('Usage: 2f new "Investigate ..." [--provider <id>]');
 
     const runtime = createRuntime(base);
+    // First-use preflight: when the user did not pick a provider, the
+    // configured/runtime default must be runnable on this machine, or the
+    // refusal is printed HERE instead of creating a task that is doomed to
+    // fail in the background with an opaque spawn error. Explicit selections
+    // are refused by the shared action with the same message.
+    if (!provider) {
+      const effective = runtime.router.defaultRequestedProvider();
+      if (effective !== "auto" && !runtime.providers.available(effective)) {
+        throw new Error(unavailableMessage(effective, runtime.providers));
+      }
+    }
+
     const task = await runtime.actions.createWork({ title, provider });
 
     console.log(`Created #${String(task.id).padStart(3, "0")}: ${task.title}`);
@@ -418,7 +453,14 @@ async function main() {
   if (command === "ui") {
     await requireProject(base);
     const { rest, flags } = parseFlags(args);
-    const port = rest[0] ? Number(rest[0]) : 4242;
+    // Port comes from --port <n> or the positional form `2f ui <port>` —
+    // both are accepted; the default is the canonical 4242.
+    const port =
+      flags.port !== undefined
+        ? Number(flags.port)
+        : rest[0]
+          ? Number(rest[0])
+          : 4242;
     if (!Number.isFinite(port)) {
       throw new Error('Usage: 2f ui [port] [--no-browser]');
     }

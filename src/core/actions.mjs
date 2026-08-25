@@ -24,6 +24,7 @@ import { WorkError } from "./errors.mjs";
 import { workEvent } from "./events.mjs";
 import { makeRunRecord, taskRuns, legacyRun } from "./runs.mjs";
 import { MAX_TITLE, MAX_NOTE, MAX_ANSWER, MAX_SELECTOR } from "./limits.mjs";
+import { unavailableMessage } from "../providers/index.mjs";
 
 export function createActions(ctx) {
   const { store, node, providers, router } = ctx;
@@ -58,15 +59,7 @@ export function createActions(ctx) {
   // switching to another provider.
   function requireAvailableProvider(id) {
     if (providers.available(id)) return;
-    const provider = providers.getProvider(id);
-    const display = provider?.displayName ?? id;
-    const executable = providers.executable(id);
-    const lines = [
-      `Execution provider "${id}" is unavailable on this machine.`,
-      executable ? `Expected executable: ${executable}` : "",
-      `Install or configure ${display}, then retry.`
-    ].filter(Boolean);
-    throw new WorkError(lines.join("\n"));
+    throw new WorkError(unavailableMessage(id, providers));
   }
 
   // Resolve what the user asked for into an execution target.
@@ -107,7 +100,9 @@ export function createActions(ctx) {
     // configured/runtime default) is not a manual selection — it keeps its
     // historical behavior. The check is a runtime/execution fact: `available`
     // resolves the executable in the same environment the worker will spawn
-    // it in.
+    // it in. (The CLI's `2f new` preflights the unspecified default itself,
+    // so the first-use CLI journey still refuses clearly before persisting a
+    // doomed run.)
     if (requested !== undefined && requested !== "auto") {
       requireAvailableProvider(effective);
     }

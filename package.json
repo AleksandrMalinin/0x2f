@@ -2,8 +2,17 @@
   "name": "0x2f",
   "version": "0.5.0",
   "description": "0x2F — manage engineering work, not AI sessions. A task-native wrapper around coding agents with a local-first Web UI.",
-  "private": true,
   "type": "module",
+  "license": "MIT",
+  "keywords": [
+    "cli",
+    "tasks",
+    "coding-agents",
+    "local-first",
+    "claude-code",
+    "deepseek-harness",
+    "acp"
+  ],
   "bin": {
     "2f": "./src/cli.mjs"
   },
@@ -13,6 +22,11 @@
   "engines": {
     "node": ">=20"
   },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AleksandrMalinin/0x2f.git"
+  },
+  "homepage": "https://github.com/AleksandrMalinin/0x2f#readme",
   "scripts": {
     "start": "node src/cli.mjs",
     "check": "find src test relay \\( -name '*.mjs' -o -name '*.js' \\) -exec node --check {} \\;",
