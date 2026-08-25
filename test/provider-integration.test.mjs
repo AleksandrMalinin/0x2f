@@ -12,6 +12,7 @@ import { spawn } from "node:child_process";
 import { startServer } from "../src/server.mjs";
 import { createRuntime } from "../src/runtime.mjs";
 import { createStore } from "../src/core/store.mjs";
+import { TEST_AUTH_TOKEN, authHeaders } from "./helpers.mjs";
 
 const CLI = new URL("../src/cli.mjs", import.meta.url).pathname;
 
@@ -126,9 +127,9 @@ test("API: configured providers appear in /api/providers with their integration 
   });
   try {
     const runtime = createRuntime(base);
-    const handle = await startServer(base, 0, { runtime, interval: 30 });
+    const handle = await startServer(base, 0, { runtime, interval: 30, authToken: TEST_AUTH_TOKEN });
     try {
-      const providers = await fetch(handle.url + "/api/providers").then(r => r.json());
+      const providers = await fetch(handle.url + "/api/providers", { headers: authHeaders() }).then(r => r.json());
       assert.deepEqual(
         providers.map(p => p.id),
         ["claude-code", "deepseek-harness", "hello"]

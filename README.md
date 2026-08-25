@@ -284,8 +284,9 @@ task runtime                           · no task state, no credentials
 desktop UI
 ```
 
-Execution is local-only (the API binds to `127.0.0.1`); remote control is an
-outbound control layer, not remote execution.
+Execution is local-only (the API binds to `127.0.0.1`, is token-authenticated
+and refuses cross-site browser requests); remote control is an outbound
+control layer, not remote execution.
 
 ## Current limitations
 

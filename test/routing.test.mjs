@@ -14,6 +14,7 @@ import { spawn } from "node:child_process";
 import { createRouter, loadRoutingConfig, orderCandidates } from "../src/core/router.mjs";
 import { createRuntime } from "../src/runtime.mjs";
 import { startServer } from "../src/server.mjs";
+import { TEST_AUTH_TOKEN, authHeaders } from "./helpers.mjs";
 
 const CLI = new URL("../src/cli.mjs", import.meta.url).pathname;
 
@@ -297,9 +298,9 @@ test("API: GET /api/routing exposes the configured default and preference", asyn
   await writeRouting(base, { default: "auto", prefer: ["claude-code"] });
   try {
     const runtime = createRuntime(base);
-    const handle = await startServer(base, 0, { runtime, interval: 30 });
+    const handle = await startServer(base, 0, { runtime, interval: 30, authToken: TEST_AUTH_TOKEN });
     try {
-      const routing = await fetch(handle.url + "/api/routing").then(r => r.json());
+      const routing = await fetch(handle.url + "/api/routing", { headers: authHeaders() }).then(r => r.json());
       assert.equal(routing.default, "auto");
       assert.deepEqual(routing.prefer, ["claude-code"]);
     } finally {
@@ -319,11 +320,11 @@ test("API: POST /api/tasks with provider auto routes through the shared action",
     const env = { ...process.env, PATH: bins };
     const extra = [{ id: "alpha", displayName: "Alpha", integrationType: "command", capabilities: {}, command: ["alpha", "{prompt}"], start: async () => ({ status: "ready", result: "alpha" }) }];
     const runtime = createRuntime(base, { env, providers: extra });
-    const handle = await startServer(base, 0, { runtime, interval: 30 });
+    const handle = await startServer(base, 0, { runtime, interval: 30, authToken: TEST_AUTH_TOKEN });
     try {
       const res = await fetch(handle.url + "/api/tasks", {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", ...authHeaders() },
         body: JSON.stringify({ title: "Routed via API", provider: "auto" })
       });
       assert.equal(res.status, 201);

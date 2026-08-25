@@ -25,7 +25,7 @@ import { createTailer } from "../src/core/events.mjs";
 import { applyOutcome } from "../src/core/lifecycle.mjs";
 import { updateRun } from "../src/core/runs.mjs";
 import { startServer } from "../src/server.mjs";
-import { withFakeBin } from "./helpers.mjs";
+import { withFakeBin, TEST_AUTH_TOKEN, authHeaders } from "./helpers.mjs";
 
 const quiet = { log() {}, warn() {}, error() {} };
 
@@ -662,8 +662,12 @@ test("the local server reports mode 'local' — the client keeps its local behav
   const base = await fs.mkdtemp(path.join(os.tmpdir(), "work-relay-local-"));
   try {
     const runtime = createRuntime(base, { node: fakeNode() });
-    const handle = await startServer(base, 0, { runtime, interval: 20 });
-    const res = await fetch(handle.url + "/api/status");
+    const handle = await startServer(base, 0, {
+      runtime,
+      interval: 20,
+      authToken: TEST_AUTH_TOKEN
+    });
+    const res = await fetch(handle.url + "/api/status", { headers: authHeaders() });
     assert.equal(res.status, 200);
     const info = await res.json();
     assert.equal(info.mode, "local");
@@ -682,7 +686,7 @@ test("the relay serves the same web client assets as the local server", async t 
   const html = await page.text();
   assert.match(html, /<script type="module" src="\/app\/app.js">/);
 
-  for (const p of ["/app/app.js", "/app/ledger.mjs", "/app/sound.mjs", "/app/sound-policy.mjs"]) {
+  for (const p of ["/app/app.js", "/app/ledger.mjs", "/app/sound.mjs", "/app/sound-policy.mjs", "/app/app.css"]) {
     const asset = await fetch(relayUrl + p);
     assert.equal(asset.status, 200, p);
   }

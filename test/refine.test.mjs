@@ -22,7 +22,7 @@ import {
 } from "../src/refine.mjs";
 import { createProviderRegistry } from "../src/providers/index.mjs";
 import { WorkError } from "../src/core/errors.mjs";
-import { withEnv } from "./helpers.mjs";
+import { withEnv, TEST_AUTH_TOKEN, authHeaders } from "./helpers.mjs";
 
 // Write a fake model CLI that records its argv + cwd to `recordFile`, writes
 // `stderr`/`stdout`, and exits with `code` after `delayMs`. Returns the bin
@@ -73,15 +73,26 @@ async function startTestServer() {
   const base = await fs.mkdtemp(path.join(os.tmpdir(), "work-refine-api-"));
   const node = fakeNode();
   const runtime = createRuntime(base, { node });
-  const handle = await startServer(base, 0, { runtime, interval: 20 });
+  const handle = await startServer(base, 0, {
+    runtime,
+    interval: 20,
+    authToken: TEST_AUTH_TOKEN
+  });
   return { base, node, runtime, handle };
 }
 
 function postJson(url, body) {
   return fetch(url, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", ...authHeaders() },
     body: JSON.stringify(body ?? {})
+  });
+}
+
+function apiFetch(url, init = {}) {
+  return fetch(url, {
+    ...init,
+    headers: { ...authHeaders(), ...(init.headers ?? {}) }
   });
 }
 
@@ -387,7 +398,7 @@ test("POST /api/refine returns the refined text; repeated REFINE creates no task
         postJson(handle.url + "/api/refine", { text: "rough again" })
       );
     }
-    assert.deepEqual(await (await fetch(handle.url + "/api/tasks")).json(), []);
+    assert.deepEqual(await (await apiFetch(handle.url + "/api/tasks")).json(), []);
     assert.deepEqual(node.calls, []);
   } finally {
     await handle.close();

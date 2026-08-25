@@ -11,7 +11,7 @@ import path from "node:path";
 import { startServer } from "../src/server.mjs";
 import { createRuntime } from "../src/runtime.mjs";
 import { applyOutcome } from "../src/core/lifecycle.mjs";
-import { withFakeBin } from "./helpers.mjs";
+import { TEST_AUTH_TOKEN, authHeaders, withFakeBin } from "./helpers.mjs";
 
 function fakeNode() {
   const calls = [];
@@ -36,7 +36,11 @@ async function startTestServer() {
   const base = await fs.mkdtemp(path.join(os.tmpdir(), "work-api-"));
   const node = fakeNode();
   const runtime = createRuntime(base, { node });
-  const handle = await startServer(base, 0, { runtime, interval: 20 });
+  const handle = await startServer(base, 0, {
+    runtime,
+    interval: 20,
+    authToken: TEST_AUTH_TOKEN
+  });
   return { base, node, runtime, handle };
 }
 
@@ -59,8 +63,16 @@ async function blockTask(runtime, task) {
 function postJson(url, body) {
   return fetch(url, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", ...authHeaders() },
     body: JSON.stringify(body ?? {})
+  });
+}
+
+// Fetch the local API as an authenticated client would.
+function apiFetch(url, init = {}) {
+  return fetch(url, {
+    ...init,
+    headers: { ...authHeaders(), ...(init.headers ?? {}) }
   });
 }
 
@@ -112,11 +124,11 @@ test("GET /api/tasks and GET /api/tasks/:id (with result)", async () => {
       "## Result\nok"
     );
 
-    const list = await fetch(handle.url + "/api/tasks").then(r => r.json());
+    const list = await apiFetch(handle.url + "/api/tasks").then(r => r.json());
     assert.equal(list.length, 1);
     assert.equal(list[0].title, "List me");
 
-    const detail = await fetch(handle.url + "/api/tasks/" + created.id).then(r => r.json());
+    const detail = await apiFetch(handle.url + "/api/tasks/" + created.id).then(r => r.json());
     assert.equal(detail.id, created.id);
     assert.match(detail.result, /ok/);
   } finally {
@@ -170,9 +182,9 @@ test("POST /api/tasks/:id/close moves the task to done", async () => {
 test("unknown routes -> 404; missing task -> 404", async () => {
   const { base, handle } = await startTestServer();
   try {
-    const unknown = await fetch(handle.url + "/api/nope");
+    const unknown = await apiFetch(handle.url + "/api/nope");
     assert.equal(unknown.status, 404);
-    const missing = await fetch(handle.url + "/api/tasks/999");
+    const missing = await apiFetch(handle.url + "/api/tasks/999");
     assert.equal(missing.status, 404);
     assert.equal((await missing.json()).error, "Task 999 not found.");
   } finally {
@@ -196,7 +208,7 @@ test("SSE delivers normalized task.created when a task is created through the AP
   const { base, handle } = await startTestServer();
   const controller = new AbortController();
   try {
-    const streamRes = await fetch(handle.url + "/api/events", { signal: controller.signal });
+    const streamRes = await apiFetch(handle.url + "/api/events", { signal: controller.signal });
     assert.equal(streamRes.status, 200);
     assert.match(streamRes.headers.get("content-type"), /text\/event-stream/);
 
@@ -234,7 +246,7 @@ test("SSE delivers normalized task.created when a task is created through the AP
 test("GET / serves the 0x2F Web shell and its module assets", async () => {
   const { base, handle } = await startTestServer();
   try {
-    const page = await fetch(handle.url + "/");
+    const page = await apiFetch(handle.url + "/");
     assert.equal(page.status, 200);
     assert.match(page.headers.get("content-type"), /text\/html/);
     const html = await page.text();
@@ -243,21 +255,21 @@ test("GET / serves the 0x2F Web shell and its module assets", async () => {
     assert.match(html, /<script type="module" src="\/app\/app.js">/);
     assert.match(html, /0x2F/);
 
-    for (const path of ["/app/app.js", "/app/ledger.mjs", "/app/sound.mjs", "/app/sound-policy.mjs"]) {
-      const asset = await fetch(handle.url + path);
+    for (const path of ["/app/app.js", "/app/ledger.mjs", "/app/sound.mjs", "/app/sound-policy.mjs", "/app/app.css"]) {
+      const asset = await apiFetch(handle.url + path);
       assert.equal(asset.status, 200, path);
-      assert.match(asset.headers.get("content-type"), /javascript/);
+      assert.match(asset.headers.get("content-type"), /javascript|text\/css/);
     }
 
     // The browser imports the SAME projection module the tests import.
-    const ledger = await fetch(handle.url + "/app/ledger.mjs").then(r => r.text());
+    const ledger = await apiFetch(handle.url + "/app/ledger.mjs").then(r => r.text());
     assert.match(ledger, /export function projectLedger/);
     // ... and the SAME sound policy module the tests import.
-    const policy = await fetch(handle.url + "/app/sound-policy.mjs").then(r => r.text());
+    const policy = await apiFetch(handle.url + "/app/sound-policy.mjs").then(r => r.text());
     assert.match(policy, /export function createSoundPolicy/);
 
     // Nothing outside the allowlist is reachable.
-    const escape = await fetch(handle.url + "/app/../server.mjs");
+    const escape = await apiFetch(handle.url + "/app/../server.mjs");
     assert.equal(escape.status, 404);
   } finally {
     await handle.close();
@@ -278,7 +290,7 @@ test("GET /api/events/history returns the persisted normalized log per task", as
     });
     await runtime.store.appendEvent(task.slug, "not json\n".trim());
 
-    const history = await fetch(handle.url + "/api/events/history").then(r => r.json());
+    const history = await apiFetch(handle.url + "/api/events/history").then(r => r.json());
     assert.equal(history.base, base);
 
     const events = history.events[String(task.id)];
@@ -297,7 +309,7 @@ test("a task with no event log yet is still present in the history", async () =>
   try {
     const task = await runtime.actions.createWork({ title: "Quiet" });
     await fs.rm(runtime.store.eventLogPath(task.slug), { force: true });
-    const history = await fetch(handle.url + "/api/events/history").then(r => r.json());
+    const history = await apiFetch(handle.url + "/api/events/history").then(r => r.json());
     assert.deepEqual(history.events[String(task.id)], []);
   } finally {
     await handle.close();
@@ -308,7 +320,7 @@ test("a task with no event log yet is still present in the history", async () =>
 test("GET /api/providers lists the registry (default first) with normalized descriptors", async () => {
   const { base, handle } = await startTestServer();
   try {
-    const providers = await fetch(handle.url + "/api/providers").then(r => r.json());
+    const providers = await apiFetch(handle.url + "/api/providers").then(r => r.json());
     assert.deepEqual(
       providers.map(p => p.id),
       ["claude-code", "deepseek-harness"]
@@ -433,13 +445,13 @@ test("GET /api/tasks/:id/runs/:n returns one run with its own result; unknown ru
       "run one's own result"
     );
 
-    const run = await fetch(handle.url + "/api/tasks/" + task.id + "/runs/1").then(r => r.json());
+    const run = await apiFetch(handle.url + "/api/tasks/" + task.id + "/runs/1").then(r => r.json());
     assert.equal(run.run, 1);
     assert.equal(run.provider, "claude-code");
     assert.equal(run.result, "run one's own result");
     assert.equal(run.outcome, "working");
 
-    const missing = await fetch(handle.url + "/api/tasks/" + task.id + "/runs/9");
+    const missing = await apiFetch(handle.url + "/api/tasks/" + task.id + "/runs/9");
     assert.equal(missing.status, 404);
     assert.match((await missing.json()).error, /has no run 9/);
   } finally {
@@ -452,7 +464,7 @@ test("GET /api/tasks/:id includes the projected run history", async () => {
   const { base, runtime, handle } = await startTestServer();
   try {
     const task = await runtime.actions.createWork({ title: "With runs" });
-    const detail = await fetch(handle.url + "/api/tasks/" + task.id).then(r => r.json());
+    const detail = await apiFetch(handle.url + "/api/tasks/" + task.id).then(r => r.json());
     assert.equal(detail.runs.length, 1);
     assert.equal(detail.runs[0].run, 1);
     assert.equal(detail.runs[0].provider, "claude-code");

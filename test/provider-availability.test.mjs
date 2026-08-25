@@ -24,6 +24,7 @@ import path from "node:path";
 import { createRuntime } from "../src/runtime.mjs";
 import { startServer } from "../src/server.mjs";
 import { applyOutcome } from "../src/core/lifecycle.mjs";
+import { TEST_AUTH_TOKEN, authHeaders } from "./helpers.mjs";
 
 function fakeNode() {
   const calls = [];
@@ -168,12 +169,13 @@ test("POST /api/tasks with an unavailable provider -> 400 from the shared action
   try {
     const handle = await startServer(rt.base, 0, {
       runtime: rt,
-      interval: 20
+      interval: 20,
+      authToken: TEST_AUTH_TOKEN
     });
     try {
       const res = await fetch(handle.url + "/api/tasks", {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", ...authHeaders() },
         body: JSON.stringify({ title: "Doomed", provider: "deepseek-harness" })
       });
       assert.equal(res.status, 400);
@@ -182,7 +184,7 @@ test("POST /api/tasks with an unavailable provider -> 400 from the shared action
       assert.match(body.error, /Expected executable: dsh/);
 
       // The server enforced it independently of any client: no task exists.
-      const tasks = await fetch(handle.url + "/api/tasks").then(r => r.json());
+      const tasks = await fetch(handle.url + "/api/tasks", { headers: authHeaders() }).then(r => r.json());
       assert.deepEqual(tasks, []);
       assert.deepEqual(rt.node.calls, []);
     } finally {

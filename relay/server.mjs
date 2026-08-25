@@ -64,10 +64,24 @@ const HELLO_TIMEOUT_MS = 10000;
 const PAIR_TTL_MS = 10 * 60 * 1000;
 
 const ASSETS = {
+  "/app/app.css": ["app.css", "text/css; charset=utf-8"],
   "/app/app.js": ["app.js", "text/javascript; charset=utf-8"],
   "/app/ledger.mjs": ["ledger.mjs", "text/javascript; charset=utf-8"],
   "/app/sound-policy.mjs": ["sound-policy.mjs", "text/javascript; charset=utf-8"],
   "/app/sound.mjs": ["sound.mjs", "text/javascript; charset=utf-8"]
+};
+
+// Same restrictive CSP the local runtime applies to the shared web client.
+// The pairing pages below are NOT covered: they legitimately use inline
+// scripts/styles and are served from this file, not from src/web/.
+const WEB_HEADERS = {
+  "content-security-policy":
+    "default-src 'none'; script-src 'self'; style-src 'self'; " +
+    "img-src 'self' data:; connect-src 'self'; font-src 'self'; " +
+    "media-src 'none'; object-src 'none'; base-uri 'none'; " +
+    "form-action 'none'; frame-ancestors 'none'",
+  "x-content-type-options": "nosniff",
+  "referrer-policy": "no-referrer"
 };
 
 export function createRelayServer({
@@ -620,7 +634,11 @@ export function createRelayServer({
           res.end("Not found");
           return;
         }
-        res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
+        res.writeHead(200, {
+          "content-type": "text/html; charset=utf-8",
+          "cache-control": "no-store",
+          ...WEB_HEADERS
+        });
         res.end(sd ? text : landingPage());
         return;
       }
@@ -637,7 +655,11 @@ export function createRelayServer({
           res.end("Not found");
           return;
         }
-        res.writeHead(200, { "content-type": type, "cache-control": "no-store" });
+        res.writeHead(200, {
+          "content-type": type,
+          "cache-control": "no-store",
+          ...WEB_HEADERS
+        });
         res.end(text);
         return;
       }

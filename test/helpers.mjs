@@ -49,3 +49,15 @@ export async function withFakeBin(envVar, name, fn) {
     await fs.rm(dir, { recursive: true, force: true });
   }
 }
+
+// --- local-API authentication -------------------------------------------------
+//
+// The local runtime API is token-gated (see src/server.mjs). Tests that start
+// a real server inject a fixed token and authenticate with the x-0x2f-auth
+// header (the programmatic path; the browser path is the shell cookie).
+
+export const TEST_AUTH_TOKEN = "0x2f-test-auth-token";
+
+export function authHeaders(token = TEST_AUTH_TOKEN) {
+  return { "x-0x2f-auth": token };
+}

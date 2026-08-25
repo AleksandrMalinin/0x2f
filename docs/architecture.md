@@ -277,11 +277,21 @@ POST /api/tasks · /api/tasks/:id/{rerun,allow,reject,answer,note,close}
 POST /api/refine
 GET  /api/providers · /api/routing · /api/status
 GET  /api/events (SSE) · /api/events/history
+GET  /api/health — the unauthenticated launcher probe
 ```
 
 It also serves the static web client from `src/web/`. The server holds no
 lifecycle or provider logic; `2f ui` (`src/ui.mjs`) spawns the detached
 runtime (`src/server-entry.mjs`) and reuses an already-healthy one.
+
+The API is protected at the local boundary (all enforced in `src/server.mjs`):
+a **Host allowlist** (only `127.0.0.1`/`localhost`/`[::1]` — kills DNS
+rebinding), **Origin + Sec-Fetch-Site validation** (cross-site and
+same-site-foreign-page browser requests are refused), a **per-runtime auth
+token** required on every `/api/*` call (set by the server as an HttpOnly
+SameSite=Strict cookie when it serves the shell; also accepted as the
+`x-0x2f-auth` header for local scripts), and a **request-body cap**. The Web
+surface is served with a restrictive CSP and no external dependencies.
 
 ### Web client — `src/web/`
 

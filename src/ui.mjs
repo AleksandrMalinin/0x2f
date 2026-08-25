@@ -52,23 +52,21 @@ function sleep(ms) {
 //                                 (another process owns the port)
 //   { ok: false, kind: "timeout"} no answer within the probe window
 //
-// "Healthy" means the provider descriptor endpoint answers with the
-// normalized shape — the same availability fact the UI itself reads.
+// "Healthy" means the runtime's unauthenticated health endpoint answers with
+// the normalized shape — the same availability fact the UI itself reads. The
+// endpoint is deliberately token-free so the launcher can recognize a 0x2F
+// runtime without knowing its per-process auth token.
 export async function probeUi(url, opts = {}) {
   const { timeoutMs = 1200, fetchImpl = fetch } = opts;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const res = await fetchImpl(url + "/api/providers", {
+    const res = await fetchImpl(url + "/api/health", {
       signal: controller.signal
     });
     if (!res.ok) return { ok: false, kind: "other" };
     const body = await res.json();
-    const healthy =
-      Array.isArray(body) &&
-      body.every(
-        p => p && typeof p.id === "string" && typeof p.available === "boolean"
-      );
+    const healthy = body && body.ok === true && body.mode === "local";
     return healthy ? { ok: true, kind: "0x2f" } : { ok: false, kind: "other" };
   } catch (error) {
     if (error?.name === "AbortError") return { ok: false, kind: "timeout" };

@@ -23,9 +23,20 @@ import { closeTask } from "./lifecycle.mjs";
 import { WorkError } from "./errors.mjs";
 import { workEvent } from "./events.mjs";
 import { makeRunRecord, taskRuns, legacyRun } from "./runs.mjs";
+import { MAX_TITLE, MAX_NOTE, MAX_ANSWER, MAX_SELECTOR } from "./limits.mjs";
 
 export function createActions(ctx) {
   const { store, node, providers, router } = ctx;
+
+  // A shared input cap: refuse a value that exceeds its limit with the same
+  // message the CLI and the API surface give.
+  function requireWithin(value, max, label) {
+    if (typeof value === "string" && value.length > max) {
+      throw new WorkError(
+        `${label} is too long (${value.length} characters; the limit is ${max}).`
+      );
+    }
+  }
 
   // The client-facing provider list: ids in registry order (native first).
   function providerList() {
@@ -150,6 +161,9 @@ export function createActions(ctx) {
     if (!title || !title.trim()) {
       throw new WorkError("Task title is required.");
     }
+    requireWithin(title, MAX_TITLE, "Task title");
+    requireWithin(provider, MAX_SELECTOR, "Provider id");
+    requireWithin(model, MAX_SELECTOR, "Model id");
     const clean = title.trim();
     const target = resolveTarget(provider);
 
@@ -199,6 +213,8 @@ export function createActions(ctx) {
   // task may be rerun — the blocked run stays in history, and the new run
   // starts fresh.
   async function rerunWork(id, { provider, model } = {}) {
+    requireWithin(provider, MAX_SELECTOR, "Provider id");
+    requireWithin(model, MAX_SELECTOR, "Model id");
     const task = await store.findTask(id);
     if (task.status === "working") {
       throw new WorkError(
@@ -360,6 +376,7 @@ export function createActions(ctx) {
     if (!answer || !answer.trim()) {
       throw new WorkError("An answer is required.");
     }
+    requireWithin(answer, MAX_ANSWER, "Answer");
     const clean = answer.trim();
     const now = new Date().toISOString();
     const notes = [...(task.context?.notes ?? []), { at: now, text: clean }];
@@ -385,6 +402,7 @@ export function createActions(ctx) {
     if (!note || !note.trim()) {
       throw new WorkError("A note is required.");
     }
+    requireWithin(note, MAX_NOTE, "Note");
     const clean = note.trim();
     const now = new Date().toISOString();
     const notes = [...(task.context?.notes ?? []), { at: now, text: clean }];
