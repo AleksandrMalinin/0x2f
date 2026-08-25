@@ -90,7 +90,16 @@ export function createStore(base = process.cwd()) {
     return out.sort((a, b) => b.id - a.id);
   }
 
-  async function createTask(title, prompt, opts = {}) {
+  // createTask({ title, brief, prompt }, opts)
+  //
+  //   brief   the user's own words, verbatim — the task's intent
+  //   title   the short label DERIVED from it (core/title.mjs)
+  //   prompt  the assembled agent input (project context + the brief)
+  //
+  // Three artifacts, one authored by the user. `brief` is persisted on the
+  // task record because every surface needs it (a detail view shows it, the
+  // relay projects it); prompt.md stays the agent-facing assembly.
+  async function createTask({ title, brief, prompt }, opts = {}) {
     const provider = opts.provider ?? defaultProviderId;
     const node = opts.node ?? "local";
     const workspace = opts.workspace ?? "local";
@@ -114,6 +123,11 @@ export function createStore(base = process.cwd()) {
       id,
       slug,
       title,
+      // The user's own words. A task written before this field existed has
+      // only `title` (which WAS the full text then), so every reader falls
+      // back to `task.brief ?? task.title` — correct for old tasks by
+      // construction, and no migration is needed.
+      brief,
       status: "working",
       execution: {
         provider,

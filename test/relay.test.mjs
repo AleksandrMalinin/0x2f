@@ -245,7 +245,7 @@ test("the phone pairs end-to-end and pulls a redacted snapshot", async t => {
 
 test("creating a Task through the encrypted channel starts it on the Mac's node", async t => {
   const { node, phone } = await makeHarness(t);
-  const created = await phone.api("/api/tasks", { method: "POST", body: { title: "Remote task" } });
+  const created = await phone.api("/api/tasks", { method: "POST", body: { brief: "Remote task" } });
   assert.equal(created.status, "working");
   assert.deepEqual(node.calls.map(c => c[0]), ["start"]);
 
@@ -260,7 +260,7 @@ test("creating a Task through the encrypted channel starts it on the Mac's node"
 
 test("redacted encrypted events reach the phone; sensitive tool inputs stay on the Mac", async t => {
   const { runtime, phone } = await makeHarness(t);
-  const task = await runtime.actions.createWork({ title: "Events" });
+  const task = await runtime.actions.createWork({ brief: "Events" });
   await runtime.store.appendEvent(task.slug, {
     type: "tool.started",
     taskId: task.id,
@@ -300,7 +300,7 @@ test("ALLOW / REJECT / NOTE / ACCEPT work remotely through the shared actions", 
   const { node, runtime, phone } = await makeHarness(t);
 
   // ALLOW a live permission block.
-  const task = await runtime.actions.createWork({ title: "Blocked" });
+  const task = await runtime.actions.createWork({ brief: "Blocked" });
   const blocked = applyOutcome(task, {
     status: "needs_you",
     reason: "permission",
@@ -334,8 +334,8 @@ test("ALLOW / REJECT / NOTE / ACCEPT work remotely through the shared actions", 
 test("a duplicate requestId returns the cached acknowledgement and never executes twice", async t => {
   const { node, phone } = await makeHarness(t);
   const requestId = "fixed-rid-" + Math.random().toString(36).slice(2, 10);
-  const first = await phone.command("create", { body: { title: "One" } }, { requestId });
-  const second = await phone.command("create", { body: { title: "One" } }, { requestId });
+  const first = await phone.command("create", { body: { brief: "One" } }, { requestId });
+  const second = await phone.command("create", { body: { brief: "One" } }, { requestId });
   assert.deepEqual(second, first);
   assert.equal(node.calls.length, 1, "the action ran exactly once");
 });
@@ -345,14 +345,14 @@ test("the Mac is offline: status reports offline and commands answer 503 — nev
   agent.stop();
   await waitFor(async () => (await phone.status()).mac === "offline", "mac offline", 5000);
   await assert.rejects(
-    () => phone.api("/api/tasks", { method: "POST", body: { title: "Nope" } }),
+    () => phone.api("/api/tasks", { method: "POST", body: { brief: "Nope" } }),
     error => error.status === 503
   );
 });
 
 test("a relay restart loses no session and keeps the phone paired", async t => {
   const { base, dataFile, handle, phone, agent, runtime } = await makeHarness(t);
-  await runtime.actions.createWork({ title: "Survives restart" });
+  await runtime.actions.createWork({ brief: "Survives restart" });
   await handle.close();
 
   // Restart the relay on the SAME port (as a production redeploy would): the
@@ -382,7 +382,7 @@ test("a relay restart loses no session and keeps the phone paired", async t => {
 
 test("the relay holds no task content — state and state.json are content-free", async t => {
   const { base, dataFile, handle, phone } = await makeHarness(t);
-  await phone.api("/api/tasks", { method: "POST", body: { title: "Secret task" } });
+  await phone.api("/api/tasks", { method: "POST", body: { brief: "Secret task" } });
   await new Promise(r => setTimeout(r, 100)); // let the relay settle
   await handle.state.flushSave();
 

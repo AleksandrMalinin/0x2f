@@ -49,8 +49,8 @@ async function makeRuntime() {
 // allow/reject/close against a realistic state. Mirrors what the worker does
 // with an outcome: apply it, then copy the outcome's externalSessionId into
 // task.execution.
-async function makeNeedsYouTask(runtime, title = "Blocked task") {
-  const task = await runtime.actions.createWork({ title });
+async function makeNeedsYouTask(runtime, brief = "Blocked task") {
+  const task = await runtime.actions.createWork({ brief });
   const blocked = applyOutcome(task, {
     status: "needs_you",
     reason: "permission",
@@ -71,7 +71,7 @@ async function makeNeedsYouTask(runtime, title = "Blocked task") {
 test("createWork creates a persistent task and starts execution on the node", async () => {
   const runtime = await makeRuntime();
   try {
-    const task = await runtime.actions.createWork({ title: "  Fix the overflow  " });
+    const task = await runtime.actions.createWork({ brief: "  Fix the overflow  " });
 
     assert.equal(task.status, "working");
     assert.equal(task.execution.provider, "claude-code");
@@ -99,7 +99,7 @@ test("createWork creates a persistent task and starts execution on the node", as
 test("createWork rejects an empty title with the shared error", async () => {
   const runtime = await makeRuntime();
   try {
-    await assert.rejects(() => runtime.actions.createWork({ title: "   " }), /Task title is required\./);
+    await assert.rejects(() => runtime.actions.createWork({ brief: "   " }), /Task brief is required\./);
     assert.deepEqual(runtime.node.calls, []);
   } finally {
     await fs.rm(runtime.base, { recursive: true, force: true });
@@ -146,7 +146,7 @@ test("allowWork/rejectWork are the same action with a different grant", async ()
 test("resumeWork on a non-needs_you task throws the CLI's exact error (shared logic)", async () => {
   const runtime = await makeRuntime();
   try {
-    const task = await runtime.actions.createWork({ title: "Working task" });
+    const task = await runtime.actions.createWork({ brief: "Working task" });
     await assert.rejects(
       () => runtime.actions.resumeWork(task.id, "allow"),
       /Task #1 is working, not needs_you — nothing to allow\./
@@ -161,7 +161,7 @@ test("resumeWork without a resumable session throws the CLI's exact error", asyn
   const runtime = await makeRuntime();
   try {
     // needs_you but no externalSessionId — legacy/manual state.
-    const task = await runtime.actions.createWork({ title: "No session" });
+    const task = await runtime.actions.createWork({ brief: "No session" });
     const blocked = applyOutcome(task, {
       status: "needs_you",
       reason: "permission",
@@ -202,7 +202,7 @@ test("closeWork moves any task to done and records task.closed", async () => {
 test("getWork returns the task with its final result", async () => {
   const runtime = await makeRuntime();
   try {
-    const task = await runtime.actions.createWork({ title: "With result" });
+    const task = await runtime.actions.createWork({ brief: "With result" });
     await runtime.store.writeText(
       path.join(runtime.store.taskDir(task.slug), "result.md"),
       "## Result\nfixed it"
@@ -218,8 +218,8 @@ test("getWork returns the task with its final result", async () => {
 test("listWork returns persisted tasks (what the CLI and the API both render)", async () => {
   const runtime = await makeRuntime();
   try {
-    await runtime.actions.createWork({ title: "First" });
-    await runtime.actions.createWork({ title: "Second" });
+    await runtime.actions.createWork({ brief: "First" });
+    await runtime.actions.createWork({ brief: "Second" });
     const tasks = await runtime.actions.listWork();
     assert.deepEqual(tasks.map(t => t.title), ["Second", "First"]);
   } finally {
@@ -239,7 +239,7 @@ test("CLI and HTTP API are the same actions: the runtime factory both use produc
     const runtime = createRuntime(base, { node });
 
     // The API's createWork.
-    const created = await runtime.actions.createWork({ title: "Shared" });
+    const created = await runtime.actions.createWork({ brief: "Shared" });
 
     // Simulate the provider leaving it blocked (as the worker would).
     const blocked = applyOutcome(created, {
@@ -273,7 +273,7 @@ test("createWork selects the execution provider explicitly", async () => {
     // availability is a runtime fact enforced at the action boundary.
     const task = await withFakeBin("DSH_BIN", "dsh", () =>
       runtime.actions.createWork({
-        title: "Run on DSH",
+        brief: "Run on DSH",
         provider: "deepseek-harness"
       })
     );
@@ -287,7 +287,7 @@ test("createWork selects the execution provider explicitly", async () => {
 test("createWork defaults to the runtime default provider (claude-code)", async () => {
   const runtime = await makeRuntime();
   try {
-    const task = await runtime.actions.createWork({ title: "Default provider" });
+    const task = await runtime.actions.createWork({ brief: "Default provider" });
     assert.equal(task.execution.provider, "claude-code");
   } finally {
     await fs.rm(runtime.base, { recursive: true, force: true });
@@ -298,7 +298,7 @@ test("createWork rejects an unknown provider with the shared error", async () =>
   const runtime = await makeRuntime();
   try {
     await assert.rejects(
-      () => runtime.actions.createWork({ title: "Nope", provider: "codex" }),
+      () => runtime.actions.createWork({ brief: "Nope", provider: "codex" }),
       /Unknown execution provider "codex"\. Available: claude-code, deepseek-harness\./
     );
     assert.deepEqual(runtime.node.calls, []); // nothing launched
@@ -312,7 +312,7 @@ test("createWork persists model when reliably known (separate concern from provi
   try {
     const task = await withFakeBin("DSH_BIN", "dsh", () =>
       runtime.actions.createWork({
-        title: "With model",
+        brief: "With model",
         provider: "deepseek-harness",
         model: "deepseek-v4-flash"
       })
@@ -335,7 +335,7 @@ test("resumeWork refuses a decision block: decisions are answered, not allowed/r
     // capability check, so no resume attempt is made.
     const task = await withFakeBin("DSH_BIN", "dsh", () =>
       runtime.actions.createWork({
-        title: "DSH decision",
+        brief: "DSH decision",
         provider: "deepseek-harness"
       })
     );
@@ -368,7 +368,7 @@ test("answerWork records the human's answer to a decision; the task stays needs_
   try {
     const task = await withFakeBin("DSH_BIN", "dsh", () =>
       runtime.actions.createWork({
-        title: "DSH decision",
+        brief: "DSH decision",
         provider: "deepseek-harness"
       })
     );
@@ -410,7 +410,7 @@ test("answerWork records the human's answer to a decision; the task stays needs_
 test("answerWork validates: needs_you decision only, non-empty answer", async () => {
   const runtime = await makeRuntime();
   try {
-    const task = await runtime.actions.createWork({ title: "Working" });
+    const task = await runtime.actions.createWork({ brief: "Working" });
     await assert.rejects(
       () => runtime.actions.answerWork(task.id, { answer: "x" }),
       /working, not needs_you — nothing to answer/
@@ -461,7 +461,7 @@ test("a non-resumable NEEDS YOU task can still be closed without invoking the pr
     // closeWork never resumes the provider and never starts a new attempt.
     const task = await withFakeBin("DSH_BIN", "dsh", () =>
       runtime.actions.createWork({
-        title: "DSH decision",
+        brief: "DSH decision",
         provider: "deepseek-harness"
       })
     );
@@ -492,7 +492,7 @@ test("resumeWork refuses a permission block on a provider that cannot resume (ca
     // better than pretending a new run is a continuation of the same session.
     const task = await withFakeBin("DSH_BIN", "dsh", () =>
       runtime.actions.createWork({
-        title: "DSH permission",
+        brief: "DSH permission",
         provider: "deepseek-harness"
       })
     );

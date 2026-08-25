@@ -423,15 +423,26 @@ test("START after refinement creates the Task using the refined text", async () 
 
     // The refined text stays in the composer (fully editable) and START
     // submits whatever the composer currently holds — here the refined brief.
-    const created = await postJson(handle.url + "/api/tasks", { title: refined });
+    const created = await postJson(handle.url + "/api/tasks", { brief: refined });
     assert.equal(created.status, 201);
     const task = await created.json();
-    assert.equal(task.title, refined);
+
+    // A refined brief is multi-line and structured — exactly the shape the
+    // composer used to reject. The brief is kept VERBATIM as the task's
+    // intent; the title is the derived label, not the whole brief.
+    assert.equal(task.brief, refined);
+    assert.equal(task.title, "Investigate the minimum remote architecture.");
+    assert.ok(task.title.length < task.brief.length);
+
+    // The agent receives the whole brief, never the derived label — the
+    // Goals section must survive into the prompt.
     const prompt = await runtime.store.readText(
       path.join(runtime.store.taskDir(task.slug), "prompt.md"),
       ""
     );
     assert.match(prompt, /Investigate the minimum remote architecture/);
+    assert.match(prompt, /work from any network/);
+    assert.match(prompt, /keep it small/);
   } finally {
     await handle.close();
     await fs.rm(base, { recursive: true, force: true });
@@ -442,7 +453,7 @@ test("START after refinement creates the Task using the refined text", async () 
 test("START without refinement behaves exactly as today", async () => {
   const { base, node, handle } = await startTestServer();
   try {
-    const res = await postJson(handle.url + "/api/tasks", { title: "plain task" });
+    const res = await postJson(handle.url + "/api/tasks", { brief: "plain task" });
     assert.equal(res.status, 201);
     const task = await res.json();
     assert.equal(task.title, "plain task");
@@ -469,7 +480,7 @@ test("a failed refinement does not destroy the original text: START still uses i
     assert.match((await res.json()).error, /E_AUTH/);
 
     // The composer was never overwritten — START with the original text works.
-    const created = await postJson(handle.url + "/api/tasks", { title: original });
+    const created = await postJson(handle.url + "/api/tasks", { brief: original });
     assert.equal(created.status, 201);
     assert.equal((await created.json()).title, original);
   } finally {

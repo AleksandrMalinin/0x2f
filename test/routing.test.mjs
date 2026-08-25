@@ -197,7 +197,7 @@ async function makeRoutedRuntime({ prefer, withConfig = true } = {}) {
 test("actions: createWork with provider auto routes and persists the decision", async () => {
   const rt = await makeRoutedRuntime();
   try {
-    const task = await rt.actions.createWork({ title: "Auto routed task", provider: "auto" });
+    const task = await rt.actions.createWork({ brief: "Auto routed task", provider: "auto" });
     assert.equal(task.execution.provider, "alpha");
     const run = task.runs[0];
     assert.equal(run.requestedProvider, "auto");
@@ -216,7 +216,7 @@ test("actions: createWork with provider auto routes and persists the decision", 
 test("actions: the configured routing default routes an unspecified request", async () => {
   const rt = await makeRoutedRuntime({ prefer: ["beta", "alpha"] });
   try {
-    const task = await rt.actions.createWork({ title: "Default routed" });
+    const task = await rt.actions.createWork({ brief: "Default routed" });
     assert.equal(task.execution.provider, "beta");
     assert.equal(task.runs[0].requestedProvider, "auto");
   } finally {
@@ -228,7 +228,7 @@ test("actions: the configured routing default routes an unspecified request", as
 test("actions: without routing config an unspecified request keeps the runtime default", async () => {
   const rt = await makeRoutedRuntime({ withConfig: false });
   try {
-    const task = await rt.actions.createWork({ title: "Default manual" });
+    const task = await rt.actions.createWork({ brief: "Default manual" });
     assert.equal(task.execution.provider, "claude-code");
     assert.equal(task.runs[0].requestedProvider, "claude-code");
     assert.equal(task.runs[0].routing, undefined);
@@ -241,7 +241,7 @@ test("actions: without routing config an unspecified request keeps the runtime d
 test("actions: a manual override bypasses the router entirely", async () => {
   const rt = await makeRoutedRuntime();
   try {
-    const task = await rt.actions.createWork({ title: "Manual", provider: "beta" });
+    const task = await rt.actions.createWork({ brief: "Manual", provider: "beta" });
     assert.equal(task.execution.provider, "beta");
     assert.equal(task.runs[0].requestedProvider, "beta");
     assert.equal(task.runs[0].routing, undefined);
@@ -260,7 +260,7 @@ test("actions: AUTO with nothing available fails clearly instead of guessing", a
     const node = fakeNode();
     const runtime = createRuntime(base, { node, env });
     await assert.rejects(
-      () => runtime.actions.createWork({ title: "Nothing", provider: "auto" }),
+      () => runtime.actions.createWork({ brief: "Nothing", provider: "auto" }),
       /AUTO routing: no execution provider is available/
     );
     assert.deepEqual(node.calls, []); // nothing spawned
@@ -273,7 +273,7 @@ test("actions: AUTO with nothing available fails clearly instead of guessing", a
 test("actions: rerun --provider auto re-routes and keeps the previous run", async () => {
   const rt = await makeRoutedRuntime();
   try {
-    const task = await rt.actions.createWork({ title: "Rerouted", provider: "alpha" });
+    const task = await rt.actions.createWork({ brief: "Rerouted", provider: "alpha" });
     // Simulate run 1 finishing as the worker would.
     const { applyOutcome } = await import("../src/core/lifecycle.mjs");
     const done = applyOutcome(task, { status: "ready", result: "one" });
@@ -325,7 +325,7 @@ test("API: POST /api/tasks with provider auto routes through the shared action",
       const res = await fetch(handle.url + "/api/tasks", {
         method: "POST",
         headers: { "content-type": "application/json", ...authHeaders() },
-        body: JSON.stringify({ title: "Routed via API", provider: "auto" })
+        body: JSON.stringify({ brief: "Routed via API", provider: "auto" })
       });
       assert.equal(res.status, 201);
       const task = await res.json();

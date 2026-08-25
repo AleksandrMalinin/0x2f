@@ -1069,3 +1069,69 @@ test("a decision question with a fenced code block in its body renders intact", 
   assert.equal(code.lang, "js");
   assert.equal(code.text, "for (let i = 0; i < 3; i++) attempt();");
 });
+
+// --- the task brief in a detail view ----------------------------------------
+//
+// A detail view shows the derived title as its heading. It must ALSO show the
+// brief the user wrote — otherwise shortening the title would take away the
+// user's own words, which is the one thing they actually authored. But it
+// must not show it twice: when the title already says everything the brief
+// says, the body is empty and a one-line task looks exactly as it did before
+// briefs existed.
+//
+// The decision is delegated to the SAME derivation core used to name the
+// task (core/title.mjs), never to a `brief !== title` string comparison.
+
+test("briefBody is empty when the derived title already represents the whole brief", () => {
+  const row = projectRow(task({ title: "fix the login redirect", brief: "fix the login redirect" }), [], { open: true });
+  assert.equal(row.brief, "fix the login redirect");
+  assert.equal(row.briefBody, "", "nothing to render — the heading already said it");
+});
+
+// The adjustment that a naive inequality gets wrong: the brief and the title
+// are DIFFERENT STRINGS here, yet the title represents all of it.
+test("a decorated or wrapped brief does not render a body that only repeats the heading", () => {
+  for (const brief of ["# Fix the login redirect", "- Fix the login redirect", "  Fix the login redirect  "]) {
+    const row = projectRow(task({ title: "Fix the login redirect", brief }), [], { open: true });
+    assert.notEqual(row.brief, row.title, "the raw strings differ — a `!==` check would render a body");
+    assert.equal(row.briefBody, "", brief);
+  }
+});
+
+test("a real multi-paragraph brief renders in full under the heading", () => {
+  const brief =
+    "Audit the authentication boundary for token leakage.\n\n" +
+    "Scope\n- every path that reads or writes the per-runtime auth token\n" +
+    "- the pairing ceremony\n\nConstraints\n- no new dependencies";
+  const row = projectRow(
+    task({ title: "Audit the authentication boundary for token leakage.", brief }),
+    [],
+    { open: true }
+  );
+  // The body is the brief MINUS the sentence the heading already is — the
+  // heading is never printed twice (the same split the decision card uses).
+  assert.ok(!row.briefBody.startsWith("Audit the authentication boundary"),
+    "the heading sentence must not be repeated as the body's first line");
+  assert.ok(row.briefBody.startsWith("Scope"));
+  assert.ok(row.briefBody.includes("no new dependencies"), "the rest of the brief is intact");
+  // And it survives the shared rich-text subset as structure, not one blob.
+  const blocks = parseRich(row.briefBody);
+  assert.ok(blocks.some(b => b.type === "list"), "the Scope list must parse as a list");
+});
+
+test("a task written before briefs existed renders no duplicate body", () => {
+  // Legacy shape: a title, no brief. The title WAS the full text then, so
+  // falling back to it must not produce a body repeating the heading.
+  const legacy = task({ title: "investigate the correction lifecycle" });
+  delete legacy.brief;
+  const row = projectRow(legacy, [], { open: true });
+  assert.equal(row.brief, "investigate the correction lifecycle");
+  assert.equal(row.briefBody, "");
+});
+
+test("briefTruncated is carried through so a cut remote brief can say it was cut", () => {
+  const plain = projectRow(task({ title: "t", brief: "t" }), [], { open: true });
+  assert.equal(plain.briefTruncated, false);
+  const cut = projectRow(task({ title: "t", brief: "t and more", briefTruncated: true }), [], { open: true });
+  assert.equal(cut.briefTruncated, true);
+});

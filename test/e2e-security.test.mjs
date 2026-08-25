@@ -167,7 +167,7 @@ test("a relay cannot forge a command: envelopes without the pairing key never ex
   const requestId = "forge-" + Math.random().toString(36).slice(2, 10);
   const { iv, data } = await encrypt(
     attackerKey,
-    { cmd: "command", op: "create", body: { title: "Forged task" }, requestId, ts: Date.now() },
+    { cmd: "command", op: "create", body: { brief: "Forged task" }, requestId, ts: Date.now() },
     { from: attackerPhoneId, requestId }
   );
   const res = await postEnvelope({
@@ -200,7 +200,7 @@ test("a tampered envelope (bit flip in the ciphertext) is rejected", async t => 
   const requestId = "tamper-" + Math.random().toString(36).slice(2, 10);
   const { iv, data } = await encrypt(
     key,
-    { cmd: "command", op: "create", body: { title: "Tampered" }, requestId, ts: Date.now() },
+    { cmd: "command", op: "create", body: { brief: "Tampered" }, requestId, ts: Date.now() },
     { from: phoneId, requestId }
   );
   const flipped = data.slice(0, 4) + (data[4] === "A" ? "B" : "A") + data.slice(5);
@@ -227,10 +227,10 @@ test("a captured command envelope cannot be replayed to execute twice", async t 
   const { node, phone } = await makeStack(t, { pair: true });
   const requestId = "capture-" + Math.random().toString(36).slice(2, 10);
 
-  await phone.command("create", { body: { title: "Once" } }, { requestId });
+  await phone.command("create", { body: { brief: "Once" } }, { requestId });
   // The SAME envelope (same requestId) replayed: the persisted ack cache
   // answers without executing again.
-  const again = await phone.command("create", { body: { title: "Once" } }, { requestId });
+  const again = await phone.command("create", { body: { brief: "Once" } }, { requestId });
   assert.equal(again.title, "Once");
   assert.equal(node.calls.length, 1);
 
@@ -238,7 +238,7 @@ test("a captured command envelope cannot be replayed to execute twice", async t 
   // bound once the cache evicts).
   await assert.rejects(
     () =>
-      phone.command("create", { body: { title: "Stale" } }, { requestId: "stale-" + Math.random().toString(36).slice(2, 10), ts: Date.now() - 10 * 60 * 1000 }),
+      phone.command("create", { body: { brief: "Stale" } }, { requestId: "stale-" + Math.random().toString(36).slice(2, 10), ts: Date.now() - 10 * 60 * 1000 }),
     error => error.status === 400 && /stale|replayed/i.test(error.message)
   );
   assert.equal(node.calls.length, 1);
@@ -249,7 +249,7 @@ test("a captured command envelope cannot be replayed to execute twice", async t 
 test("replay protection survives a Mac/runtime restart (persisted ack cache)", async t => {
   const { handle, configPath, node, phone, agent } = await makeStack(t, { pair: true });
   const requestId = "restart-" + Math.random().toString(36).slice(2, 10);
-  await phone.command("create", { body: { title: "Before restart" } }, { requestId });
+  await phone.command("create", { body: { brief: "Before restart" } }, { requestId });
   assert.equal(node.calls.length, 1);
 
   // Stop the agent (flushing the ack cache to disk) and wait for the relay to
@@ -284,7 +284,7 @@ test("replay protection survives a Mac/runtime restart (persisted ack cache)", a
   let replayed = null;
   for (let attempt = 0; attempt < 8; attempt++) {
     try {
-      replayed = await phone.command("create", { body: { title: "Replay after restart" } }, { requestId });
+      replayed = await phone.command("create", { body: { brief: "Replay after restart" } }, { requestId });
       break;
     } catch (error) {
       if (error.status !== 503) throw error;
@@ -302,8 +302,8 @@ test("replay protection survives a Mac/runtime restart (persisted ack cache)", a
 test("legitimate retries (same requestId) return the same ack without double execution", async t => {
   const { node, phone } = await makeStack(t, { pair: true });
   const requestId = "retry-" + Math.random().toString(36).slice(2, 10);
-  const first = await phone.command("create", { body: { title: "Retry me" } }, { requestId });
-  const second = await phone.command("create", { body: { title: "Retry me" } }, { requestId });
+  const first = await phone.command("create", { body: { brief: "Retry me" } }, { requestId });
+  const second = await phone.command("create", { body: { brief: "Retry me" } }, { requestId });
   assert.deepEqual(second, first);
   assert.equal(node.calls.length, 1);
 });
@@ -361,7 +361,7 @@ test("a re-paired (rotated) Mac rejects envelopes from the old phone key", async
   // with the retired key is dropped by the Mac (no execution, no answer).
   const { iv, data } = await encrypt(
     phone.key,
-    { cmd: "command", op: "create", body: { title: "Old key" }, requestId: "old-key", ts: Date.now() },
+    { cmd: "command", op: "create", body: { brief: "Old key" }, requestId: "old-key", ts: Date.now() },
     { from: phone.phoneId, requestId: "old-key" }
   );
   const before = node.calls.length;
@@ -381,7 +381,7 @@ test("a re-paired (rotated) Mac rejects envelopes from the old phone key", async
   await new Promise(r => setTimeout(r, 200));
   assert.equal(node.calls.length, before, "the old key never executed");
 
-  const created = await fresh.api("/api/tasks", { method: "POST", body: { title: "Fresh works" } });
+  const created = await fresh.api("/api/tasks", { method: "POST", body: { brief: "Fresh works" } });
   assert.equal(created.title, "Fresh works");
 });
 
@@ -389,7 +389,7 @@ test("a re-paired (rotated) Mac rejects envelopes from the old phone key", async
 
 test("relay state and persisted state hold no task/source/result payloads", async t => {
   const { handle, dataFile, phone } = await makeStack(t, { pair: true });
-  const task = await phone.api("/api/tasks", { method: "POST", body: { title: "Top secret task" } });
+  const task = await phone.api("/api/tasks", { method: "POST", body: { brief: "Top secret task" } });
   await phone.api("/api/tasks/" + task.id + "/close", { method: "POST" });
   await new Promise(r => setTimeout(r, 150));
   await handle.state.flushSave();
@@ -507,7 +507,7 @@ test("the full remote-control loop works end-to-end over the E2E channel", async
   const { phone } = await makeStack(t, { pair: true });
   const snap = await phone.snapshot();
   assert.ok(Array.isArray(snap.tasks));
-  const created = await phone.api("/api/tasks", { method: "POST", body: { title: "E2E task" } });
+  const created = await phone.api("/api/tasks", { method: "POST", body: { brief: "E2E task" } });
   assert.equal(created.status, "working");
   const detail = await phone.api("/api/tasks/" + created.id);
   assert.equal(detail.id, created.id);

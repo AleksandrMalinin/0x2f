@@ -132,6 +132,16 @@
   .provenance-wrap { margin-top: 30px; }
   .provenance-k { font-size: 10px; letter-spacing: .16em; color: #5c6771; font-weight: 600; margin-bottom: 10px; }
 
+  /* The task brief — the user's own words, under the derived heading. Prose
+     width, prose colour: the heading is the label 0x2F computed, this is what
+     the human actually wrote and what the agent received. Rendered only when
+     the title does not already say all of it (ledger.mjs `briefBody`). */
+  .brief { margin-top: 18px; max-width: 780px; }
+  .brief-body { font-size: 14px; line-height: 1.62; color: #37424c; }
+  .brief-body > *:first-child { margin-top: 0; }
+  .brief-body > *:last-child { margin-bottom: 0; }
+  .brief-truncated { margin-top: 8px; font-size: 10px; letter-spacing: .14em; color: #8f9aa4; }
+
   .status-line { margin-top: 24px; display: flex; align-items: baseline; gap: 18px; max-width: 860px; }
   .status-phase { font-size: 10px; letter-spacing: .16em; color: #5c6771; width: 102px; flex: none; }
   .status-arg { font-size: 14.5px; color: #2f2f2f; flex: 1; letter-spacing: -.006em; overflow-wrap: anywhere; }
@@ -528,6 +538,12 @@
     .m-dstate.blue { color: #2f5fa8; }
     .m-dstate.dim { color: #5c6771; font-weight: normal; }
     .m-dt { font-size: 12px; color: #5c6771; font-variant-numeric: tabular-nums; flex: none; }
+    /* The brief on the phone: same component as desktop, phone metrics. The
+       relay carries it in full (TRUNC.brief = MAX_BRIEF), so this is the
+       whole task as the user wrote it, not a preview. */
+    .brief { margin-top: 14px; max-width: none; }
+    .brief-body { font-size: 15px; line-height: 1.55; }
+
     .m-dtitle { margin-top: 10px; font-family: "Instrument Sans", system-ui, sans-serif; font-size: 21px; font-weight: 500; letter-spacing: -.024em; line-height: 1.14; color: #2f2f2f; overflow-wrap: anywhere; text-wrap: pretty; }
 
     .m-dmeta { margin-top: 14px; font-size: 11px; letter-spacing: .06em; color: #5c6771; }

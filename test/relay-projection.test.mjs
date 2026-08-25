@@ -21,6 +21,7 @@ import {
   REMOTE_LIMITS
 } from "../src/relay/project.mjs";
 import { FAILURE_KINDS } from "../src/core/lifecycle.mjs";
+import { MAX_BRIEF } from "../src/core/limits.mjs";
 
 const baseTask = (over = {}) => ({
   id: 1,
@@ -141,4 +142,52 @@ test("projectBlockedOn: an absolute workspace path inside a decision question is
   );
   assert.equal(out.text.includes(base), false);
   assert.match(out.text, /Should …\/src\/a\.ts move\?/);
+});
+
+// --- the task brief on the remote surface -----------------------------------
+//
+// The phone's task detail shows the user's own brief. If the relay cut it to
+// a short cap, the phone would silently show a different (shorter) task than
+// the Mac — so the brief is carried WHOLE: the relay's bound is the same
+// MAX_BRIEF the action already enforced, meaning the cap can never bite in
+// practice. If it ever did, the cut is explicit and the surface is told, so
+// the phone says "truncated" rather than ending mid-sentence.
+
+test("projectTask carries the full brief — a long brief is not cut for the phone", async () => {
+  const brief =
+    "Audit the authentication boundary for token leakage.\n\n" +
+    "Scope\n- every path that reads or writes the per-runtime auth token\n" +
+    "- the pairing ceremony and the device secret rotation flow\n\n" +
+    "Constraints\n- do not change the wire protocol\n- no new dependencies";
+  const p = projectTask(baseTask({ brief }));
+  assert.equal(p.brief, brief, "every character reaches the phone");
+  assert.equal(p.briefTruncated, undefined, "nothing was cut, so nothing claims it was");
+});
+
+test("the relay's brief bound IS the action's bound — the remote surface loses nothing", () => {
+  assert.equal(REMOTE_LIMITS.brief, MAX_BRIEF);
+  const atCap = "x".repeat(MAX_BRIEF);
+  const p = projectTask(baseTask({ brief: atCap }));
+  assert.equal(p.brief, atCap);
+  assert.equal(p.briefTruncated, undefined);
+});
+
+test("a brief beyond the bound is cut EXPLICITLY and flagged for the UI to say so", () => {
+  const p = projectTask(baseTask({ brief: "x".repeat(MAX_BRIEF + 500) }));
+  assert.ok(p.brief.length < MAX_BRIEF + 500);
+  assert.match(p.brief, /\[truncated by the relay\]$/);
+  assert.equal(p.briefTruncated, true, "the UI must be able to say the text was cut");
+});
+
+test("a task with no brief falls back to its title, as legacy tasks require", () => {
+  const legacy = baseTask({ title: "legacy task" });
+  delete legacy.brief;
+  assert.equal(projectTask(legacy).brief, "legacy task");
+});
+
+test("an absolute workspace path quoted inside a brief is still stripped", () => {
+  const base = "/Users/bob/secret/project";
+  const p = projectTask(baseTask({ brief: "Refactor " + base + "/src/a.ts please." }), base);
+  assert.equal(p.brief.includes(base), false, "the Mac's absolute layout must never leave it");
+  assert.match(p.brief, /Refactor …\/src\/a\.ts please\./);
 });

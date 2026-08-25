@@ -87,7 +87,7 @@ async function waitFor(condition, timeout = 3000) {
 test("POST /api/tasks creates a task through the shared action and starts it on the node", async () => {
   const { base, node, handle } = await startTestServer();
   try {
-    const res = await postJson(handle.url + "/api/tasks", { title: "API task" });
+    const res = await postJson(handle.url + "/api/tasks", { brief: "API task" });
     assert.equal(res.status, 201);
     const task = await res.json();
     assert.equal(task.status, "working");
@@ -106,9 +106,9 @@ test("POST /api/tasks creates a task through the shared action and starts it on 
 test("POST /api/tasks without a title -> 400 from the shared action", async () => {
   const { base, handle } = await startTestServer();
   try {
-    const res = await postJson(handle.url + "/api/tasks", { title: "   " });
+    const res = await postJson(handle.url + "/api/tasks", { brief: "   " });
     assert.equal(res.status, 400);
-    assert.equal((await res.json()).error, "Task title is required.");
+    assert.equal((await res.json()).error, "Task brief is required.");
   } finally {
     await handle.close();
     await fs.rm(base, { recursive: true, force: true });
@@ -118,7 +118,7 @@ test("POST /api/tasks without a title -> 400 from the shared action", async () =
 test("GET /api/tasks and GET /api/tasks/:id (with result)", async () => {
   const { base, runtime, handle } = await startTestServer();
   try {
-    const created = await runtime.actions.createWork({ title: "List me" });
+    const created = await runtime.actions.createWork({ brief: "List me" });
     await runtime.store.writeText(
       path.join(runtime.store.taskDir(created.slug), "result.md"),
       "## Result\nok"
@@ -140,7 +140,7 @@ test("GET /api/tasks and GET /api/tasks/:id (with result)", async () => {
 test("POST /api/tasks/:id/allow and /reject resume via the shared action; guards return 400", async () => {
   const { base, node, runtime, handle } = await startTestServer();
   try {
-    const task = await runtime.actions.createWork({ title: "Blocked" });
+    const task = await runtime.actions.createWork({ brief: "Blocked" });
     await blockTask(runtime, task);
 
     const allow = await postJson(handle.url + "/api/tasks/" + task.id + "/allow");
@@ -155,7 +155,7 @@ test("POST /api/tasks/:id/allow and /reject resume via the shared action; guards
     assert.deepEqual(node.calls.at(-1), ["resume", task.slug, "reject"]);
 
     // Guard: allow on a task that is not needs_you -> the shared action's 400.
-    const notBlocked = await runtime.actions.createWork({ title: "Working" });
+    const notBlocked = await runtime.actions.createWork({ brief: "Working" });
     const res = await postJson(handle.url + "/api/tasks/" + notBlocked.id + "/allow");
     assert.equal(res.status, 400);
     assert.match((await res.json()).error, /not needs_you — nothing to allow\./);
@@ -168,7 +168,7 @@ test("POST /api/tasks/:id/allow and /reject resume via the shared action; guards
 test("POST /api/tasks/:id/close moves the task to done", async () => {
   const { base, runtime, handle } = await startTestServer();
   try {
-    const task = await runtime.actions.createWork({ title: "Close me" });
+    const task = await runtime.actions.createWork({ brief: "Close me" });
     const res = await postJson(handle.url + "/api/tasks/" + task.id + "/close");
     assert.equal(res.status, 200);
     assert.equal((await res.json()).status, "done");
@@ -225,7 +225,7 @@ test("SSE delivers normalized task.created when a task is created through the AP
 
     // Wait for the SSE connection to be live, then create a task.
     await waitFor(() => text.includes(": connected"));
-    const res = await postJson(handle.url + "/api/tasks", { title: "Live task" });
+    const res = await postJson(handle.url + "/api/tasks", { brief: "Live task" });
     assert.equal(res.status, 201);
 
     await waitFor(() => text.includes("event: task.created"));
@@ -442,7 +442,7 @@ test("the browser client's full module graph is served (no blank-page regression
 test("GET /api/events/history returns the persisted normalized log per task", async () => {
   const { base, runtime, handle } = await startTestServer();
   try {
-    const task = await runtime.actions.createWork({ title: "History" });
+    const task = await runtime.actions.createWork({ brief: "History" });
     await runtime.store.appendEvent(task.slug, {
       type: "tool.started",
       taskId: task.id,
@@ -469,7 +469,7 @@ test("GET /api/events/history returns the persisted normalized log per task", as
 test("a task with no event log yet is still present in the history", async () => {
   const { base, runtime, handle } = await startTestServer();
   try {
-    const task = await runtime.actions.createWork({ title: "Quiet" });
+    const task = await runtime.actions.createWork({ brief: "Quiet" });
     await fs.rm(runtime.store.eventLogPath(task.slug), { force: true });
     const history = await apiFetch(handle.url + "/api/events/history").then(r => r.json());
     assert.deepEqual(history.events[String(task.id)], []);
@@ -516,7 +516,7 @@ test("POST /api/tasks creates through the selected provider", async () => {
     // action boundary enforces availability, not just the UI.
     const res = await withFakeBin("DSH_BIN", "dsh", () =>
       postJson(handle.url + "/api/tasks", {
-        title: "DSH task",
+        brief: "DSH task",
         provider: "deepseek-harness"
       })
     );
@@ -535,7 +535,7 @@ test("POST /api/tasks with an unknown provider -> 400 from the shared action", a
   const { base, handle } = await startTestServer();
   try {
     const res = await postJson(handle.url + "/api/tasks", {
-      title: "Nope",
+      brief: "Nope",
       provider: "codex"
     });
     assert.equal(res.status, 400);
@@ -551,7 +551,7 @@ test("POST /api/tasks with an unknown provider -> 400 from the shared action", a
 test("POST /api/tasks/:id/rerun starts a second run under the same task through the shared action", async () => {
   const { base, node, runtime, handle } = await startTestServer();
   try {
-    const task = await runtime.actions.createWork({ title: "Rerun via API" });
+    const task = await runtime.actions.createWork({ brief: "Rerun via API" });
     // Let run 1 finish (as the worker would) so rerun is allowed: apply the
     // outcome and finalize the run record with real timing.
     const { applyOutcome } = await import("../src/core/lifecycle.mjs");
@@ -631,7 +631,7 @@ function postBodyless(url, headers = {}) {
 test("DECISION FLOW: answer then SEND BACK continues the same task (the dogfooding sequence)", async () => {
   const { base, node, runtime, handle } = await startTestServer();
   try {
-    const task = await runtime.actions.createWork({ title: "Decision task" });
+    const task = await runtime.actions.createWork({ brief: "Decision task" });
     await blockOnDecision(runtime, task);
 
     // ANSWER records the decision.
@@ -685,7 +685,7 @@ test("DECISION FLOW: answer then SEND BACK continues the same task (the dogfoodi
 test("DECISION FLOW: a body-less rerun POST is a valid request, not a 500", async () => {
   const { base, runtime, handle } = await startTestServer();
   try {
-    const task = await runtime.actions.createWork({ title: "Bodyless rerun" });
+    const task = await runtime.actions.createWork({ brief: "Bodyless rerun" });
     await blockOnDecision(runtime, task);
 
     const res = await postBodyless(handle.url + "/api/tasks/" + task.id + "/rerun");
@@ -704,7 +704,7 @@ test("DECISION FLOW: a body-less rerun POST is a valid request, not a 500", asyn
 test("DECISION FLOW: SEND BACK is idempotent — a retry never starts a duplicate run", async () => {
   const { base, node, runtime, handle } = await startTestServer();
   try {
-    const task = await runtime.actions.createWork({ title: "Retry safety" });
+    const task = await runtime.actions.createWork({ brief: "Retry safety" });
     await blockOnDecision(runtime, task);
     await postJson(handle.url + "/api/tasks/" + task.id + "/answer", { answer: "go" });
 
@@ -738,7 +738,7 @@ test("DECISION FLOW: SEND BACK is idempotent — a retry never starts a duplicat
 test("DECISION FLOW: concurrent duplicate SEND BACKs collapse to one run", async () => {
   const { base, node, runtime, handle } = await startTestServer();
   try {
-    const task = await runtime.actions.createWork({ title: "Double tap" });
+    const task = await runtime.actions.createWork({ brief: "Double tap" });
     await blockOnDecision(runtime, task);
 
     const key = "req-double-tap";
@@ -764,7 +764,7 @@ test("DECISION FLOW: concurrent duplicate SEND BACKs collapse to one run", async
 test("DECISION FLOW: distinct request ids are distinct gestures", async () => {
   const { base, runtime, handle } = await startTestServer();
   try {
-    const task = await runtime.actions.createWork({ title: "Fresh keys" });
+    const task = await runtime.actions.createWork({ brief: "Fresh keys" });
     await blockOnDecision(runtime, task);
     const url = handle.url + "/api/tasks/" + task.id + "/rerun";
 
@@ -786,7 +786,7 @@ test("DECISION FLOW: distinct request ids are distinct gestures", async () => {
 test("every API failure is explicit, valid JSON (never an empty or partial body)", async () => {
   const { base, runtime, handle } = await startTestServer();
   try {
-    const task = await runtime.actions.createWork({ title: "Failure shapes" });
+    const task = await runtime.actions.createWork({ brief: "Failure shapes" });
 
     const cases = [
       // Malformed JSON is the client's error — an explicit 400, not a 500.
@@ -842,7 +842,7 @@ test("every API failure is explicit, valid JSON (never an empty or partial body)
 test("GET /api/tasks/:id/runs/:n returns one run with its own result; unknown run -> 404", async () => {
   const { base, runtime, handle } = await startTestServer();
   try {
-    const task = await runtime.actions.createWork({ title: "Run detail" });
+    const task = await runtime.actions.createWork({ brief: "Run detail" });
     await runtime.store.writeText(
       path.join(runtime.store.taskDir(task.slug), "runs", "1", "result.md"),
       "run one's own result"
@@ -866,7 +866,7 @@ test("GET /api/tasks/:id/runs/:n returns one run with its own result; unknown ru
 test("GET /api/tasks/:id includes the projected run history", async () => {
   const { base, runtime, handle } = await startTestServer();
   try {
-    const task = await runtime.actions.createWork({ title: "With runs" });
+    const task = await runtime.actions.createWork({ brief: "With runs" });
     const detail = await apiFetch(handle.url + "/api/tasks/" + task.id).then(r => r.json());
     assert.equal(detail.runs.length, 1);
     assert.equal(detail.runs[0].run, 1);
@@ -882,7 +882,7 @@ test("GET /api/tasks/:id includes the projected run history", async () => {
 async function makeDecisionTask(runtime) {
   const task = await withFakeBin("DSH_BIN", "dsh", () =>
     runtime.actions.createWork({
-      title: "Decision",
+      brief: "Decision",
       provider: "deepseek-harness"
     })
   );
@@ -933,7 +933,7 @@ test("ALLOW on a decision is refused over the API; ANSWER on a permission is ref
     assert.match((await allowRes.json()).error, /blocked on a decision, not a permission/);
 
     // A permission block is answered? No — it is allowed/rejected.
-    const permTask = await runtime.actions.createWork({ title: "Perm" });
+    const permTask = await runtime.actions.createWork({ brief: "Perm" });
     const blocked = applyOutcome(permTask, {
       status: "needs_you",
       reason: "permission",

@@ -219,7 +219,7 @@ test("currentRunNumber is the last record for sequential runs; 1 for legacy", ()
 test("createWork persists the first run with the task", async () => {
   const runtime = await makeRuntime();
   try {
-    const task = await runtime.actions.createWork({ title: "First run" });
+    const task = await runtime.actions.createWork({ brief: "First run" });
     assert.equal(task.runs.length, 1);
     assert.equal(task.runs[0].run, 1);
     assert.equal(task.runs[0].provider, "claude-code");
@@ -239,7 +239,7 @@ test("createWork persists the first run with the task", async () => {
 test("rerunWork appends a second run under the SAME task without overwriting the first", async () => {
   const runtime = await makeRuntime();
   try {
-    const task = await runtime.actions.createWork({ title: "Rerun me" });
+    const task = await runtime.actions.createWork({ brief: "Rerun me" });
     const done = await applyWorkerOutcome(runtime, task, {
       status: "ready",
       result: "first result"
@@ -294,7 +294,7 @@ test("rerunWork without a provider retries through the task's current provider",
     // resolvable for creation AND for the retry through its current provider.
     const task = await withFakeBin("DSH_BIN", "dsh", () =>
       runtime.actions.createWork({
-        title: "Retry",
+        brief: "Retry",
         provider: "deepseek-harness"
       })
     );
@@ -313,7 +313,7 @@ test("rerunWork without a provider retries through the task's current provider",
 test("rerunWork refuses while the task is working (sequential runs only)", async () => {
   const runtime = await makeRuntime();
   try {
-    const task = await runtime.actions.createWork({ title: "In flight" });
+    const task = await runtime.actions.createWork({ brief: "In flight" });
     await assert.rejects(
       () => runtime.actions.rerunWork(task.id, { provider: "deepseek-harness" }),
       /still executing\. Runs of one task are sequential/
@@ -327,7 +327,7 @@ test("rerunWork refuses while the task is working (sequential runs only)", async
 test("rerunWork rejects an unknown provider with the shared error", async () => {
   const runtime = await makeRuntime();
   try {
-    const task = await runtime.actions.createWork({ title: "Nope" });
+    const task = await runtime.actions.createWork({ brief: "Nope" });
     await applyWorkerOutcome(runtime, task, { status: "ready", result: "done" });
     await assert.rejects(
       () => runtime.actions.rerunWork(task.id, { provider: "codex" }),
@@ -379,7 +379,7 @@ test("rerunWork materializes a legacy task's history before appending the new ru
 test("getRun returns one run's own result; an unknown run is a 404", async () => {
   const runtime = await makeRuntime();
   try {
-    const task = await runtime.actions.createWork({ title: "Results" });
+    const task = await runtime.actions.createWork({ brief: "Results" });
     await runtime.store.writeText(
       path.join(runtime.store.taskDir(task.slug), "runs", "1", "result.md"),
       "run one result"
@@ -397,7 +397,7 @@ test("getRun returns one run's own result; an unknown run is a 404", async () =>
 test("getWork includes the projected run history", async () => {
   const runtime = await makeRuntime();
   try {
-    const task = await runtime.actions.createWork({ title: "With runs" });
+    const task = await runtime.actions.createWork({ brief: "With runs" });
     const detail = await runtime.actions.getWork(task.id);
     assert.equal(detail.runs.length, 1);
     assert.equal(detail.runs[0].run, 1);
@@ -549,7 +549,7 @@ test("DOGFOODING: the same task through claude-code then deepseek-harness persis
 
         // Run 01 — claude-code, through the real worker + provider adapter.
         const task = await runtime.actions.createWork({
-          title: "Investigate why retry state is lost"
+          brief: "Investigate why retry state is lost"
         });
         await waitForStatus(runtime, task.id, "ready");
 
@@ -624,7 +624,7 @@ test("DOGFOODING: a needs_you run reopens on resume and finalizes with attempts=
     const claudeBin = await fakeClaudeResumableBin();
     await withEnv("CLAUDE_BIN", claudeBin, async () => {
       const runtime = createRuntime(base);
-      const task = await runtime.actions.createWork({ title: "Resume flow" });
+      const task = await runtime.actions.createWork({ brief: "Resume flow" });
       await waitForStatus(runtime, task.id, "needs_you");
 
       let blocked = await runtime.store.findTask(task.id);
@@ -669,7 +669,7 @@ test("DOGFOODING: a needs_you run is preserved in history with its block", async
     await withEnv("DSH_BIN", dshDecision, async () => {
       const runtime = createRuntime(base);
       const task = await runtime.actions.createWork({
-        title: "Decision",
+        brief: "Decision",
         provider: "deepseek-harness"
       });
       await waitForStatus(runtime, task.id, "needs_you");
@@ -699,7 +699,7 @@ test("DOGFOODING: a failed rerun is preserved in history; the previous ready run
 
     await withEnv("CLAUDE_BIN", claudeBin, async () => {
       const runtime = createRuntime(base);
-      const task = await runtime.actions.createWork({ title: "Failure" });
+      const task = await runtime.actions.createWork({ brief: "Failure" });
       await waitForStatus(runtime, task.id, "ready");
       assert.equal((await runtime.store.findTask(task.id)).runs[0].outcome, "ready");
 

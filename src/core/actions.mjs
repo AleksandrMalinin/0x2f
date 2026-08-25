@@ -15,7 +15,7 @@
 //     router,       // AUTO routing (core/router.mjs) — resolves "auto" and
 //                   // the configured default provider request
 //     workspaceId,  // logical workspace id ("local" today)
-//     buildPrompt   // (title) -> prompt string
+//     buildPrompt   // (brief) -> prompt string
 //   }
 
 import path from "node:path";
@@ -23,7 +23,8 @@ import { closeTask } from "./lifecycle.mjs";
 import { WorkError } from "./errors.mjs";
 import { workEvent } from "./events.mjs";
 import { makeRunRecord, taskRuns, legacyRun } from "./runs.mjs";
-import { MAX_TITLE, MAX_NOTE, MAX_ANSWER, MAX_SELECTOR } from "./limits.mjs";
+import { MAX_BRIEF, MAX_TITLE, MAX_NOTE, MAX_ANSWER, MAX_SELECTOR } from "./limits.mjs";
+import { deriveTitle } from "./title.mjs";
 import { unavailableMessage } from "../providers/index.mjs";
 
 export function createActions(ctx) {
@@ -147,25 +148,39 @@ export function createActions(ctx) {
     return { ...record, result };
   }
 
-  // createWork({ title, provider?, model? }): create the task and start
+  // createWork({ brief, provider?, model? }): create the task and start
   // execution on the node. `provider` is the user's request: an explicit id,
   // "auto" (the deterministic router), or undefined (the configured default —
   // AUTO when .work/routing.json says so). The task is the persistent system;
   // the node + provider + session are execution infrastructure underneath it.
-  async function createWork({ title, provider, model } = {}) {
-    if (!title || !title.trim()) {
-      throw new WorkError("Task title is required.");
+  //
+  // ONE piece of user text: the brief. It is the task's intent, kept
+  // verbatim, and it is what the agent receives. The short `title` a ledger
+  // row shows is DERIVED from it (core/title.mjs) — deterministically, with
+  // no model call, so creating a task never depends on a provider being
+  // authenticated. There is deliberately no Title + Description form: the
+  // user writes the task, 0x2F names it.
+  async function createWork({ brief, provider, model } = {}) {
+    if (!brief || !brief.trim()) {
+      throw new WorkError("Task brief is required.");
     }
-    requireWithin(title, MAX_TITLE, "Task title");
+    requireWithin(brief, MAX_BRIEF, "Task brief");
     requireWithin(provider, MAX_SELECTOR, "Provider id");
     requireWithin(model, MAX_SELECTOR, "Model id");
-    const clean = title.trim();
+    const clean = brief.trim();
+    const { title } = deriveTitle(clean);
+    // Derivation targets ~80 characters, so this can only fire on a bug in
+    // core/title.mjs — but a guard that is only asserted in a comment is not
+    // a guard, and an unbounded title would reach every surface and the
+    // task's directory name.
+    requireWithin(title, MAX_TITLE, "Task title");
     const target = resolveTarget(provider);
 
+    // The agent receives the FULL brief, never the derived label.
     const prompt = await ctx.buildPrompt(clean);
     const startedAt = new Date().toISOString();
 
-    const task = await store.createTask(clean, prompt, {
+    const task = await store.createTask({ title, brief: clean, prompt }, {
       provider: target.provider,
       node: target.node,
       workspace: ctx.workspaceId,

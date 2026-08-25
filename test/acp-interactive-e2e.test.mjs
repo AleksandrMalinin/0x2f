@@ -117,7 +117,7 @@ test("INTERACTIVE E2E: permission request -> NEEDS YOU -> ALLOW -> the same run 
   try {
     const runtime = createRuntime(base);
     const task = await runtime.actions.createWork({
-      title: "Interactive permission flow",
+      brief: "Interactive permission flow",
       provider: "acp"
     });
 
@@ -168,7 +168,7 @@ test("INTERACTIVE E2E: REJECT answers with the rejection and the run continues",
   try {
     const runtime = createRuntime(base);
     const task = await runtime.actions.createWork({
-      title: "Interactive rejection flow",
+      brief: "Interactive rejection flow",
       provider: "acp"
     });
     await waitForStatus(runtime, task.id, "needs_you");

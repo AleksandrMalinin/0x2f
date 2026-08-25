@@ -18,7 +18,7 @@ import { createRuntime } from "../src/runtime.mjs";
 import { applyOutcome } from "../src/core/lifecycle.mjs";
 import {
   MAX_BODY_BYTES,
-  MAX_TITLE,
+  MAX_BRIEF,
   MAX_NOTE,
   MAX_ANSWER
 } from "../src/core/limits.mjs";
@@ -88,7 +88,7 @@ test("unauthenticated /api requests are refused with 401 — no task can be star
     const simple = await fetch(handle.url + "/api/tasks", {
       method: "POST",
       headers: { "content-type": "text/plain" },
-      body: JSON.stringify({ title: "Exfiltrate the repo" })
+      body: JSON.stringify({ brief: "Exfiltrate the repo" })
     });
     assert.equal(simple.status, 401);
 
@@ -148,7 +148,7 @@ test("the shell issues the per-runtime auth cookie, and the cookie authenticates
     const created = await fetch(handle.url + "/api/tasks", {
       method: "POST",
       headers: { "content-type": "application/json", cookie },
-      body: JSON.stringify({ title: "Via cookie" })
+      body: JSON.stringify({ brief: "Via cookie" })
     });
     assert.equal(created.status, 201);
     const task = await created.json();
@@ -181,7 +181,7 @@ test("a foreign Host header (DNS rebinding) is refused on every route", async ()
         path: "/api/tasks",
         method: "POST",
         headers: { host, "content-type": "application/json" },
-        body: JSON.stringify({ title: "Rebound" })
+        body: JSON.stringify({ brief: "Rebound" })
       });
       assert.equal(api.status, 403, `api with Host ${host}`);
     }
@@ -210,7 +210,7 @@ test("cross-origin requests are refused even with a valid token", async () => {
     const evil = await fetch(handle.url + "/api/tasks", {
       method: "POST",
       headers: { ...attrs, origin: "https://evil.example" },
-      body: JSON.stringify({ title: "From evil" })
+      body: JSON.stringify({ brief: "From evil" })
     });
     assert.equal(evil.status, 403);
 
@@ -219,7 +219,7 @@ test("cross-origin requests are refused even with a valid token", async () => {
     const localOtherPort = await fetch(handle.url + "/api/tasks", {
       method: "POST",
       headers: { ...attrs, origin: "http://127.0.0.1:9999" },
-      body: JSON.stringify({ title: "From local port" })
+      body: JSON.stringify({ brief: "From local port" })
     });
     assert.equal(localOtherPort.status, 403);
 
@@ -239,7 +239,7 @@ test("cross-origin requests are refused even with a valid token", async () => {
     const sameOrigin = await fetch(handle.url + "/api/tasks", {
       method: "POST",
       headers: { ...attrs, origin: handle.url },
-      body: JSON.stringify({ title: "Same origin" })
+      body: JSON.stringify({ brief: "Same origin" })
     });
     assert.equal(sameOrigin.status, 201);
 
@@ -262,7 +262,7 @@ test("Sec-Fetch-Site: cross-site and same-site browser requests are refused", as
       const res = await fetch(handle.url + "/api/tasks", {
         method: "POST",
         headers: { ...attrs, "sec-fetch-site": site },
-        body: JSON.stringify({ title: `Fetch-site ${site}` })
+        body: JSON.stringify({ brief: `Fetch-site ${site}` })
       });
       assert.equal(res.status, 403, site);
     }
@@ -283,7 +283,7 @@ test("Sec-Fetch-Site: cross-site and same-site browser requests are refused", as
     const ok = await fetch(handle.url + "/api/tasks", {
       method: "POST",
       headers: { ...attrs, "sec-fetch-site": "same-origin" },
-      body: JSON.stringify({ title: "Same origin fetch-site" })
+      body: JSON.stringify({ brief: "Same origin fetch-site" })
     });
     assert.equal(ok.status, 201);
 
@@ -319,7 +319,7 @@ test("the full C1 chain: no unauthenticated or cross-site path starts agent work
       const res = await fetch(handle.url + "/api/tasks", {
         method: "POST",
         headers: attempt.headers,
-        body: attempt.body ?? JSON.stringify({ title: "attack" })
+        body: attempt.body ?? JSON.stringify({ brief: "attack" })
       });
       assert.equal(res.status, attempt.expect);
     }
@@ -414,14 +414,14 @@ test("oversized inputs are refused by the shared actions — the CLI and the API
   try {
     // Action boundary (what the CLI calls):
     await assert.rejects(
-      () => runtime.actions.createWork({ title: "x".repeat(MAX_TITLE + 1) }),
-      /Task title is too long/
+      () => runtime.actions.createWork({ brief: "x".repeat(MAX_BRIEF + 1) }),
+      /Task brief is too long/
     );
     await assert.rejects(
-      () => runtime.actions.createWork({ title: "t", provider: "p".repeat(201) }),
+      () => runtime.actions.createWork({ brief: "t", provider: "p".repeat(201) }),
       /Provider id is too long/
     );
-    const task = await runtime.actions.createWork({ title: "ok" });
+    const task = await runtime.actions.createWork({ brief: "ok" });
     await assert.rejects(
       () => runtime.actions.noteWork(task.id, { note: "n".repeat(MAX_NOTE + 1) }),
       /Note is too long/
@@ -443,10 +443,10 @@ test("oversized inputs are refused by the shared actions — the CLI and the API
     const res = await fetch(handle.url + "/api/tasks", {
       method: "POST",
       headers: { "content-type": "application/json", ...authHeaders() },
-      body: JSON.stringify({ title: "y".repeat(MAX_TITLE + 1) })
+      body: JSON.stringify({ brief: "y".repeat(MAX_BRIEF + 1) })
     });
     assert.equal(res.status, 400);
-    assert.match((await res.json()).error, /Task title is too long/);
+    assert.match((await res.json()).error, /Task brief is too long/);
   } finally {
     await handle.close();
     await fs.rm(base, { recursive: true, force: true });

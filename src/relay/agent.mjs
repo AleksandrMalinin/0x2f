@@ -541,7 +541,7 @@ export function createRelayAgent({
           return ok(
             201,
             await runtime.actions.createWork({
-              title: body?.title,
+              brief: body?.brief,
               provider: body?.provider,
               model: body?.model
             })

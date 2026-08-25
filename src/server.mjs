@@ -8,7 +8,10 @@
 //
 //   GET  /api/tasks                -> listWork()
 //   GET  /api/tasks/:id            -> getWork(id)        ({ ...task, runs, result })
-//   POST /api/tasks                -> createWork({ title, provider? })
+//   POST /api/tasks                -> createWork({ brief, provider? })
+//                                      `brief` is the user's full task text;
+//                                      the short display title is derived
+//                                      from it (core/title.mjs), never sent
 //   POST /api/tasks/:id/rerun      -> rerunWork(id, { provider?, model? })
 //   GET  /api/tasks/:id/runs/:n    -> getRun(id, n)      ({ ...runRecord, result })
 //   POST /api/tasks/:id/allow      -> allowWork(id)
@@ -105,7 +108,14 @@ const ASSETS = {
   // module; without it the whole client module graph fails and the UI
   // renders blank. The relay SERVER is never served — only this client-side
   // wire-contract module, which the local product ships anyway.
-  "/relay/protocol.mjs": ["relay/protocol.mjs", "text/javascript; charset=utf-8"]
+  "/relay/protocol.mjs": ["relay/protocol.mjs", "text/javascript; charset=utf-8"],
+  // Task title derivation. Core persists the derived title; the client
+  // re-derives to decide whether a detail view still needs to show the
+  // brief. Serving the same module (imported as "../core/title.mjs", which
+  // resolves in Node AND from /app/ledger.mjs in the browser) is what keeps
+  // those two from drifting — the same reason ledger.mjs itself is shared.
+  // It is a pure string function: no store, no fs, no secrets.
+  "/core/title.mjs": ["core/title.mjs", "text/javascript; charset=utf-8"]
 };
 
 // --- local-boundary security ------------------------------------------------
@@ -590,7 +600,7 @@ export async function startServer(base = process.cwd(), port = 4242, opts = {}) 
       if (req.method === "POST" && url.pathname === "/api/tasks") {
         const body = await readJsonBody(req);
         const task = await actions.createWork({
-          title: body.title,
+          brief: body.brief,
           provider: body.provider,
           model: body.model
         });

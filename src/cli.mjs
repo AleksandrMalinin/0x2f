@@ -99,7 +99,7 @@ function parseFlags(args) {
 
 function parseNewArgs(args) {
   const { rest, flags } = parseFlags(args);
-  return { title: rest.join(" ").trim(), provider: flags.provider };
+  return { brief: rest.join(" ").trim(), provider: flags.provider };
 }
 
 async function status(base) {
@@ -272,8 +272,8 @@ async function main() {
 
   if (command === "new") {
     await requireProject(base);
-    const { title, provider } = parseNewArgs(args);
-    if (!title) throw new Error('Usage: 2f new "Investigate ..." [--provider <id>]');
+    const { brief, provider } = parseNewArgs(args);
+    if (!brief) throw new Error('Usage: 2f new "Investigate ..." [--provider <id>]');
 
     const runtime = createRuntime(base);
     // First-use preflight: when the user did not pick a provider, the
@@ -288,7 +288,7 @@ async function main() {
       }
     }
 
-    const task = await runtime.actions.createWork({ title, provider });
+    const task = await runtime.actions.createWork({ brief, provider });
 
     console.log(`Created #${String(task.id).padStart(3, "0")}: ${task.title}`);
     console.log(`${providerName(task, runtime.providers.getProvider)} is running in the background.`);

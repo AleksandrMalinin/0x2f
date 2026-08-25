@@ -63,7 +63,7 @@ test("createWork refuses a manually selected unavailable provider BEFORE persist
     assert.equal(rt.providers.available("deepseek-harness"), false);
 
     await assert.rejects(
-      () => rt.actions.createWork({ title: "Doomed", provider: "deepseek-harness" }),
+      () => rt.actions.createWork({ brief: "Doomed", provider: "deepseek-harness" }),
       error => {
         assert.equal(error.status, 400);
         assert.match(error.message, /Execution provider "deepseek-harness" is unavailable/);
@@ -87,7 +87,7 @@ test("an unavailable manual provider is never turned into AUTO", async () => {
   const rt = await makeRuntimeWithoutProviders();
   try {
     await assert.rejects(
-      () => rt.actions.createWork({ title: "Doomed", provider: "deepseek-harness" }),
+      () => rt.actions.createWork({ brief: "Doomed", provider: "deepseek-harness" }),
       /Execution provider "deepseek-harness" is unavailable/
     );
     // The task never exists, so the ledger shows nothing — not a task routed
@@ -103,7 +103,7 @@ test("rerunWork refuses an explicitly selected unavailable provider; the previou
   const rt = await makeRuntimeWithoutProviders();
   try {
     // A task that ran successfully BEFORE the harness disappeared.
-    const task = await rt.actions.createWork({ title: "Was fine" });
+    const task = await rt.actions.createWork({ brief: "Was fine" });
     const { updateRun } = await import("../src/core/runs.mjs");
     const done = updateRun(applyOutcome(task, { status: "ready", result: "ok" }), 1, {
       outcome: "ready",
@@ -139,7 +139,7 @@ test("AUTO keeps excluding unavailable providers (never routes to a missing exec
   const rt = await makeRuntimeWithoutProviders();
   try {
     await assert.rejects(
-      () => rt.actions.createWork({ title: "Nothing", provider: "auto" }),
+      () => rt.actions.createWork({ brief: "Nothing", provider: "auto" }),
       /AUTO routing: no execution provider is available/
     );
     assert.deepEqual(await rt.store.listTasks(), []);
@@ -155,7 +155,7 @@ test("an unspecified request is not a manual selection: the runtime default keep
     // The user did not pick a provider — the default resolves, and the task
     // is created as before (its run fails in the worker, exactly as it did
     // before availability was enforced for manual selections).
-    const task = await rt.actions.createWork({ title: "Default" });
+    const task = await rt.actions.createWork({ brief: "Default" });
     assert.equal(task.execution.provider, "claude-code");
     assert.equal((await rt.store.findTask(task.id)).execution.provider, "claude-code");
   } finally {
@@ -176,7 +176,7 @@ test("POST /api/tasks with an unavailable provider -> 400 from the shared action
       const res = await fetch(handle.url + "/api/tasks", {
         method: "POST",
         headers: { "content-type": "application/json", ...authHeaders() },
-        body: JSON.stringify({ title: "Doomed", provider: "deepseek-harness" })
+        body: JSON.stringify({ brief: "Doomed", provider: "deepseek-harness" })
       });
       assert.equal(res.status, 400);
       const body = await res.json();

@@ -51,7 +51,7 @@ export function createRuntime(base = process.cwd(), opts = {}) {
     router,
     base,
     workspaceId: WORKSPACE_ID,
-    buildPrompt: title => buildPrompt(title, base),
+    buildPrompt: brief => buildPrompt(brief, base),
     // Per-run input: original task request + accumulated Task state. The
     // actions pass the store through so run results and events are read from
     // the same persistence the task lives in.

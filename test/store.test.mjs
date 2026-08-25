@@ -16,8 +16,8 @@ test("createTask writes task.json/prompt.md/run.log and assigns sequential ids",
   const base = await tempWorkspace();
   try {
     const store = createStore(base);
-    const a = await store.createTask("Fix overflow", "prompt-a", { node: "local" });
-    const b = await store.createTask("Investigate replay", "prompt-b", { node: "local" });
+    const a = await store.createTask({ title: "Fix overflow", brief: "Fix overflow", prompt: "prompt-a" }, { node: "local" });
+    const b = await store.createTask({ title: "Investigate replay", brief: "Investigate replay", prompt: "prompt-b" }, { node: "local" });
 
     assert.equal(a.id, 1);
     assert.equal(b.id, 2);
@@ -40,8 +40,8 @@ test("listTasks returns newest id first; findTask looks up by id", async () => {
   const base = await tempWorkspace();
   try {
     const store = createStore(base);
-    const a = await store.createTask("One", "p");
-    const b = await store.createTask("Two", "p");
+    const a = await store.createTask({ title: "One", brief: "One", prompt: "p" });
+    const b = await store.createTask({ title: "Two", brief: "Two", prompt: "p" });
     const list = await store.listTasks();
     assert.deepEqual(list.map(t => t.id), [2, 1]);
     assert.equal((await store.findTask(1)).title, "One");
@@ -55,7 +55,7 @@ test("updateTask bumps updatedAt; readTaskResult/readTaskLog read back files", a
   const base = await tempWorkspace();
   try {
     const store = createStore(base);
-    const task = await store.createTask("Three", "p");
+    const task = await store.createTask({ title: "Three", brief: "Three", prompt: "p" });
     await store.writeText(path.join(store.taskDir(task.slug), "result.md"), "all done");
     await store.writeText(path.join(store.taskDir(task.slug), "run.log"), "hello log");
 
@@ -77,7 +77,7 @@ test("appendEvent appends normalized JSON lines to events.jsonl", async () => {
   const base = await tempWorkspace();
   try {
     const store = createStore(base);
-    const task = await store.createTask("Four", "p");
+    const task = await store.createTask({ title: "Four", brief: "Four", prompt: "p" });
     await store.appendEvent(task.slug, { type: "task.created", taskId: task.id, at: "t1" });
     await store.appendEvent(task.slug, { type: "run.started", taskId: task.id, at: "t2" });
 
@@ -94,7 +94,7 @@ test("task state files are written owner-only (0600)", async () => {
   const base = await tempWorkspace();
   try {
     const store = createStore(base);
-    const task = await store.createTask("Private", "prompt with repo quotes");
+    const task = await store.createTask({ title: "Private", brief: "Private", prompt: "prompt with repo quotes" });
     await store.appendEvent(task.slug, { type: "run.started", taskId: task.id, at: "t" });
     await store.writeJson(path.join(store.taskDir(task.slug), "permission.json"), { grant: "allow" });
 

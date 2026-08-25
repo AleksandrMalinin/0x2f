@@ -5,10 +5,14 @@
 // task *reads*; it never decides what a status MEANS. Lifecycle stays in
 // core/lifecycle.mjs, business rules stay in core/actions.mjs.
 //
-// It is deliberately dependency-free and DOM-free so that it can be
+// It is DOM-free so that it can be
 //   - imported by Node tests, and
 //   - served verbatim to the browser as an ES module (src/web/app.js).
-// One implementation, two runtimes, no build step.
+// One implementation, two runtimes, no build step. Its one import
+// (../core/title.mjs) follows the same rule: the specifier resolves in Node
+// and, because the server serves that file at /core/title.mjs, in the
+// browser too — so the title 0x2F persisted and the title the client
+// reasons about can never drift.
 //
 // Progressive fidelity: how much of a run's shape can be drawn is a
 // DECLARED provider capability (capabilities.supportsStructuredEvents /
@@ -23,6 +27,8 @@
 // provider that reports nothing gets a single ambient liveness bar, never a
 // synthesized phase frame and never a per-interval dot that could be misread
 // as a reported step.
+
+import { deriveTitle, briefBody } from "../core/title.mjs";
 
 export const LONG_TITLE_CHARS = 90;
 
@@ -949,6 +955,19 @@ export function projectRow(task, events, opts = {}) {
   // rows are unaffected — the intent is summarized there by design.
   const longTitle = open && task.title.length > LONG_TITLE_CHARS;
 
+  // The user's own words. A task created before `brief` existed has only a
+  // title (which WAS the full text then) — falling back to it is correct for
+  // those tasks by construction, and makes `briefBody` empty for them, so
+  // nothing is rendered twice.
+  const brief = task.brief ?? task.title ?? "";
+  // What a detail view renders UNDER the heading: the brief minus the
+  // sentence the heading already is, or "" when the heading said all of it.
+  // Delegated to the SAME module core used to name the task — never a
+  // `brief !== title` comparison, which would call a title incomplete merely
+  // because the brief opened with "# " or wrapped across two lines, and
+  // would then render a "body" repeating the heading verbatim.
+  const body = briefBody(brief);
+
   const stateLabel = STATE_LABELS[task.status] ?? String(task.status).toUpperCase();
   const stateColor = halted ? accent : failedStatus ? COLORS.fail : done ? COLORS.muted : COLORS.ink;
 
@@ -1011,6 +1030,12 @@ export function projectRow(task, events, opts = {}) {
     id: task.id,
     num: "/" + two(task.id),
     title: task.title,
+    // The full brief, and the body a detail view renders under the heading:
+    // "" whenever the title already says everything the brief says, so a
+    // one-line task looks exactly as it did before briefs existed.
+    brief,
+    briefBody: body,
+    briefTruncated: task.briefTruncated === true,
     status: task.status,
     open,
     compact: !open,

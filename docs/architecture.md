@@ -16,9 +16,14 @@ TASK          persistent engineering intent     (.work/tasks/<slug>/task.json)
        └── SESSION   one disposable agent session (externalSessionId on a run)
 ```
 
-- A **task** is the unit of work the user creates: a title, a prompt, a
-  status, an execution target, and an ordered list of runs. It persists in
-  `.work/` inside the repository it works on.
+- A **task** is the unit of work the user creates: a brief, a derived title,
+  a prompt, a status, an execution target, and an ordered list of runs. It
+  persists in `.work/` inside the repository it works on. The user writes
+  exactly one of those: the **brief** — their own words, kept verbatim, and
+  what the agent receives. The short **title** a list shows is derived from
+  the brief deterministically (`src/core/title.mjs`, no model call), so
+  pasting a full engineering brief into the composer never meets a
+  title-length limit and never requires a separate "description" field.
 - A **run** is one execution of the task's intent through one provider. It
   records provider, node, workspace, model (when reliably known), timing,
   outcome, session id, and failure/block details. Runs are **strictly
@@ -54,7 +59,7 @@ working ──► ready ──► done        (done via 2f close)
 ### 1. Creation
 
 `2f new "…"` → `src/cli.mjs` → `createRuntime(base)` (`src/runtime.mjs`) →
-`actions.createWork({ title, provider })` (`src/core/actions.mjs`).
+`actions.createWork({ brief, provider })` (`src/core/actions.mjs`).
 
 `createWork`:
 
@@ -62,14 +67,17 @@ working ──► ready ──► done        (done via 2f close)
    `"auto"` (deterministic routing), or the configured default. An explicitly
    requested provider that cannot run on this machine is refused *before any
    work is persisted*.
-2. Builds the original prompt from project context (`buildPrompt`,
+2. Derives the display title from the brief (`deriveTitle`,
+   `src/core/title.mjs`) — the first sentence, ~80 characters, cut at a word
+   boundary. The brief itself is never shortened.
+3. Builds the original prompt from project context (`buildPrompt`,
    `src/project.mjs`: project.md + rules.md + knowledge.md + decisions.md +
-   the task title + the Work instructions, including the
+   the full brief + the Work instructions, including the
    `## Needs human decision` protocol).
-3. Persists the task (`store.createTask`) with an initial run record
+4. Persists the task (`store.createTask`) with an initial run record
    (`makeRunRecord`, `src/core/runs.mjs`), and writes the run's input to
    `runs/1/prompt.md`.
-4. Hands execution to the execution node (`node.startExecution`), which spawns
+5. Hands execution to the execution node (`node.startExecution`), which spawns
    the detached worker (`src/worker.mjs`) — the same entrypoint a future
    remote node would run on another machine.
 5. Records a normalized `task.created` event.

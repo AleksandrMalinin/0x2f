@@ -979,6 +979,27 @@ function closeButton(id) {
 // subset (paragraphs, lists, inline code, fenced code survive). No clamp, no
 // max-height, no break-all — the card grows with the question. Shared by the
 // desktop card and the mobile detail screen so the two never drift.
+// The task's brief — the user's own words, under the derived heading. The
+// heading is a label 0x2F computed; this is what the human actually wrote,
+// and it is what the agent received. Rendered through the same rich-text
+// subset as every other piece of prose in the ledger.
+//
+// `briefBody` is empty whenever the derived title already says everything
+// the brief says (ledger.mjs asks the derivation itself, not a string
+// comparison), so a one-line task renders exactly as it did before briefs
+// existed — no extra furniture, nothing repeated.
+function renderBrief(row) {
+  if (!row.briefBody) return null;
+  return el("div", { class: "brief" }, [
+    el("div", { class: "brief-body" }, [richBody(row.briefBody)]),
+    // Only ever set on a remote surface whose transport had to cut the
+    // brief; a cut must read as a cut, never as the end of the sentence.
+    row.briefTruncated
+      ? el("div", { class: "brief-truncated", text: "TRUNCATED FOR THIS DEVICE — open this task on the Mac to read it in full" })
+      : null
+  ].filter(Boolean));
+}
+
 function renderDecisionQuestion(row) {
   if (!row.permQuestionHeading) return null;
   return el("div", { class: "decision-question" }, [
@@ -1408,6 +1429,7 @@ function renderRow(row, accent) {
         el("h1", { class: "detail-title", style: { fontSize: row.titleSize } }, inlineEls(parseInline(row.title))),
         el("span", { class: "detail-state", style: { color: row.stateColor }, text: row.stateLabel })
       ]),
+      renderBrief(row),
       renderTrack(row, accent),
       el("div", { class: "status-line" }, [
         el("span", { class: "status-phase", text: row.phaseLabel }),
@@ -1685,8 +1707,11 @@ function buildComposer() {
   async function submit() {
     if (refining) return;
     if (remoteBlocked()) return;
-    const title = input.value.trim();
-    if (!title) return;
+    // The composer's whole text is the task: a full engineering brief, not a
+    // title. 0x2F derives the short label a ledger row shows (core/title.mjs)
+    // -- the user never writes one, and never meets a title-length limit.
+    const brief = input.value.trim();
+    if (!brief) return;
     const provider = providerSelect?.value || undefined;
     // Convenience guard only -- the action boundary (and therefore the API)
     // enforces availability itself, so a stale select can never submit an
@@ -1710,7 +1735,7 @@ function buildComposer() {
       const task = await api("/api/tasks", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ title, ...(provider ? { provider } : {}) })
+        body: JSON.stringify({ brief, ...(provider ? { provider } : {}) })
       });
       state.openId = task.id;
       state.selectedId = task.id;
@@ -2832,6 +2857,10 @@ function renderMobileDetailContent(row, detail, accent, frozen) {
     ])
   );
   parts.push(el("h1", { class: "m-dtitle" }, inlineEls(parseInline(row.title))));
+  // The user's own words, under the derived heading — the same component the
+  // desktop detail uses, and the reason a long brief is never lost on the
+  // phone (the relay carries it in full; see src/relay/project.mjs).
+  parts.push(renderBrief(row));
 
   if (row.trace) {
     parts.push(el("div", { class: "m-dtrace-wrap" }, [renderTrack(row, accent)]));

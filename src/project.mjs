@@ -91,7 +91,7 @@ export async function requireProject(base = process.cwd()) {
   }
 }
 
-export async function buildPrompt(task, base = process.cwd()) {
+export async function buildPrompt(brief, base = process.cwd()) {
   const wd = path.join(base, ".work");
 
   const [project, rules, knowledge, decisions] = await Promise.all([
@@ -121,7 +121,7 @@ ${decisions.trim()}
 
 TASK
 
-${task}
+${brief}
 
 INSTRUCTIONS
 
@@ -188,7 +188,7 @@ export async function appendProjectKnowledge(kind, text, base = process.cwd()) {
 // --- per-run prompt: Task state -> run input --------------------------------
 //
 // buildPrompt() assembles the ORIGINAL task request (project context + the
-// title) once, when the task is created. That file is the persistent intent
+// user's brief) once, when the task is created. That file is the persistent intent
 // and is never overwritten. A NEW run, however, must receive the accumulated
 // Task state, not just the original prompt:
 //
@@ -275,14 +275,16 @@ async function priorRunsSection(task, store, excludeRun) {
 // created before prompt files) the task title stands in for it.
 export async function buildRunPrompt({ task, base = process.cwd(), originalPrompt, store }) {
   // The persistent intent: task-level prompt.md (the original request). A
-  // legacy task without a prompt file falls back to its title.
+  // task without a prompt file falls back to the brief the user wrote —
+  // and, for a task created before `brief` existed, to its title (which was
+  // the full text back then).
   let original = (originalPrompt ?? "").trim();
   if (!original) {
     original = (
       await readText(path.join(base, ".work", "tasks", task.slug, "prompt.md"), "")
     ).trim();
   }
-  if (!original) original = (task.title ?? "").trim();
+  if (!original) original = (task.brief ?? task.title ?? "").trim();
 
   const sections = [];
   const notes = Array.isArray(task.context?.notes) ? task.context.notes : [];

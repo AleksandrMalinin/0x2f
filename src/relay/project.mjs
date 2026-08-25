@@ -18,6 +18,7 @@
 // the offered options. Only `raw` (the full tool input JSON) is removed.
 
 import { FAILURE_KINDS } from "../core/lifecycle.mjs";
+import { MAX_BRIEF } from "../core/limits.mjs";
 
 const TRUNC = {
   text: 500, // progress activity line
@@ -30,6 +31,12 @@ const TRUNC = {
   // metadata, and it was the SECOND of two cuts that destroyed it before any
   // surface (including the phone) could render it in full.
   decision: 4000,
+  // The task brief is the USER'S OWN text about their own repository, and
+  // it is the one thing on the phone that says what the task actually is.
+  // Carried in full: the action boundary already caps it at MAX_BRIEF, so
+  // this bound is the same bound — the remote surface loses nothing, and a
+  // long brief pasted on the Mac reads whole on the phone.
+  brief: MAX_BRIEF,
   workspaceLabel: 40, // §02: basename only, never the absolute path
   node: 60, // machine display name (os.hostname() or the paired agent name)
   plannedChange: 200 // allow/reject change summary
@@ -45,17 +52,19 @@ function trunc(value, max, base) {
   return s.length > max ? s.slice(0, max) + "…" : s;
 }
 
-// The decision question is prose a human must read in full — if the relay's
-// generous 4000-char bound is ever actually hit, that must read as an
-// explicit "the relay cut this", never as a bare "…" indistinguishable from
-// the agent's own writing. Still strips an absolute workspace path first,
-// exactly like every other field (a question can quote a path in prose).
-function truncDecision(value, base) {
+// Prose a human must read in full (a decision question, a task brief): if a
+// bound is ever actually hit, that must read as an explicit "the relay cut
+// this", never as a bare "…" indistinguishable from the author's own
+// writing — and the surface is told so it can SAY so rather than ending the
+// text mid-thought. Still strips an absolute workspace path first, exactly
+// like every other field (prose can quote a path).
+//
+// Returns { text, truncated } so callers can carry the flag to the UI.
+function truncProse(value, max, base) {
   let s = typeof value === "string" ? value.trim() : "";
   if (base && s.includes(base)) s = s.split(base).join("…");
-  return s.length > TRUNC.decision
-    ? s.slice(0, TRUNC.decision) + "\n\n[truncated by the relay]"
-    : s;
+  if (s.length <= max) return { text: s, truncated: false };
+  return { text: s.slice(0, max) + "\n\n[truncated by the relay]", truncated: true };
 }
 
 // Paths: inside the workspace → relative; outside → basename only. Either way
@@ -110,7 +119,7 @@ export function projectBlockedOn(blockedOn, base) {
       }));
     }
   } else if (blockedOn.type === "decision") {
-    out.text = truncDecision(blockedOn.text, base);
+    out.text = truncProse(blockedOn.text, TRUNC.decision, base).text;
   }
   return out;
 }
@@ -155,9 +164,17 @@ function projectFailure(failure) {
 
 export function projectTask(task, base) {
   if (!task || typeof task !== "object") return null;
+  // The user's own words, carried whole (see TRUNC.brief). A task created
+  // before `brief` existed falls back to its title, which WAS the full text
+  // then. `briefTruncated` stays false in practice — the cap equals the one
+  // the action already enforced — but when it is true the phone SAYS the
+  // text was cut instead of just ending mid-sentence.
+  const brief = truncProse(task.brief ?? task.title, TRUNC.brief, base);
   return {
     id: task.id,
     title: task.title ?? "",
+    brief: brief.text,
+    ...(brief.truncated ? { briefTruncated: true } : {}),
     status: task.status ?? "working",
     provider: task.execution?.provider ?? null,
     model: task.execution?.model ?? null,

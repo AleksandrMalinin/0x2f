@@ -119,7 +119,7 @@ test("sectionOf extracts a result section up to the next heading", () => {
 test("createWork persists run 1's input per run; the original prompt.md is untouched", async () => {
   const runtime = await makeRuntime();
   try {
-    const task = await runtime.actions.createWork({ title: "Dedupe capture" });
+    const task = await runtime.actions.createWork({ brief: "Dedupe capture" });
     const dir = runtime.store.taskDir(task.slug);
     const original = await fs.readFile(path.join(dir, "prompt.md"), "utf8");
     const run1Prompt = await fs.readFile(path.join(dir, "runs", "1", "prompt.md"), "utf8");
@@ -133,7 +133,7 @@ test("createWork persists run 1's input per run; the original prompt.md is untou
 test("run 1's result, verification and changed files appear in run 2's prompt — but never a transcript", async () => {
   const runtime = await makeRuntime();
   try {
-    const task = await runtime.actions.createWork({ title: "Dedupe capture" });
+    const task = await runtime.actions.createWork({ brief: "Dedupe capture" });
     await applyWorkerOutcome(runtime, task, { status: "ready", result: RUN1_RESULT });
     await writeRun1Result(runtime, task, RUN1_RESULT);
 
@@ -172,7 +172,7 @@ test("run 1's result, verification and changed files appear in run 2's prompt �
 test("a user constraint added after run 1 appears in run 2's prompt, not run 1's", async () => {
   const runtime = await makeRuntime();
   try {
-    const task = await runtime.actions.createWork({ title: "Dedupe capture" });
+    const task = await runtime.actions.createWork({ brief: "Dedupe capture" });
     await applyWorkerOutcome(runtime, task, { status: "ready", result: RUN1_RESULT });
     await writeRun1Result(runtime, task, RUN1_RESULT);
 
@@ -203,7 +203,7 @@ test("a user constraint added after run 1 appears in run 2's prompt, not run 1's
 test("noteWork records Task context without starting or resuming an execution", async () => {
   const runtime = await makeRuntime();
   try {
-    const task = await runtime.actions.createWork({ title: "Constraint" });
+    const task = await runtime.actions.createWork({ brief: "Constraint" });
     await applyWorkerOutcome(runtime, task, { status: "ready", result: RUN1_RESULT });
     await writeRun1Result(runtime, task, RUN1_RESULT);
     const callsBefore = [...runtime.node.calls];
@@ -227,7 +227,7 @@ test("answerWork keeps existing decision behavior AND lands the answer in Task c
   const runtime = await makeRuntime();
   try {
     const task = await withFakeBin("DSH_BIN", "dsh", () =>
-      runtime.actions.createWork({ title: "Decision", provider: "deepseek-harness" })
+      runtime.actions.createWork({ brief: "Decision", provider: "deepseek-harness" })
     );
     const blocked = applyOutcome(task, {
       status: "needs_you",
@@ -260,7 +260,7 @@ test("answerWork keeps existing decision behavior AND lands the answer in Task c
 test("same-provider resume keeps the existing session: no new run, no new per-run prompt", async () => {
   const runtime = await makeRuntime();
   try {
-    const task = await runtime.actions.createWork({ title: "Resume" });
+    const task = await runtime.actions.createWork({ brief: "Resume" });
     const blocked = applyOutcome(task, {
       status: "needs_you",
       reason: "permission",
@@ -299,7 +299,7 @@ test("same-provider resume keeps the existing session: no new run, no new per-ru
 test("previous run records, results and the original prompt stay immutable across reruns", async () => {
   const runtime = await makeRuntime();
   try {
-    const task = await runtime.actions.createWork({ title: "Immutable" });
+    const task = await runtime.actions.createWork({ brief: "Immutable" });
     const afterRun1 = await applyWorkerOutcome(runtime, task, {
       status: "ready",
       result: RUN1_RESULT,
@@ -440,7 +440,7 @@ test("DOGFOODING: Claude investigates, user constrains, Codex-class rerun contin
 
             // Run 01 — Claude investigates and edits.
             const task = await runtime.actions.createWork({
-              title: "Dedupe capture ingest path"
+              brief: "Dedupe capture ingest path"
             });
             await waitForStatus(runtime, task.id, "ready");
 
