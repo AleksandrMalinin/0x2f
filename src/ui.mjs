@@ -147,6 +147,8 @@ export async function ensureRuntime({
   const log = logPath ?? path.join(base, ".work", "ui.log");
   fsSync.mkdirSync(path.dirname(log), { recursive: true });
   const fd = fsSync.openSync(log, "a");
+  // The runtime log may carry task titles and provider output — owner-only.
+  fsSync.chmodSync(log, 0o600);
   let child;
   try {
     child = spawnImpl(process.execPath, [entry.pathname, base, String(port)], {

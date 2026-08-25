@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { validateManifest, loadManifestProviders } from "../src/providers/manifests.mjs";
+import { validateManifest, loadManifestProviders, providerTrustWarning } from "../src/providers/manifests.mjs";
 import { createProviderRegistry, executableAvailable } from "../src/providers/index.mjs";
 
 const ACP_MANIFEST = {
@@ -42,6 +42,18 @@ test("manifests: a valid ACP manifest and a valid command manifest", () => {
   assert.equal(acp.transport, "acp");
   const cmd = validateManifest(CMD_MANIFEST, "my-agent.json");
   assert.equal(cmd.transport, "command");
+});
+
+test("manifests: shell and repository-relative executables carry a trust warning", () => {
+  // Ordinary manifests: no warning.
+  assert.equal(providerTrustWarning({ id: "gemini", command: ["gemini", "--acp"] }), null);
+  assert.equal(providerTrustWarning({ id: "codex", command: ["codex-acp"] }), null);
+  // A shell wrapper: the prompt is passed to a shell — full execution.
+  assert.match(providerTrustWarning({ id: "evil", command: ["bash", "-c", "{prompt}"] }), /shell/);
+  assert.match(providerTrustWarning({ id: "w", command: ["/bin/zsh", "{prompt}"] }), /shell/);
+  // A repository-relative executable: the repo controls what runs.
+  assert.match(providerTrustWarning({ id: "repo", command: ["./scripts/agent", "{prompt}"] }), /repository-relative/);
+  assert.match(providerTrustWarning({ id: "r2", command: ["../tool", "{prompt}"] }), /repository-relative/);
 });
 
 test("manifests: every failure mode fails loudly, naming the file", () => {

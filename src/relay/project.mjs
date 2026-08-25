@@ -27,8 +27,13 @@ const TRUNC = {
   plannedChange: 200 // allow/reject change summary
 };
 
-function trunc(value, max) {
-  const s = typeof value === "string" ? value : "";
+function trunc(value, max, base) {
+  let s = typeof value === "string" ? value : "";
+  // Absolute workspace paths must never leave the Mac, including inside
+  // prose (progress, errors, answers) — replace the base prefix with "…".
+  if (base && s.includes(base)) {
+    s = s.split(base).join("…");
+  }
   return s.length > max ? s.slice(0, max) + "…" : s;
 }
 
@@ -55,7 +60,7 @@ export function relPath(base, file) {
 function projectToolInput(input, base) {
   if (!input || typeof input !== "object") return {};
   if (typeof input.command === "string") {
-    return { command: trunc(input.command, TRUNC.arg) };
+    return { command: trunc(input.command, TRUNC.arg, base) };
   }
   for (const field of ["file_path", "path", "notebook_path", "pattern", "query", "prompt", "url"]) {
     if (typeof input[field] === "string" && input[field]) {
@@ -71,8 +76,8 @@ export function projectBlockedOn(blockedOn, base) {
   if (blockedOn.type === "permission") {
     out.tool = blockedOn.tool ?? null;
     out.file = relPath(base, blockedOn.file);
-    out.description = trunc(blockedOn.description, TRUNC.text);
-    out.plannedChange = trunc(blockedOn.plannedChange, TRUNC.plannedChange);
+    out.description = trunc(blockedOn.description, TRUNC.text, base);
+    out.plannedChange = trunc(blockedOn.plannedChange, TRUNC.plannedChange, base);
     out.canAllow = blockedOn.canAllow !== false;
     out.canReject = blockedOn.canReject !== false;
     out.live = blockedOn.live === true;
@@ -84,12 +89,12 @@ export function projectBlockedOn(blockedOn, base) {
       }));
     }
   } else if (blockedOn.type === "decision") {
-    out.text = trunc(blockedOn.text, TRUNC.decision);
+    out.text = trunc(blockedOn.text, TRUNC.decision, base);
   }
   return out;
 }
 
-export function projectRun(run) {
+export function projectRun(run, base) {
   if (!run || typeof run !== "object") return null;
   return {
     run: run.run,
@@ -100,17 +105,17 @@ export function projectRun(run) {
     completedAt: run.completedAt ?? null,
     durationMs: run.durationMs ?? null,
     attempts: run.attempts ?? 1,
-    error: trunc(run.error, TRUNC.error),
+    error: trunc(run.error, TRUNC.error, base),
     // The AUTO routing label (why this task ran here) — the reason is a
     // short availability fact, not internal state.
-    ...(run.routing?.mode === "auto" ? { routing: { mode: "auto", reason: run.routing.reason } } : {})
+    ...(run.routing?.mode === "auto" ? { routing: { mode: "auto", reason: trunc(run.routing.reason, TRUNC.text, base) } } : {})
   };
 }
 
 // The READY result text the phone shows — capped, not truncated mid-thought
 // beyond a generous bound.
-export function projectResult(text) {
-  return trunc(text, TRUNC.result);
+export function projectResult(text, base) {
+  return trunc(text, TRUNC.result, base);
 }
 
 export function projectTask(task, base) {
@@ -123,9 +128,9 @@ export function projectTask(task, base) {
     model: task.execution?.model ?? null,
     createdAt: task.createdAt ?? null,
     updatedAt: task.updatedAt ?? null,
-    error: trunc(task.error, TRUNC.error),
+    error: trunc(task.error, TRUNC.error, base),
     blockedOn: projectBlockedOn(task.blockedOn, base),
-    runs: Array.isArray(task.runs) ? task.runs.map(projectRun).filter(Boolean) : undefined
+    runs: Array.isArray(task.runs) ? task.runs.map(r => projectRun(r, base)).filter(Boolean) : undefined
   };
 }
 
@@ -142,7 +147,7 @@ export function projectEvent(event, base) {
       // The provider session id stays on the Mac.
       return common;
     case "progress":
-      return { ...common, text: trunc(event.text, TRUNC.text) };
+      return { ...common, text: trunc(event.text, TRUNC.text, base) };
     case "tool.started":
       return { ...common, name: event.name ?? null, input: projectToolInput(event.input, base) };
     case "tool.completed":
@@ -156,7 +161,7 @@ export function projectEvent(event, base) {
         detail: {
           tool: event.detail?.tool ?? null,
           file: relPath(base, event.detail?.file),
-          message: trunc(event.detail?.message, TRUNC.text)
+          message: trunc(event.detail?.message, TRUNC.text, base)
         },
         blockedOn: projectBlockedOn(event.blockedOn, base)
       };
@@ -165,16 +170,16 @@ export function projectEvent(event, base) {
     case "run.completed":
       return { ...common, status: event.status ?? null };
     case "run.failed":
-      return { ...common, error: trunc(event.error, TRUNC.error) };
+      return { ...common, error: trunc(event.error, TRUNC.error, base) };
     case "task.updated":
       return { ...common, status: event.status ?? null };
     case "task.created":
     case "task.closed":
       return { ...common, status: event.status ?? null };
     case "task.answered":
-      return { ...common, answer: trunc(event.answer, TRUNC.text) };
+      return { ...common, answer: trunc(event.answer, TRUNC.text, base) };
     case "task.note":
-      return { ...common, note: trunc(event.note, TRUNC.text) };
+      return { ...common, note: trunc(event.note, TRUNC.text, base) };
     default:
       return common;
   }

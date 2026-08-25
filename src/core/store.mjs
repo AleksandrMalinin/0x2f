@@ -29,9 +29,16 @@ export async function readText(p, fallback = "") {
   }
 }
 
+// Task state is private: it contains the user's task prompts, results and
+// notes, which may quote repository code. Write with mode 0600 (owner-only)
+// and re-chmod even when the file already exists, so a pre-existing file left
+// world-readable by an older version is tightened.
+const PRIVATE_FILE = { encoding: "utf8", mode: 0o600 };
+
 export async function writeText(p, value) {
   await fs.mkdir(path.dirname(p), { recursive: true });
-  await fs.writeFile(p, value, "utf8");
+  await fs.writeFile(p, value, PRIVATE_FILE);
+  await fs.chmod(p, 0o600);
 }
 
 export async function readJson(p) {
@@ -40,7 +47,8 @@ export async function readJson(p) {
 
 export async function writeJson(p, value) {
   await fs.mkdir(path.dirname(p), { recursive: true });
-  await fs.writeFile(p, JSON.stringify(value, null, 2) + "\n", "utf8");
+  await fs.writeFile(p, JSON.stringify(value, null, 2) + "\n", PRIVATE_FILE);
+  await fs.chmod(p, 0o600);
 }
 
 function slugify(input) {
@@ -97,6 +105,9 @@ export function createStore(base = process.cwd()) {
     const slug = `${String(id).padStart(3, "0")}-${slugify(title)}`;
     const dir = taskDir(slug);
     await fs.mkdir(dir, { recursive: true });
+    // The task directory is owner-only too: its listing would reveal task
+    // slugs to other local users even though the files are unreadable.
+    await fs.chmod(dir, 0o700).catch(() => {});
 
     const now = new Date().toISOString();
     const task = {
@@ -206,6 +217,9 @@ export function createStore(base = process.cwd()) {
     const p = eventLogPath(slug);
     await fs.mkdir(path.dirname(p), { recursive: true });
     await fs.appendFile(p, JSON.stringify(event) + "\n", "utf8");
+    // The event log may carry tool inputs and prose that quote repository
+    // content — keep it owner-only even when created via append.
+    await fs.chmod(p, 0o600).catch(() => {});
   }
 
   // The interactive-permission channel: the human's ALLOW/REJECT for a live

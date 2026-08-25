@@ -33,6 +33,31 @@ export const KNOWN_PLACEHOLDERS = ["{prompt}", "{workspace}"];
 
 const ALLOWED_FIELDS = new Set(["id", "displayName", "transport", "command", "permissions"]);
 
+// Executables that would pass the task prompt to a shell (spawn argv -> shell
+// -> the prompt as a script). A manifest like ["bash", "-c", "{prompt}"] is
+// arbitrary command execution whenever a task runs with that provider.
+const SHELL_EXECS = new Set([
+  "sh", "bash", "zsh", "dash", "ksh", "csh", "tcsh", "fish",
+  "cmd", "powershell", "pwsh", "wsl", "busybox"
+]);
+
+// A human warning for manifests whose executable is unusually powerful:
+// a shell, or a repository-relative path (a repo that ships this manifest
+// controls what runs). Returns null for ordinary manifests. Emitted at load
+// so a repository-provided manifest cannot configure itself silently.
+export function providerTrustWarning(manifest) {
+  const exe = typeof manifest?.command?.[0] === "string" ? manifest.command[0] : "";
+  if (!exe) return null;
+  const base = exe.split(/[\\/]/).pop() ?? exe;
+  if (SHELL_EXECS.has(base.toLowerCase())) {
+    return `Provider "${manifest.id}" invokes a shell (${exe}): the task prompt is passed to the shell as a script. A manifest like this is equivalent to arbitrary command execution whenever a task runs with it — only configure it if you fully trust its source.`;
+  }
+  if (/^\.{1,2}[\\/]/.test(exe)) {
+    return `Provider "${manifest.id}" runs a repository-relative executable (${exe}). A repository that ships this manifest controls what runs when a task uses it — treat it as untrusted unless you wrote it yourself.`;
+  }
+  return null;
+}
+
 // Load and validate every manifest under <base>/.work/providers/. Throws on
 // the first invalid manifest, pointing at the file. Returns an array of
 // provider instances (acp or command) in filename order.
@@ -68,6 +93,8 @@ export function loadManifestProviders(base, { nativeIds = [] } = {}) {
       );
     }
     seen.add(manifest.id);
+    const warning = providerTrustWarning(manifest);
+    if (warning) console.warn(`0x2F: ${warning}`);
     providers.push(
       manifest.transport === "acp"
         ? createAcpProvider(manifest)

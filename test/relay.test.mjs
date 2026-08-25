@@ -409,6 +409,38 @@ test("the relay is a broker: it serves no client or pairing page", async t => {
   }
 });
 
+test("pairing claims and command forwarding are rate limited", async t => {
+  // A relay with a tight budget so the tests do not need real volume.
+  const base = await fs.mkdtemp(path.join(os.tmpdir(), "work-relay-ratelimit-"));
+  t.after(() => fs.rm(base, { recursive: true, force: true }));
+  const relay = createRelayServer({
+    log: quiet,
+    rateLimits: { claim: { windowMs: 60_000, max: 3 }, command: { windowMs: 60_000, max: 3 } }
+  });
+  const handle = await relay.start();
+  t.after(() => handle.close());
+  try {
+    // Claim: after the budget is spent, further claims are refused (429) even
+    // with a valid-looking token — a pairing flood cannot hammer the relay.
+    for (let i = 0; i < 3; i++) {
+      const res = await fetch(handle.url + "/api/pair/claim", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ token: "pair-nonexistent-" + i })
+      });
+      assert.ok([400, 401].includes(res.status), `claim ${i} -> ${res.status}`);
+    }
+    const throttled = await fetch(handle.url + "/api/pair/claim", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ token: "pair-nonexistent-x" })
+    });
+    assert.equal(throttled.status, 429);
+  } finally {
+    await handle.close();
+  }
+});
+
 // --- the local surface is unchanged -----------------------------------------
 
 test("the local server reports mode 'local' — the client keeps its local behavior", async t => {

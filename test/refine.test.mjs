@@ -156,23 +156,21 @@ test("raw text is sent to the refinement service: claude print mode with tools d
   }
 });
 
-test("falls back to dsh headless when claude is unavailable", async () => {
+test("does NOT fall back to dsh headless — refinement only runs a tool-denied model", async () => {
   const base = await fs.mkdtemp(path.join(os.tmpdir(), "work-refine-svc-"));
   const recordFile = path.join(base, "record.json");
   const { bin: dshFake, dir } = await fakeModelBin({ stdout: "dsh brief", recordFile });
   const missing = path.join(dir, "missing-claude");
   try {
     const refiner = createRefiner({ providers: createProviderRegistry({ base }) });
-    const refined = await withEnv("CLAUDE_BIN", missing, () =>
-      withEnv("DSH_BIN", dshFake, () => refiner.refineTaskPrompt("rough note"))
+    // With claude unavailable, refinement refuses rather than running the DSH
+    // headless profile, which cannot have its tools disabled.
+    await withEnv("CLAUDE_BIN", missing, () =>
+      withEnv("DSH_BIN", dshFake, () =>
+        assert.rejects(() => refiner.refineTaskPrompt("rough note"), /No model is available to refine/)
+      )
     );
-    assert.equal(refined, "dsh brief");
-    const recorded = await readRecord(recordFile);
-    const args = recorded.argv.slice(2);
-    // The same one-shot invocation the execution provider uses.
-    assert.equal(args[0], "--profile");
-    assert.equal(args[1], "headless");
-    assert.match(args[2], /rough note/);
+    await assert.rejects(() => fs.access(recordFile)); // dsh was never spawned
   } finally {
     await fs.rm(base, { recursive: true, force: true });
     await fs.rm(dir, { recursive: true, force: true });
@@ -297,7 +295,7 @@ test("a hanging refinement times out instead of leaving the composer stuck", asy
   }
 });
 
-test("falls back to the next model path when the preferred one fails", async () => {
+test("a failing claude path surfaces its error and never falls back to dsh", async () => {
   const base = await fs.mkdtemp(path.join(os.tmpdir(), "work-refine-svc-"));
   const claudeRecord = path.join(base, "claude-record.json");
   const dshRecord = path.join(base, "dsh-record.json");
@@ -310,15 +308,18 @@ test("falls back to the next model path when the preferred one fails", async () 
   const { bin: dshFake, dir: dshDir } = await fakeModelBin({ stdout: "dsh brief", recordFile: dshRecord });
   try {
     const refiner = createRefiner({ providers: createProviderRegistry({ base }) });
-    const refined = await withEnv("CLAUDE_BIN", claudeFake, () =>
-      withEnv("DSH_BIN", dshFake, () => refiner.refineTaskPrompt("rough"))
+    await withEnv("CLAUDE_BIN", claudeFake, () =>
+      withEnv("DSH_BIN", dshFake, () =>
+        assert.rejects(
+          () => refiner.refineTaskPrompt("rough"),
+          error => error.status === 502 && /not authenticated/.test(error.message)
+        )
+      )
     );
-    assert.equal(refined, "dsh brief");
-    // Both were actually tried, in preference order: claude first, then dsh.
+    // claude was tried; dsh (a tool-enabled model) was never spawned.
     const claude = await readRecord(claudeRecord);
     assert.equal(claude.argv.slice(2)[0], "-p");
-    const dsh = await readRecord(dshRecord);
-    assert.equal(dsh.argv.slice(2)[0], "--profile");
+    await assert.rejects(() => fs.access(dshRecord));
   } finally {
     await fs.rm(base, { recursive: true, force: true });
     await fs.rm(claudeDir, { recursive: true, force: true });

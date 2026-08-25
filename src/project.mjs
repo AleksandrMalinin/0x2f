@@ -56,7 +56,12 @@ cannot be redefined. For ACP agents, "permissions" ("interactive" default,
 "deny" / "approve" for headless auto-resolution) controls how tool permission
 requests are handled.
 Adding a provider grants 0x2F permission to execute that local command in
-this workspace.
+this workspace. Treat manifests the way you would treat a script you run:
+a manifest whose command is a shell (e.g. ["bash", "-c", "{prompt}"]) or a
+repository-relative path executes whatever it is told — 0x2F warns about
+those when it loads them, and a REPOSITORY that ships its own
+.work/providers/ manifests should be treated as untrusted until you have
+read them.
 `;
 
 export async function initProject(base = process.cwd()) {

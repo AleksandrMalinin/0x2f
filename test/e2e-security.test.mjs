@@ -484,6 +484,14 @@ test("the remote projection drops raw inputs, diffs, session ids, absolute paths
   );
   assert.equal(runStarted.sessionId, undefined);
 
+  // The workspace path is redacted even inside prose (progress/error text).
+  const progress = projectEvent(
+    { type: "progress", taskId: 1, run: 1, at: "2026-01-01T00:00:00.000Z", text: `opened ${base}/src/a.ts and ${base}/README.md` },
+    base
+  );
+  assert.ok(!progress.text.includes(base), "the absolute workspace path must not leak in prose");
+  assert.match(progress.text, /src\/a\.ts/);
+
   // Out-of-workspace paths reduce to a basename — the machine layout never
   // leaves the Mac.
   const outside = projectEvent(

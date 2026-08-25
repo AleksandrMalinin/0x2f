@@ -68,6 +68,13 @@ const PAIR_TTL_MS = 10 * 60 * 1000;
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // phone sessions live 30 days
 const MAX_BODY_BYTES = 1_000_000;
 
+// Rate limits (fixed window, per key). Pairing claims are IP-bound (they are
+// the only unauthenticated mutating surface — a brute-forced token is
+// infeasible, but a flood is noise); command forwarding is session-bound.
+const DEFAULT_RATE_LIMITS = {
+  claim: { windowMs: 60_000, max: 10 },
+  command: { windowMs: 60_000, max: 120 }
+};
 
 // Cross-origin: the phone client lives on the client origin (never here) and
 // authenticates with a bearer session secret — not cookies — so `*` is safe:
@@ -88,15 +95,35 @@ export function createRelayServer({
   saveDelayMs = 500,
   sessionTtlMs = SESSION_TTL_MS,
   tokenTtlMs = PAIR_TTL_MS,
-  now = Date.now
+  now = Date.now,
+  rateLimits = DEFAULT_RATE_LIMITS
 } = {}) {
   const devices = new Map(); // deviceId -> device state (below)
   const tokens = new Map(); // pairing token -> { deviceId, expiresAt, claimed }
   const sessions = new Map(); // session secret -> { deviceId, generation, expiresAt, phoneId? }
   const pending = new Map(); // requestId -> { deviceId, resolvers: [], timer }
   const sseClients = new Map(); // deviceId -> Set<http.ServerResponse>
+  const rateBuckets = new Map(); // `${kind}:${key}` -> { count, resetAt }
 
   // device = { deviceSecret, online, ws, generation, lastSeenAt }
+
+  // A fixed-window limiter: true when the key has exceeded its budget. Buckets
+  // are pruned on size so a flood of distinct keys cannot grow memory without
+  // bound.
+  function rateLimited(kind, key) {
+    const rule = rateLimits?.[kind];
+    if (!rule || !key) return false;
+    const nowMs = now();
+    const bucketKey = `${kind}:${key}`;
+    const b = rateBuckets.get(bucketKey);
+    if (!b || nowMs >= b.resetAt) {
+      if (rateBuckets.size > 10_000) rateBuckets.clear();
+      rateBuckets.set(bucketKey, { count: 1, resetAt: nowMs + rule.windowMs });
+      return false;
+    }
+    b.count += 1;
+    return b.count > rule.max;
+  }
 
   // --- persistence (tokens, sessions, device identity — NO task content) ----
 
@@ -538,6 +565,11 @@ export function createRelayServer({
       }
 
       if (method === "POST" && pathname === "/api/pair/claim") {
+        const ip = req.socket.remoteAddress ?? "unknown";
+        if (rateLimited("claim", ip)) {
+          json(res, { error: "Too many pairing attempts — try again shortly." }, 429);
+          return;
+        }
         const body = JSON.parse(await readBody(req));
         const token = typeof body.token === "string" ? body.token : "";
         const t = tokens.get(token);
@@ -625,6 +657,10 @@ export function createRelayServer({
       // The single remote-control surface: encrypted envelopes only. The
       // relay cannot see inside them — it correlates by requestId and routes.
       if (method === "POST" && pathname === "/api/command") {
+        if (rateLimited("command", sd.session)) {
+          json(res, { error: "Too many requests — try again shortly." }, 429);
+          return;
+        }
         const body = JSON.parse(await readBody(req));
         const frame = parseRelayFrame(JSON.stringify({
           v: PROTOCOL_VERSION,

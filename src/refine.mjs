@@ -24,11 +24,11 @@
 //   claude-code       `claude -p --output-format text --disallowedTools=…`
 //                     print mode with every tool denied — the closest thing
 //                     in this codebase to a plain chat call.
-//   deepseek-harness  `dsh --profile headless "<task>"` — the SAME one-shot
-//                     invocation the execution provider uses, pointed at an
-//                     empty temp cwd so the model has no repository to reach
-//                     into (DSH headless keeps tools enabled; the instruction
-//                     forbids their use).
+//
+// DeepSeek Harness is deliberately NOT a refinement path: its headless
+// profile cannot disable tools, so a prompt-injected note could make the
+// model reach into the machine from the temp cwd. Refinement only ever runs
+// a model with every tool hard-denied, or it is unavailable.
 //
 // Only native providers qualify: configured (ACP/command) harnesses have no
 // text-only mode this service can rely on.
@@ -39,7 +39,6 @@ import os from "node:os";
 import path from "node:path";
 import { WorkError } from "./core/errors.mjs";
 import { claudeBin } from "./providers/claude-code.mjs";
-import { dshBin } from "./providers/deepseek-harness.mjs";
 
 // The exact instruction sent to the model. Every refinement shares it; only
 // the user's raw note is interpolated. It is deliberately explicit about the
@@ -90,9 +89,8 @@ export const MAX_RAW_LENGTH = 4000;
 const CLAUDE_DISALLOWED_TOOLS = "Bash,Read,Edit,Write,Glob,Grep,WebFetch,WebSearch";
 
 // The refinement model paths, in preference order. Narrowest first: Claude
-// Code's print mode hard-denies tools (a pure text call); DeepSeek Harness's
-// headless one-shot cannot disable tools, so it runs in an empty temp cwd and
-// relies on the instruction.
+// Code's print mode hard-denies tools (a pure text call). This is the ONLY
+// refinement path: a model that cannot have its tools disabled never refines.
 const REFINEMENT_PATHS = {
   "claude-code": {
     bin: () => claudeBin(),
@@ -103,18 +101,13 @@ const REFINEMENT_PATHS = {
       "--disallowedTools=" + CLAUDE_DISALLOWED_TOOLS,
       instruction
     ]
-  },
-  "deepseek-harness": {
-    bin: () => dshBin(),
-    args: instruction => ["--profile", "headless", instruction]
   }
 };
-const REFINEMENT_ORDER = ["claude-code", "deepseek-harness"];
+const REFINEMENT_ORDER = ["claude-code"];
 
 // Pick the refinement paths whose executables can be resolved, in preference
 // order. Uses the provider registry's availability check (never spawns), so a
-// fake bin via CLAUDE_BIN / DSH_BIN participates exactly like it does for
-// execution.
+// fake bin via CLAUDE_BIN participates exactly like it does for execution.
 export function pickRefinementPaths(providers) {
   const paths = [];
   for (const id of REFINEMENT_ORDER) {
@@ -175,7 +168,7 @@ function spawnModel(bin, args, { cwd, timeoutMs, label }) {
         settle(resolve, stdout);
       } else {
         // Some CLIs report failures on stdout (claude's auth errors), some on
-        // stderr (dsh). Surface whichever carries the message, capped — a
+        // stderr. Surface whichever carries the message, capped — a
         // bare "exited with code 1" would hide the actual cause.
         const detail = stderr.trim() || stdout.trim().slice(0, 200);
         settle(
@@ -224,7 +217,7 @@ export function createRefiner({ providers, timeoutMs = 120000 } = {}) {
     const paths = pickRefinementPaths(providers);
     if (!paths.length) {
       throw new WorkError(
-        "No model is available to refine — install Claude Code or DeepSeek Harness, then retry.",
+        "No model is available to refine — install Claude Code, then retry.",
         503
       );
     }

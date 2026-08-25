@@ -89,3 +89,22 @@ test("appendEvent appends normalized JSON lines to events.jsonl", async () => {
     await fs.rm(base, { recursive: true, force: true });
   }
 });
+
+test("task state files are written owner-only (0600)", async () => {
+  const base = await tempWorkspace();
+  try {
+    const store = createStore(base);
+    const task = await store.createTask("Private", "prompt with repo quotes");
+    await store.appendEvent(task.slug, { type: "run.started", taskId: task.id, at: "t" });
+    await store.writeJson(path.join(store.taskDir(task.slug), "permission.json"), { grant: "allow" });
+
+    const dir = store.taskDir(task.slug);
+    assert.equal((await fs.stat(dir)).mode & 0o777, 0o700, "task dir must be owner-only");
+    for (const rel of ["task.json", "prompt.md", "run.log", "events.jsonl", "permission.json"]) {
+      const mode = (await fs.stat(path.join(dir, rel))).mode & 0o777;
+      assert.equal(mode, 0o600, `${rel} must be owner-only`);
+    }
+  } finally {
+    await fs.rm(base, { recursive: true, force: true });
+  }
+});

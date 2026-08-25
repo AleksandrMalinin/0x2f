@@ -350,18 +350,20 @@ try {
   }
 
   if (outcome.status === "ready" || outcome.status === "needs_you") {
-    await fs.writeFile(resultPath, outcome.result ?? "", "utf8");
+    await fs.writeFile(resultPath, outcome.result ?? "", { encoding: "utf8", mode: 0o600 });
+    await fs.chmod(resultPath, 0o600).catch(() => {});
     // This run's own result, so the previous run's result is preserved when
     // a later run overwrites result.md. Runs with no written result (failed)
     // leave no per-run file — the absence is the honest record.
     if (Array.isArray(current.runs)) {
       const runDir = path.join(dir, "runs", String(runNumber));
       await fs.mkdir(runDir, { recursive: true });
-      await fs.writeFile(
-        path.join(runDir, "result.md"),
-        outcome.result ?? "",
-        "utf8"
-      );
+      const runResultPath = path.join(runDir, "result.md");
+      await fs.writeFile(runResultPath, outcome.result ?? "", {
+        encoding: "utf8",
+        mode: 0o600
+      });
+      await fs.chmod(runResultPath, 0o600).catch(() => {});
     }
   }
 

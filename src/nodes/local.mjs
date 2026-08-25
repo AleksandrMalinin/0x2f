@@ -45,6 +45,8 @@ export function createLocalNode({ workspace, spawn = defaultSpawn, kill = proces
     // exists yet (in practice the action creates it before launching).
     fsSync.mkdirSync(path.dirname(logPath), { recursive: true });
     const logFd = fsSync.openSync(logPath, "a");
+    // run.log captures the provider's output — keep it owner-only.
+    fsSync.chmodSync(logPath, 0o600);
 
     // The run number is explicit: the worker records it on events and uses it
     // to finalize the right run record, never guessing which run it is.
