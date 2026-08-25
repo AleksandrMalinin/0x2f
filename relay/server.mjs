@@ -25,6 +25,13 @@
 //   GET  /pair/:token            one-time pairing page (public)
 //   GET  /api/pair/:token        { registered, claimed, expiresAt } (public)
 //   POST /api/pair/claim         { token } -> session cookie, consumes token
+//   POST /api/devices/rotate     { deviceId, deviceSecret, nextSecret,
+//                                  token, tokenExpiresAt } — the Mac rotates
+//                                  its deviceSecret + pairing token (authorized
+//                                  by the CURRENT deviceSecret)
+//   POST /api/devices/revoke     { deviceId, deviceSecret } — the Mac revokes
+//                                  remote access: all phone sessions and
+//                                  pairing tokens for the device die
 //   GET  /                       app shell (paired) or pairing landing page
 //   GET  /app/*                  web assets (the same src/web/ client)
 //   GET  /api/status             { mode: "relay", mac: online|offline, base }
@@ -41,6 +48,23 @@
 // queued — while the Mac is offline they fail immediately with 503, because
 // "user taps SEND BACK now and it unexpectedly executes 15 minutes later" is
 // worse than explicit unavailability.
+//
+// Credential lifecycle (what pairing grants, and for how long):
+//   - deviceSecret   the Mac's long-lived credential to the relay. Rotated by
+//                    the Mac on EVERY `2f pair` (via /api/devices/rotate,
+//                    authorized by the old secret). Never changes on plain
+//                    reconnects.
+//   - pairing token  128-bit one-time bootstrap credential. Registered on the
+//                    first hello (or by rotate), ALWAYS with an expiry — the
+//                    Mac's own tokenExpiresAt when provided, else the relay's
+//                    TTL. Claimed exactly once by a phone.
+//   - phone session  issued by claiming a token. Has a TTL (default 30 days)
+//                    and is bound to the device's GENERATION: re-pairing
+//                    (rotate) or `2f pair --off` (revoke) bumps the generation
+//                    and clears all sessions and tokens, so stale sessions can
+//                    never silently become valid again after a reconnect.
+//   - reconnect      (same deviceSecret, same generation) does NOT revoke
+//                    anything — the phone stays paired, exactly as documented.
 
 import http from "node:http";
 import fs from "node:fs/promises";
@@ -62,6 +86,7 @@ const MAX_EVENTS_TOTAL = 20000;
 const COMMAND_TIMEOUT_MS = 30000;
 const HELLO_TIMEOUT_MS = 10000;
 const PAIR_TTL_MS = 10 * 60 * 1000;
+const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // phone sessions live 30 days
 
 const ASSETS = {
   "/app/app.css": ["app.css", "text/css; charset=utf-8"],
@@ -91,17 +116,20 @@ export function createRelayServer({
   port = 0,
   log = console,
   commandTimeoutMs = COMMAND_TIMEOUT_MS,
-  saveDelayMs = 500
+  saveDelayMs = 500,
+  sessionTtlMs = SESSION_TTL_MS,
+  tokenTtlMs = PAIR_TTL_MS,
+  now = Date.now
 } = {}) {
   const devices = new Map(); // deviceId -> device state (below)
   const tokens = new Map(); // pairing token -> { deviceId, expiresAt, claimed }
-  const sessions = new Map(); // session secret -> deviceId
+  const sessions = new Map(); // session secret -> { deviceId, generation, expiresAt }
   const pending = new Map(); // requestId -> { deviceId, resolvers: [], timer }
   const sseClients = new Map(); // deviceId -> Set<http.ServerResponse>
 
   // device = {
   //   deviceSecret, online, ws, base, tasks, providers, routing,
-  //   events: Map<taskId, event[]>, seen: Set, sessions: Set, lastSeenAt
+  //   events: Map<taskId, event[]>, seen: Set, generation, lastSeenAt
   // }
 
   // --- persistence (the relay is disposable; this file only survives its own
@@ -121,7 +149,7 @@ export function createRelayServer({
   async function flushSave() {
     if (!dataFile) return;
     const snapshot = {
-      version: 1,
+      version: 2,
       tokens: Object.fromEntries([...tokens.entries()].map(([t, v]) => [t, v])),
       sessions: Object.fromEntries([...sessions.entries()]),
       devices: Object.fromEntries(
@@ -134,13 +162,20 @@ export function createRelayServer({
             providers: d.providers,
             routing: d.routing,
             events: Object.fromEntries([...d.events.entries()]),
+            generation: d.generation,
             lastSeenAt: d.lastSeenAt
           }
         ])
       )
     };
     await fs.mkdir(path.dirname(dataFile), { recursive: true });
-    await fs.writeFile(dataFile, JSON.stringify(snapshot) + "\n", "utf8");
+    // The state file holds deviceSecrets, session cookies and pairing tokens —
+    // restrictive perms, and a chmod even when the file already exists.
+    await fs.writeFile(dataFile, JSON.stringify(snapshot) + "\n", {
+      encoding: "utf8",
+      mode: 0o600
+    });
+    await fs.chmod(dataFile, 0o600);
   }
 
   async function loadState() {
@@ -160,8 +195,26 @@ export function createRelayServer({
     for (const [token, v] of Object.entries(saved.tokens ?? {})) {
       tokens.set(token, v);
     }
-    for (const [session, deviceId] of Object.entries(saved.sessions ?? {})) {
-      sessions.set(session, deviceId);
+    // Session records are { deviceId, generation, expiresAt } in v2; a v1
+    // state file stored the bare deviceId — migrate those sessions with a
+    // fresh TTL so old credentials expire like everything else.
+    for (const [session, record] of Object.entries(saved.sessions ?? {})) {
+      if (typeof record === "string") {
+        sessions.set(session, {
+          deviceId: record,
+          generation: 1,
+          expiresAt: now() + sessionTtlMs
+        });
+      } else if (record && typeof record.deviceId === "string") {
+        sessions.set(session, {
+          deviceId: record.deviceId,
+          generation: record.generation ?? 1,
+          expiresAt:
+            typeof record.expiresAt === "number"
+              ? record.expiresAt
+              : now() + sessionTtlMs
+        });
+      }
     }
     for (const [id, d] of Object.entries(saved.devices ?? {})) {
       const events = new Map();
@@ -178,7 +231,7 @@ export function createRelayServer({
         routing: d.routing ?? {},
         events,
         seen: new Set(),
-        sessions: new Set(),
+        generation: d.generation ?? 1,
         lastSeenAt: d.lastSeenAt ?? null
       });
     }
@@ -221,13 +274,61 @@ export function createRelayServer({
   }
 
   // The session device for a request, or null when the request is not paired.
+  // A session is valid only while it (a) exists, (b) has not expired, and
+  // (c) belongs to the device's CURRENT generation — re-pairing or revoking
+  // bumps the generation, so sessions from before that are permanently dead,
+  // even after the Mac reconnects.
   function sessionDevice(req) {
     const session = parseCookies(req)[SESSION_COOKIE];
     if (!session) return null;
-    const deviceId = sessions.get(session);
-    if (!deviceId) return null;
-    const device = devices.get(deviceId);
-    return device ? { deviceId, device } : null;
+    const record = sessions.get(session);
+    if (!record) return null;
+    if (record.expiresAt && now() >= record.expiresAt) {
+      sessions.delete(session);
+      return null;
+    }
+    const device = devices.get(record.deviceId);
+    if (!device) return null;
+    if (record.generation !== device.generation) return null;
+    return { deviceId: record.deviceId, device };
+  }
+
+  // Register (or refresh) a pairing token, ALWAYS with an expiry: the Mac's
+  // own tokenExpiresAt when the agent provides it, otherwise the relay's TTL.
+  // A token without an expiry would be a claimable-forever credential.
+  function registerToken(token, deviceId, payloadExpiresAt) {
+    let expiresAt;
+    if (typeof payloadExpiresAt === "string") {
+      const parsed = new Date(payloadExpiresAt);
+      if (!Number.isNaN(parsed.getTime())) expiresAt = parsed.toISOString();
+    }
+    if (!expiresAt) {
+      expiresAt = new Date(now() + tokenTtlMs).toISOString();
+    }
+    tokens.set(token, { deviceId, expiresAt, claimed: false });
+    scheduleSave();
+  }
+
+  // Retire every credential of a device: bump the generation (which makes all
+  // existing phone sessions invalid — they are checked against it on every
+  // request) and drop its sessions and pairing tokens. Used by rotate (re-pair)
+  // and revoke (`2f pair --off`). The deviceSecret is NOT touched here.
+  function revokeDeviceCredentials(deviceId, device) {
+    device.generation += 1;
+    for (const [session, record] of [...sessions.entries()]) {
+      if (record.deviceId === deviceId) sessions.delete(session);
+    }
+    for (const [token, record] of [...tokens.entries()]) {
+      if (record.deviceId === deviceId) tokens.delete(token);
+    }
+    if (device.ws && device.ws.readyState === 1) {
+      try {
+        device.ws.close(1008, "credentials rotated or revoked");
+      } catch {
+        /* already closing */
+      }
+    }
+    scheduleSave();
   }
 
   function deviceOnline(device) {
@@ -327,15 +428,11 @@ export function createRelayServer({
 
     if (existing && existing.deviceSecret === secret) {
       // Already registered — the secret is the long-lived credential; the
-      // token is only metadata now. A new token (re-pair) becomes claimable.
+      // token is only bootstrap metadata. A new token (from `2f pair`) becomes
+      // claimable, with the Mac's own expiry.
       device = existing;
       if (typeof payload.token === "string" && payload.token && !tokens.has(payload.token)) {
-        tokens.set(payload.token, {
-          deviceId,
-          expiresAt: null, // the agent's config carries its own expiry
-          claimed: false
-        });
-        scheduleSave();
+        registerToken(payload.token, deviceId, payload.tokenExpiresAt);
       }
     } else if (existing && existing.deviceSecret !== secret) {
       return reject("device identity conflict — secret does not match");
@@ -358,11 +455,7 @@ export function createRelayServer({
           return reject("pairing token already used");
         }
       }
-      tokens.set(token, {
-        deviceId,
-        expiresAt: seen?.expiresAt ?? new Date(Date.now() + PAIR_TTL_MS).toISOString(),
-        claimed: false
-      });
+      registerToken(token, deviceId, payload.tokenExpiresAt);
       device = {
         deviceSecret: secret,
         online: false,
@@ -373,7 +466,7 @@ export function createRelayServer({
         routing: {},
         events: new Map(),
         seen: new Set(),
-        sessions: new Set(),
+        generation: 1,
         lastSeenAt: null
       };
       devices.set(deviceId, device);
@@ -600,24 +693,75 @@ export function createRelayServer({
         const body = JSON.parse(await readBody(req));
         const token = typeof body.token === "string" ? body.token : "";
         const t = tokens.get(token);
-        if (!t || t.claimed || (t.expiresAt && Date.parse(t.expiresAt) <= Date.now())) {
+        if (!t || t.claimed || (t.expiresAt && Date.parse(t.expiresAt) <= now())) {
           json(res, { error: "Pairing code is invalid, already used, or expired." }, 400);
           return;
         }
-        const session = crypto.randomBytes(32).toString("hex");
-        sessions.set(session, t.deviceId);
         const device = devices.get(t.deviceId);
-        device?.sessions.add(session);
+        // A session is bound to the device's current generation: a re-pair or
+        // revoke bumps the generation, which retires every older session.
+        const session = crypto.randomBytes(32).toString("hex");
+        sessions.set(session, {
+          deviceId: t.deviceId,
+          generation: device?.generation ?? 1,
+          expiresAt: now() + sessionTtlMs
+        });
         t.claimed = true;
         scheduleSave();
         const secure = secureCookie(req);
+        const maxAge = Math.floor(sessionTtlMs / 1000);
         res.writeHead(200, {
           "content-type": "application/json; charset=utf-8",
           "set-cookie":
-            `${SESSION_COOKIE}=${session}; Path=/; HttpOnly; SameSite=Strict` +
+            `${SESSION_COOKIE}=${session}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${maxAge}` +
             (secure ? "; Secure" : "")
         });
         res.end(JSON.stringify({ ok: true }));
+        return;
+      }
+
+      // --- device lifecycle (Mac-authenticated by the deviceSecret; the
+      // phone never knows it) -------------------------------------------------
+
+      // Rotate the device's credential: a re-pair retires the old secret,
+      // every old phone session and every old pairing token, and registers the
+      // new one-time token (with the Mac's own expiry).
+      if (method === "POST" && pathname === "/api/devices/rotate") {
+        const body = JSON.parse(await readBody(req));
+        const deviceId = typeof body.deviceId === "string" ? body.deviceId : "";
+        const device = devices.get(deviceId);
+        if (!device || device.deviceSecret !== body.deviceSecret) {
+          json(res, { error: "Unknown device or bad deviceSecret." }, 401);
+          return;
+        }
+        if (typeof body.nextSecret !== "string" || body.nextSecret.length < 16) {
+          json(res, { error: "nextSecret must be a non-empty credential." }, 400);
+          return;
+        }
+        revokeDeviceCredentials(deviceId, device);
+        device.deviceSecret = body.nextSecret;
+        if (typeof body.token === "string" && body.token) {
+          registerToken(body.token, deviceId, body.tokenExpiresAt);
+        }
+        scheduleSave();
+        json(res, { ok: true, generation: device.generation });
+        return;
+      }
+
+      // Revoke remote access (`2f pair --off`): every phone session and every
+      // pairing token for the device dies immediately; nothing becomes valid
+      // again until the Mac re-pairs with a fresh token.
+      if (method === "POST" && pathname === "/api/devices/revoke") {
+        const body = JSON.parse(await readBody(req));
+        const deviceId = typeof body.deviceId === "string" ? body.deviceId : "";
+        const device = devices.get(deviceId);
+        if (!device || device.deviceSecret !== body.deviceSecret) {
+          json(res, { error: "Unknown device or bad deviceSecret." }, 401);
+          return;
+        }
+        revokeDeviceCredentials(deviceId, device);
+        scheduleSave();
+        json(res, { ok: true });
         return;
       }
 
@@ -905,7 +1049,7 @@ export function createRelayServer({
       url,
       port: actualPort,
       // Test/observation seam: the relay's current in-memory view.
-      state: { devices, tokens, sessions },
+      state: { devices, tokens, sessions, flushSave },
       close: async () => {
         clearInterval(pingTimer);
         if (saveTimer) {

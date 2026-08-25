@@ -122,24 +122,17 @@ browser. The pairing page confirms the code automatically and opens the app.
 This exercises the entire loop except the actual second network.
 
 **Option B — a real phone on the same Wi-Fi:** restart the relay with network
-access, then pair with the Mac's LAN address.
-
-**Terminal A** (Ctrl+C, then):
-
-```bash
-node server.mjs --port 8080 --host 0.0.0.0 --data ./data/state.json
-```
-
-Find the Mac's LAN IP: `ipconfig getifaddr en0` (e.g. `192.168.1.5`), then
-pair and open the URL from the phone:
+access, then pair with the Mac's LAN address — but remember the relay URL
+must be `https://` unless it is explicit localhost. For a home-network smoke
+test either run the relay on the same machine you open the browser on
+(`http://127.0.0.1:8080`), or put the relay behind TLS (Caddy/nginx, see
+`relay/README.md`) and pair with that URL:
 
 ```bash
-2f pair --relay http://192.168.1.5:8080
+node server.mjs --port 8080 --host 0.0.0.0 --data ./data/state.json   # behind TLS
 ```
 
-macOS may ask to allow incoming connections for `node` — allow it. This is
-plain HTTP without TLS, fine for a home-network smoke test; for "left home"
-scenarios you need an HTTPS deployment (see `relay/README.md`).
+macOS may ask to allow incoming connections for `node` — allow it.
 
 ---
 
@@ -171,17 +164,33 @@ tapped SEND BACK now and it runs 15 minutes later").
 
 To bring the Mac back, restart the runtime (`2f pair …` or `2f ui
 --no-browser`); the agent reconnects and the phone shows fresh state by
-itself. No re-pairing is needed — the phone session is bound to the
-`deviceId`, not to the token.
+itself. No re-pairing is needed — a plain reconnect (same device credentials,
+same pairing generation) never revokes the phone session.
 
----
+## Step 7 — Revoking remote access
 
-## Step 7 — Stop
+```bash
+2f pair --off
+```
+
+This is a real revocation, not just a local disconnect: the Mac asks the
+relay to kill every phone session and pairing token for this Mac, and the
+agent disconnects. The phone is locked out immediately — even if the Mac
+reconnects afterwards with the same credentials, the old sessions stay dead.
+Sessions also expire on their own after 30 days. To control the Mac from a
+phone again, run `2f pair` again (this rotates the Mac's credential and
+starts a fresh pairing; the previous phone must claim the new code).
+
+Re-running `2f pair` at any time rotates the device credential + token and
+retires the previous phone — that is how you switch phones.
+
+## Step 8 — Stop
 
 - Relay: `Ctrl+C` in terminal A.
-- Remote control: `2f pair --off` (the agent disconnects).
 - The relay state file (`relay/data/state.json`) is a disposable cache — you
-  can delete it; Tasks on the Mac are unaffected.
+  can delete it; Tasks on the Mac are unaffected. It holds live credentials
+  (device secrets, session cookies, pairing tokens), is written `0600`, and
+  must never be copied or committed.
 
 ---
 
@@ -189,7 +198,7 @@ itself. No re-pairing is needed — the phone session is bound to the
 
 ```bash
 cd /path/to/0x2f
-npm test        # the full suite (323 tests), including 22 relay/agent integration tests
+npm test        # the full suite (345 tests), including relay/agent + pairing-security tests
 npm run check   # syntax-check every source and test file
 ```
 
@@ -201,19 +210,25 @@ npm run check   # syntax-check every source and test file
 |---|---|---|
 | `No .work project found` | command run outside a workspace | `cd` into the project → `2f init` |
 | `The relay has not confirmed … (fetch failed)` | relay is not running / unreachable | start the relay (Step 1), `curl`-verify, re-run `2f pair` |
-| No `relay: online` in `.work/ui.log` | relay unreachable, or the token expired (10 min) | bring the relay up, re-run `2f pair` |
-| Agent watches the wrong `.work/relay.json` | a runtime on port 4242 belongs to another workspace | pair with `--port 4301` |
-| Phone cannot open `http://…` | wrong network / no TLS | Option B (LAN, `--host 0.0.0.0`) or an HTTPS deployment |
+| `No relay: online` in `.work/ui.log` | relay unreachable, or the token expired (10 min) | bring the relay up, re-run `2f pair` |
+| `Agent watches the wrong .work/relay.json` | a runtime on port 4242 belongs to another workspace | pair with `--port 4301` |
+| `Relay URL must use https://…` | a plain-HTTP relay address was given | use `https://`, or `http://127.0.0.1` for localhost dev |
+| `The relay rejected the current device credential` | relay state was reset / identity mismatch | `2f pair` falls back to a fresh identity automatically |
+| Phone cannot open `http://…` | wrong network / no TLS | an HTTPS deployment, or localhost dev |
 | `503 Mac is offline` on actions | the Mac is unreachable — by design | restart the runtime and wait for reconnection |
+| Phone locked out after `2f pair --off` / re-pair | revocation or credential rotation — by design | run `2f pair` again and claim the new code on the phone |
 
 ---
 
 ## Security boundary (short version)
 
-The relay necessarily observes what the remote surface needs to render —
-task status, normalized events, progress/result text, file paths, NEEDS YOU
-details. It never receives provider credentials, repository contents, or
-execution authority: a mutating command only runs while the Mac's agent is
-connected, and offline commands fail immediately instead of queueing. There
-is no E2E encryption beyond HTTPS/WSS — see
-[`relay/README.md`](../relay/README.md) for the full statement.
+Pairing grants a phone a **session** (30-day TTL) that can observe task state
+and issue the same commands the local UI can — but only while the Mac's agent
+is connected (offline commands fail immediately, never queued). The relay
+observes what the remote surface needs to render (task status, normalized
+events, progress/result text, file paths, NEEDS YOU details) and never
+receives provider credentials, repository contents, or the deviceSecret's
+authority. Pairing tokens are one-time and expire (10 min); the deviceSecret
+is rotated on every `2f pair`; `2f pair --off` and re-pairing revoke all
+phone sessions at the relay. There is no E2E encryption beyond HTTPS/WSS —
+see [`relay/README.md`](../relay/README.md) for the full statement.

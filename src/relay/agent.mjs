@@ -40,6 +40,7 @@ import {
   makeFrame,
   parseFrame
 } from "./protocol.mjs";
+import { validateRelayUrl } from "./pair.mjs";
 import { WorkError } from "../core/errors.mjs";
 
 // Events that change what a task IS (task.json): after one of these the
@@ -118,6 +119,13 @@ export function createRelayAgent({
       const c = JSON.parse(text);
       if (!c || c.enabled === false) return null;
       if (!c.url || !c.deviceId || !c.deviceSecret) return null;
+      // The deviceSecret must never cross a plaintext path: refuse non-loopback
+      // http:// relays even if the config was hand-edited after pairing.
+      const urlError = validateRelayUrl(c.url);
+      if (urlError) {
+        warn(`relay: not connecting — ${urlError}`);
+        return null;
+      }
       return c;
     } catch {
       return null;
@@ -178,6 +186,9 @@ export function createRelayAgent({
           agentName: cfg.agentName ?? "0x2f-mac",
           deviceSecret: cfg.deviceSecret,
           token: cfg.token ?? null,
+          // The relay stores every pairing token with an expiry; the Mac's own
+          // config expiry (10 minutes) is the authoritative one.
+          tokenExpiresAt: cfg.tokenExpiresAt ?? null,
           providers: currentProviders(),
           routing: currentRouting()
         })

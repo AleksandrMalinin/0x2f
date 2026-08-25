@@ -38,7 +38,8 @@ Commands:
   2f answer <id> <answer>   answer a NEEDS YOU decision (not allow/reject)
   2f close <id>      stop working on a task; moves it to DONE
   2f pair [--relay <url>]   pair this Mac with the 0x2F relay for remote
-                          control from your phone (--off disables it)
+                          control from your phone (--off revokes remote
+                          access at the relay and disables the connection)
   2f providers      list execution providers (native + configured)
   2f ui [port]      open the Web UI (start the runtime if needed; --no-browser
                     starts it without opening a browser)

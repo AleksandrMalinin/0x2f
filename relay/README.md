@@ -54,12 +54,50 @@ On the Mac, in the workspace you want remote control over:
 2f pair --relay https://relay.example.com
 ```
 
-It starts (or reuses) the 0x2F runtime, generates a one-time high-entropy
-token, and prints a short-lived URL. Open that URL on your phone once; it
-gets a session scoped to this Mac. `2f pair --off` disables remote control.
+It starts (or reuses) the 0x2F runtime, rotates the Mac's credential, prints
+a short-lived URL, and the phone claims it once. `2f pair --off` revokes
+remote access at the relay (see below).
 
-One phone at a time per Mac; re-running `2f pair` rotates the token and
-re-pairs.
+**Transport policy:** the relay URL must be `https://`. Plain `http://` is
+accepted only for explicit localhost development (`127.0.0.1`, `localhost`,
+`[::1]`) — the deviceSecret must never cross an unauthenticated network path.
+
+## What pairing grants
+
+A phone that completes pairing gets a session scoped to one Mac, and through
+it the full remote-control surface: observe task state and normalized events,
+and issue the same commands the local UI can (`create`, `rerun`, `allow`,
+`reject`, `answer`, `note`, `close`, `refine`, …). Commands only execute while
+the Mac's agent is connected (offline commands fail with 503, never queued).
+The relay does not receive provider credentials, repository contents, or any
+credential beyond the pairing token / deviceSecret.
+
+## Credential lifetimes and revocation
+
+| Credential | Lifecycle |
+| --- | --- |
+| `deviceSecret` | Long-lived Mac→relay credential. Rotated on **every** `2f pair` via `POST /api/devices/rotate`, authorized by the current secret (only a holder of the current secret can rotate). Never changes on plain reconnects. Stored in `.work/relay.json` (mode `0600`) on the Mac and in `state.json` (mode `0600`) here. |
+| pairing token | 128-bit, one-time bootstrap credential. Always expires — the Mac's `tokenExpiresAt` (10 minutes) when provided, else the relay's TTL. Claimed once by a phone; a second claim fails. |
+| phone session | Issued by claiming a token. Lives 30 days (`Max-Age` cookie + relay-side expiry) and is bound to the device's **generation**. |
+
+- **Re-pairing** (`2f pair` again) rotates the secret + token and bumps the
+  device's generation, which retires every previous phone session and token —
+  the old phone must re-claim the new token. This is what enforces *one phone
+  at a time*.
+- **Revoking** (`2f pair --off`) calls `POST /api/devices/revoke`
+  (Mac-authenticated by the deviceSecret): every session and token for the
+  device dies immediately. Sessions can never silently become valid again —
+  even if the Mac reconnects with the same credentials afterwards, the
+  pre-revocation sessions stay dead. Re-enabling is an explicit re-pair.
+- **Reconnecting** (same `deviceSecret`, same generation — a Mac restart, an
+  offline period) revokes nothing: the phone stays paired, as documented.
+  Re-pairing is only needed when you rotate credentials or change phones.
+
+If the relay is unreachable when you run `2f pair --off`, revocation cannot be
+delivered — the Mac disconnects anyway and the sessions expire on their own
+(30 days). `relay/data/state.json` holds live credentials (deviceSecrets,
+session cookies, pairing tokens): it is written `0600` and must never be
+copied or committed.
 
 ## Security boundary — documented, not pretended
 
@@ -85,11 +123,11 @@ One versioned JSON envelope over the WebSocket (`/ws`):
 { protocolVersion, deviceId, requestId, type, payload }
 ```
 
-Mac → relay: `hello` (deviceSecret + pairing token), `snapshot` (listWork),
-`event` (normalized Work events), `ack` (command results — the same JSON the
-local API returns). Relay → Mac: `command` (ops map 1:1 onto the local API:
-list, get, getRun, create, rerun, allow, reject, answer, note, close,
-refine, providers, routing).
+Mac → relay: `hello` (deviceSecret + pairing token + tokenExpiresAt),
+`snapshot` (listWork), `event` (normalized Work events), `ack` (command
+results — the same JSON the local API returns). Relay → Mac: `command` (ops
+map 1:1 onto the local API: list, get, getRun, create, rerun, allow, reject,
+answer, note, close, refine, providers, routing).
 
 Every mutating command carries a client-generated `requestId`; the Mac keeps
 a bounded idempotency cache and never executes the same key twice. `deviceId`

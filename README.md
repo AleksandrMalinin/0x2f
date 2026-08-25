@@ -146,20 +146,27 @@ running the work; the phone is a compact control surface:
 2f pair --relay https://relay.example.com
 ```
 
-The runtime connects **outbound** to the relay (works behind NAT), prints a
-short-lived one-time pairing URL, and you open it on your phone. The phone
-serves the same Web UI from the relay — see NEEDS YOU / WORKING / READY /
-FAILED, open a task, and ANSWER / ALLOW / REJECT / NOTE / SEND BACK / ACCEPT.
-While the Mac is offline the phone shows the bounded last-known state with a
-**MAC OFFLINE** banner and disables actions; commands are never queued, and a
-double tap can never execute an action twice (unique `requestId` per command,
-idempotency on the Mac).
+The runtime connects **outbound** to the relay (works behind NAT), rotates
+its device credential, prints a short-lived one-time pairing URL, and you
+open it on your phone. The phone serves the same Web UI from the relay — see
+NEEDS YOU / WORKING / READY / FAILED, open a task, and ANSWER / ALLOW /
+REJECT / NOTE / SEND BACK / ACCEPT. While the Mac is offline the phone shows
+the bounded last-known state with a **MAC OFFLINE** banner and disables
+actions; commands are never queued, and a double tap can never execute an
+action twice (unique `requestId` per command, idempotency on the Mac).
+
+Pairing tokens are one-time and expire in 10 minutes; phone sessions live 30
+days and are revoked by `2f pair --off` (a real revocation at the relay, not
+just a local disconnect) or by re-pairing, which also rotates the Mac's
+credential — so a stale phone session can never silently come back after the
+Mac reconnects. The relay URL must be `https://` (plain `http://` only for
+localhost development).
 
 The relay is **private infrastructure, not part of the local product**: it is
 a small standalone app that forwards normalized events and proxies commands,
-and it never holds task state or credentials. Deployment details live in
-[`relay/README.md`](relay/README.md); a full setup-and-test walkthrough is in
-[`docs/remote-control.md`](docs/remote-control.md).
+and it never holds task state or provider credentials. Deployment details
+live in [`relay/README.md`](relay/README.md); a full setup-and-test
+walkthrough is in [`docs/remote-control.md`](docs/remote-control.md).
 
 ## Quick start
 
@@ -293,8 +300,8 @@ control layer, not remote execution.
 - **Execution is local-only.** There is no remote/mini-PC node yet. Remote
   control is an outbound control layer, not remote execution.
 - **Remote control is v1.** No push notifications (the phone works while the
-  app is open), no offline command queue by design, one phone at a time per
-  Mac.
+  app is open), no offline command queue by design; one phone at a time per
+  Mac (re-pairing revokes the previous phone's session).
 - **AUTO is deterministic policy routing**, not semantic selection — and there
   is no automatic failover (a routed run that fails is `failed`, not secretly
   retried elsewhere).
