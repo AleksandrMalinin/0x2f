@@ -1472,8 +1472,10 @@ function renderRow(row, accent) {
           class: "compact-title",
           style: { fontSize: row.titleSize, fontWeight: row.titleWeight, color: row.titleColor }
         }, inlineEls(parseInline(row.title))),
-        el("span", { class: "compact-sub", style: { color: row.subColor }, text: row.sub }),
-        renderMini(row),
+        el("div", { class: "compact-exec" }, [
+          el("span", { class: "compact-sub", style: { color: row.subColor }, text: row.sub }),
+          renderMini(row)
+        ]),
         el("span", { class: "compact-state", style: { color: row.stateColor }, text: row.stateLabel })
       ]
     );

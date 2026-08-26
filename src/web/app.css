@@ -5,14 +5,20 @@
   /* Ledger column geometry. The header and the rows are separate layouts, so
      the ONLY way they stay in one grid is by sharing these. Never hard-code a
      column width or the row gap again — they drift silently. */
-  /* EXECUTION is ONE axis, not two things that happen to sit next to each
-     other: the status phrase starts on it and the trace follows. The phrase
-     therefore needs its own fixed column (--col-sub) instead of a shrink-wrapped
-     span pinned to its right edge, and the header cell that names the axis spans
-     phrase + gap + trace + the gap before STATE. */
+  /* EXECUTION is ONE cell, not two things that happen to sit side by side.
+     The status phrase and its trace live inside a single .compact-exec box of
+     --col-exec-cell, joined by --col-exec-inner. That inner gap is deliberately
+     tighter than --col-gap: the difference is what makes the two parts read as
+     one column, so the EXECUTION header can name both. The header cell is the
+     box plus the column gap that follows it, which puts its left edge exactly
+     on the phrase's. Never give the phrase a max-width — a shrink-wrapped span
+     moves its own left edge with the string, which is what made rows ragged. */
   :root {
-    --col-sub: 210px; --col-exec: 170px; --col-state: 78px; --col-gap: 20px;
-    --col-exec-head: calc(var(--col-sub) + var(--col-gap) + var(--col-exec) + var(--col-gap));
+    --col-phrase: 190px; --col-exec: 170px; --col-state: 78px;
+    --col-gap: 20px;
+    --col-exec-inner: 10px;
+    --col-exec-cell: calc(var(--col-phrase) + var(--col-exec-inner) + var(--col-exec));
+    --col-exec-head: calc(var(--col-exec-cell) + var(--col-gap));
   }
 
   html, body { margin: 0; height: 100%; background: #e4e8ec; }
@@ -92,7 +98,7 @@
   .head { display: grid; grid-template-columns: 56px 1fr; border-bottom: 1px solid #2f2f2f; position: sticky; top: 0; background: #f6f8fa; z-index: 3; }
   .head-gutter { padding: 11px 12px 10px; text-align: right; font-size: 10px; letter-spacing: .16em; color: #5c6771; }
   .head-cols { border-left: 1px solid #dbe2e7; padding: 11px 24px 10px 20px; display: flex; justify-content: space-between; gap: 20px; font-size: 10px; letter-spacing: .16em; color: #5c6771; }
-  /* gap: 0 — the gaps are already inside --col-exec-head, so the header
+  /* gap: 0 — the column gap is already inside --col-exec-head, so the header
      cells and the row cells land on the same edges. */
   .head-right { display: flex; gap: 0; }
   .head-exec { width: var(--col-exec-head); text-align: left; }
@@ -110,11 +116,11 @@
   .compact { display: flex; align-items: center; gap: var(--col-gap); cursor: pointer; min-width: 0; }
   .compact:hover { background: #edf1f5; }
   .compact-title { flex: 1; min-width: 0; font-family: "Instrument Sans", system-ui, sans-serif; letter-spacing: -.011em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  /* Fixed cell, left-aligned: the phrase starts under EXECUTION and stays
-     there. Right-aligned inside a shrink-wrapped span, its left edge moved
-     with every string. Live telemetry, so it reads at the label value —
-     .compact-sub's colour comes from ledger.mjs (READY keeps the diff bright). */
-  .compact-sub { font-size: 12px; flex: none; width: var(--col-sub); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: left; font-variant-numeric: tabular-nums; }
+  /* the EXECUTION cell: phrase + trace, one box, one header label */
+  .compact-exec { display: flex; align-items: center; gap: var(--col-exec-inner); width: var(--col-exec-cell); flex: none; }
+  /* Fixed width, left-aligned: the phrase starts under EXECUTION and stays
+     there whatever it says. Colour comes from ledger.mjs, not from here. */
+  .compact-sub { display: inline-block; font-size: 12px; flex: none; width: var(--col-phrase); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: left; font-variant-numeric: tabular-nums; }
   .compact-mini { display: flex; align-items: flex-end; gap: 5px; height: 16px; width: var(--col-exec); justify-content: flex-start; flex: none; }
   .compact-state { font-size: 10px; letter-spacing: .15em; width: var(--col-state); text-align: right; flex: none; }
 
@@ -423,12 +429,15 @@
     .composer-inner { padding: 16px 18px 14px; }
     .head, .row { grid-template-columns: 44px 1fr; }
     .band, .result { grid-template-columns: 112px 1fr; }
-    /* the phrase is hidden here, so the axis is the trace alone */
-    :root { --col-sub: 0px; --col-exec: 120px; --col-exec-head: calc(var(--col-exec) + var(--col-gap)); }
+    /* the phrase is hidden here, so the cell is the trace alone
+       (--col-exec-head follows --col-exec-cell on its own) */
+    :root { --col-exec: 120px; --col-exec-cell: var(--col-exec); }
     .compact-sub { display: none; }
   }
   @media (max-width: 899px) {
-    .head-exec, .compact-mini { display: none; }
+    /* the whole cell goes, not just the trace inside it — an empty
+       .compact-exec would still hold its width open */
+    .head-exec, .compact-exec { display: none; }
     .counter.clock, .legend-adapter { display: none; }
     .compare { grid-template-columns: 1fr; }
   }

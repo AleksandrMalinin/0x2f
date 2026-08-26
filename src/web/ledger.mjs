@@ -1075,8 +1075,11 @@ export function projectRow(task, events, opts = {}) {
     borderB: halted ? "1px solid " + accent : "1px solid " + COLORS.rule,
     gutterRule: halted ? "rgba(47,95,168,.32)" : COLORS.rule,
     gutterPad: open ? "30px 12px 0" : done ? "12px" : "17px 12px",
+    // Right padding is 24px on every row at every breakpoint, and .head-cols
+    // matches it. Anything else throws the header off the columns it names and
+    // slides the expanded row's state word off the STATE axis.
     pad: open
-      ? wide ? "28px 32px 34px 22px" : "24px 20px 28px 18px"
+      ? wide ? "28px 24px 34px 22px" : "24px 24px 28px 18px"
       : done ? "10px 24px 10px 20px" : "15px 24px 15px 20px",
     sub,
     mini: mini.cells,
