@@ -48,7 +48,7 @@ Commands:
   2f ui [port]      open the Web UI (start the runtime if needed; --no-browser
                     starts it without opening a browser)
 
-Providers: auto (routing), claude-code (default), deepseek-harness
+Providers: auto (routing), claude-code (default), codex, deepseek-harness, gemini
 Configured: ACP/command providers from .work/providers/*.json
 Routing:    .work/routing.json (default: auto | <id>, prefer: [<ids>])
 `);
@@ -266,8 +266,8 @@ async function main() {
     if (available.length) {
       console.log(`Provider: ${available.join(", ")} detected and ready.`);
     } else {
-      console.log("No coding harness detected on PATH — install Claude Code (`claude`), Codex (`codex`), or");
-      console.log("DeepSeek Harness (`dsh`), or add a manifest to .work/providers/.");
+      console.log("No coding harness detected on PATH — install Claude Code (`claude`), Codex (`codex`),");
+      console.log("DeepSeek Harness (`dsh`), or Gemini CLI (`gemini`), or add a manifest to .work/providers/.");
       console.log("(2f providers lists what 0x2F sees and whether each is available.)");
     }
     return;

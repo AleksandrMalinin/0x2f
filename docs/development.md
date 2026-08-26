@@ -44,6 +44,7 @@ src/
     claude-code.mjs   native adapter
     codex.mjs         native adapter (exec --json + thread resume)
     deepseek-harness.mjs  native adapter
+    gemini.mjs        native adapter (stream-json + UUID session resume)
     acp.mjs           generic ACP provider
     command.mjs       generic command provider
     manifests.mjs     provider manifest loading + validation
@@ -61,7 +62,8 @@ src/
     sound-policy.mjs  when 0x2F may make a sound (pure, testable)
     sound.mjs         the slash — Web Audio, no assets
 relay/                 the standalone relay service (see relay/README.md)
-examples/providers/    verified manifests (Gemini, Cursor, OpenCode, Codex, command)
+examples/providers/    verified manifests (Cursor, OpenCode, command; removed:
+                       Codex and Gemini CLI are now built-in native providers)
 test/                  node --test suite
 ```
 
@@ -109,9 +111,10 @@ The invariants that keep the codebase small:
 - core: `actions`, `lifecycle`, `runs`, `events`, `store`, `routing`,
   `decision-protocol`, `task-context`
 - providers: `acp-provider`, `acp-interactive-e2e` (real worker),
-  `command-provider`, `deepseek-harness`, `provider-integration`,
-  `provider-availability`, `provider-manifests`, `provider-equivalence`,
-  `permission-regression`
+  `command-provider`, `deepseek-harness`, `gemini-provider`,
+  `gemini-integration` (real CLI vs a local mock API),
+  `provider-integration`, `provider-availability`, `provider-manifests`,
+  `provider-equivalence`, `permission-regression`
 - surfaces: `api`, `cli-rerun`, `ui-launch`, `render`, `web-ledger`,
   `sound-policy`, `rich`, `refine`
 - remote control: `relay` (includes the relay/agent integration tests)
@@ -134,16 +137,17 @@ node --test test/actions.test.mjs
 
 ```json
 {
-  "id": "gemini",
-  "displayName": "Gemini CLI",
+  "id": "cursor",
+  "displayName": "Cursor",
   "transport": "acp",                 // or "command"
-  "command": ["gemini", "--acp"]      // argv array, never a shell string
+  "command": ["cursor", "--acp"]      // argv array, never a shell string
 }
 ```
 
 Validation (`src/providers/manifests.mjs`) is strict: `id` lowercase
 alphanumeric, `command` a non-empty argv array, only `{prompt}` and
-`{workspace}` placeholders, and built-ins cannot be redefined. For ACP
+`{workspace}` placeholders, and built-ins (`claude-code`, `codex`,
+`deepseek-harness`, `gemini`) cannot be redefined. For ACP
 agents, `"permissions"` may be `"interactive"` (default), `"deny"`, or
 `"approve"`. See [`examples/providers/`](../examples/providers/README.md).
 

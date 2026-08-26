@@ -1,0 +1,4 @@
+{"type":"init","timestamp":"2026-08-26T23:21:00.000Z","session_id":"c3d2a1b0-2222-4f3b-8d44-000000000002","model":"auto"}
+{"type":"message","timestamp":"2026-08-26T23:21:00.100Z","role":"user","content":"Do the thing"}
+{"type":"message","timestamp":"2026-08-26T23:21:00.200Z","role":"assistant","content":"Starting...\n","delta":true}
+{"type":"result","timestamp":"2026-08-26T23:21:00.300Z","status":"error","error":{"type":"FatalAuthenticationError","message":"API key not valid. Please pass a valid API key."},"stats":{"total_tokens":0,"input_tokens":0,"output_tokens":0,"duration_ms":300,"tool_calls":0,"models":{}}}

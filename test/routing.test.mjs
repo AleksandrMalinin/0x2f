@@ -14,7 +14,7 @@ import { spawn } from "node:child_process";
 import { createRouter, loadRoutingConfig, orderCandidates } from "../src/core/router.mjs";
 import { createRuntime } from "../src/runtime.mjs";
 import { startServer } from "../src/server.mjs";
-import { TEST_AUTH_TOKEN, authHeaders } from "./helpers.mjs";
+import { TEST_AUTH_TOKEN, authHeaders, unavailableNativesEnv } from "./helpers.mjs";
 
 const CLI = new URL("../src/cli.mjs", import.meta.url).pathname;
 
@@ -175,7 +175,9 @@ function fakeNode() {
 }
 
 // A runtime whose PATH only contains the fake executables, so availability is
-// fully controlled (natives are unavailable, alpha/beta are available).
+// fully controlled (natives are unavailable, alpha/beta are available). The
+// native bin overrides are neutralized too — a *_BIN env var on the machine
+// must not leak a native into the routing decision.
 async function makeRoutedRuntime({ prefer, withConfig = true } = {}) {
   const base = await fs.mkdtemp(path.join(os.tmpdir(), "work-routing-"));
   const bins = await fs.mkdtemp(path.join(os.tmpdir(), "work-routing-bins-"));
@@ -184,7 +186,7 @@ async function makeRoutedRuntime({ prefer, withConfig = true } = {}) {
   if (withConfig) {
     await writeRouting(base, { default: "auto", prefer: prefer ?? ["alpha", "beta"] });
   }
-  const env = { ...process.env, PATH: bins };
+  const env = { ...process.env, PATH: bins, ...unavailableNativesEnv(bins) };
   const extra = [
     { id: "alpha", displayName: "Alpha", integrationType: "command", capabilities: {}, command: ["alpha", "{prompt}"], start: async () => ({ status: "ready", result: "alpha" }) },
     { id: "beta", displayName: "Beta", integrationType: "command", capabilities: {}, command: ["beta", "{prompt}"], start: async () => ({ status: "ready", result: "beta" }) }
@@ -255,8 +257,9 @@ test("actions: AUTO with nothing available fails clearly instead of guessing", a
   const base = await fs.mkdtemp(path.join(os.tmpdir(), "work-routing-"));
   const bins = await fs.mkdtemp(path.join(os.tmpdir(), "work-routing-bins-"));
   try {
-    // PATH points at an empty bin dir: no provider is available.
-    const env = { ...process.env, PATH: bins };
+    // PATH points at an empty bin dir: no provider is available (and no
+    // *_BIN override leaks one in).
+    const env = { ...process.env, PATH: bins, ...unavailableNativesEnv(bins) };
     const node = fakeNode();
     const runtime = createRuntime(base, { node, env });
     await assert.rejects(
@@ -317,7 +320,7 @@ test("API: POST /api/tasks with provider auto routes through the shared action",
   const base = await fs.mkdtemp(path.join(os.tmpdir(), "work-routing-"));
   await writeRouting(base, { default: "auto", prefer: ["alpha"] });
   try {
-    const env = { ...process.env, PATH: bins };
+    const env = { ...process.env, PATH: bins, ...unavailableNativesEnv(bins) };
     const extra = [{ id: "alpha", displayName: "Alpha", integrationType: "command", capabilities: {}, command: ["alpha", "{prompt}"], start: async () => ({ status: "ready", result: "alpha" }) }];
     const runtime = createRuntime(base, { env, providers: extra });
     const handle = await startServer(base, 0, { runtime, interval: 30, authToken: TEST_AUTH_TOKEN });

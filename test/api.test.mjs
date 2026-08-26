@@ -492,7 +492,7 @@ test("GET /api/providers lists the registry (default first) with normalized desc
     const providers = await apiFetch(handle.url + "/api/providers").then(r => r.json());
     assert.deepEqual(
       providers.map(p => p.id),
-      ["claude-code", "codex", "deepseek-harness"]
+      ["claude-code", "codex", "deepseek-harness", "gemini"]
     );
     const dsh = providers.find(p => p.id === "deepseek-harness");
     assert.equal(dsh.displayName, "DeepSeek Harness");

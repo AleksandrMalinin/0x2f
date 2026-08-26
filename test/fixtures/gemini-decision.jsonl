@@ -1,0 +1,4 @@
+{"type":"init","timestamp":"2026-08-26T23:20:00.000Z","session_id":"b17f9d2e-1111-4f2a-9c33-000000000001","model":"gemini-3-flash-preview"}
+{"type":"message","timestamp":"2026-08-26T23:20:00.100Z","role":"user","content":"Decide the backend"}
+{"type":"message","timestamp":"2026-08-26T23:20:01.000Z","role":"assistant","content":"## Result\nBoth options are viable.\n\n## Needs human decision\nREQUIRED: yes\nQUESTION: Which backend should the retry use?\n","delta":true}
+{"type":"result","timestamp":"2026-08-26T23:20:02.000Z","status":"success","stats":{"total_tokens":20,"input_tokens":5,"output_tokens":15,"duration_ms":2000,"tool_calls":0,"models":{}}}

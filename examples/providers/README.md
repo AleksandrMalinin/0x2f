@@ -10,25 +10,6 @@ the notes) — 0x2F never stores or enters credentials.
 
 ---
 
-## `gemini.json` — Gemini CLI (ACP)
-
-Verified: `gemini --acp` starts Gemini CLI in ACP mode
-(`docs/cli/acp-mode.md`, google-gemini/gemini-cli).
-
-```json
-{
-  "id": "gemini",
-  "displayName": "Gemini CLI",
-  "transport": "acp",
-  "command": ["gemini", "--acp"]
-}
-```
-
-Authentication: on first run Gemini CLI advertises its auth methods over ACP
-(Google login, API key, Vertex). Pre-authenticate before running 0x2F (e.g.
-`gemini` interactively once, or a `GEMINI_API_KEY` in the environment) —
-0x2F does not authenticate for you.
-
 ## `cursor.json` — Cursor CLI (ACP)
 
 Verified: `agent acp` starts Cursor CLI in ACP mode
@@ -76,6 +57,14 @@ documented capability boundaries (see `docs/codex-capability-map.md`). A
 `.work/providers/*.json` manifest with `"id": "codex"` is rejected as a
 redefinition of a built-in provider.
 
+## `gemini.json` — (removed: Gemini CLI is now a built-in native provider)
+
+Gemini CLI no longer needs an ACP manifest: since 0x2F v0.6, `gemini` is a
+built-in native provider (`gemini -p --skip-trust -o stream-json` + `--resume
+<uuid>`), with its own documented capability boundaries (see
+`docs/gemini-capability-map.md`). A `.work/providers/*.json` manifest with
+`"id": "gemini"` is rejected as a redefinition of a built-in provider.
+
 ## `my-agent.json` — any headless executable (command)
 
 No protocol at all — a plain argv invocation. Only `{prompt}` and
@@ -106,3 +95,6 @@ never a shell) with the workspace as its working directory.
   verified capability boundaries.
 - **DeepSeek Harness** stays native: its headless CLI exposes no ACP surface
   and its honest no-resume/no-events declaration is provider-specific.
+- **Gemini CLI** is a built-in native provider (`gemini -p --skip-trust -o
+  stream-json` + `--resume <uuid>`) — no manifest needed; see
+  `docs/gemini-capability-map.md` for its verified capability boundaries.

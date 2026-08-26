@@ -11,10 +11,10 @@ import { validateManifest, loadManifestProviders, providerTrustWarning } from ".
 import { createProviderRegistry, executableAvailable } from "../src/providers/index.mjs";
 
 const ACP_MANIFEST = {
-  id: "gemini",
-  displayName: "Gemini CLI",
+  id: "cursor",
+  displayName: "Cursor",
   transport: "acp",
-  command: ["gemini", "--acp"]
+  command: ["cursor", "--acp"]
 };
 const CMD_MANIFEST = {
   id: "my-agent",
@@ -79,7 +79,7 @@ test("manifests: every failure mode fails loudly, naming the file", () => {
 });
 
 test("manifests: a manifest cannot shadow a built-in provider", () => {
-  const nativeIds = ["claude-code", "codex", "deepseek-harness"];
+  const nativeIds = ["claude-code", "codex", "deepseek-harness", "gemini"];
   assert.throws(
     () => validateManifest({ ...CMD_MANIFEST, id: "claude-code" }, "x.json", { nativeIds }),
     /built-in provider and cannot be redefined/
@@ -90,6 +90,10 @@ test("manifests: a manifest cannot shadow a built-in provider", () => {
   );
   assert.throws(
     () => validateManifest({ ...CMD_MANIFEST, id: "deepseek-harness" }, "x.json", { nativeIds }),
+    /built-in provider/
+  );
+  assert.throws(
+    () => validateManifest({ ...CMD_MANIFEST, id: "gemini" }, "x.json", { nativeIds }),
     /built-in provider/
   );
 });
@@ -105,12 +109,14 @@ test("loadManifestProviders: no providers dir means nothing configured", async (
 
 test("loadManifestProviders: builds acp + command providers from files; duplicate ids fail", async () => {
   const base = await makeBase({
-    "a-gemini.json": ACP_MANIFEST,
+    "a-cursor.json": ACP_MANIFEST,
     "b-my-agent.json": CMD_MANIFEST
   });
   try {
-    const providers = loadManifestProviders(base, { nativeIds: ["claude-code", "deepseek-harness"] });
-    assert.deepEqual(providers.map(p => p.id), ["gemini", "my-agent"]);
+    const providers = loadManifestProviders(base, {
+      nativeIds: ["claude-code", "codex", "deepseek-harness", "gemini"]
+    });
+    assert.deepEqual(providers.map(p => p.id), ["cursor", "my-agent"]);
     assert.equal(providers[0].integrationType, "acp");
     assert.equal(providers[1].integrationType, "command");
   } finally {
@@ -144,22 +150,29 @@ test("loadManifestProviders: invalid JSON fails clearly", async () => {
 
 test("registry: native + configured providers coexist behind one contract", async () => {
   const base = await makeBase({
-    "gemini.json": ACP_MANIFEST,
+    "cursor.json": ACP_MANIFEST,
     "my-agent.json": CMD_MANIFEST
   });
   try {
     const registry = createProviderRegistry({ base });
     const ids = registry.listProviders().map(p => p.id);
-    assert.deepEqual(ids, ["claude-code", "codex", "deepseek-harness", "gemini", "my-agent"]);
+    assert.deepEqual(ids, [
+      "claude-code",
+      "codex",
+      "deepseek-harness",
+      "gemini",
+      "cursor",
+      "my-agent"
+    ]);
 
     // The rest of 0x2F cannot tell which integration type created a provider.
-    const gemini = registry.getProvider("gemini");
-    assert.equal(gemini.displayName, "Gemini CLI");
-    assert.equal(gemini.integrationType, "acp");
-    assert.equal(gemini.capabilities.supportsResume, true);
-    assert.equal(typeof gemini.start, "function");
-    assert.equal(typeof gemini.resume, "function");
-    assert.equal(typeof gemini.cancel, "function");
+    const cursor = registry.getProvider("cursor");
+    assert.equal(cursor.displayName, "Cursor");
+    assert.equal(cursor.integrationType, "acp");
+    assert.equal(cursor.capabilities.supportsResume, true);
+    assert.equal(typeof cursor.start, "function");
+    assert.equal(typeof cursor.resume, "function");
+    assert.equal(typeof cursor.cancel, "function");
 
     const agent = registry.getProvider("my-agent");
     assert.equal(agent.integrationType, "command");
@@ -170,6 +183,9 @@ test("registry: native + configured providers coexist behind one contract", asyn
     assert.equal(registry.getProvider("claude-code").integrationType, "native");
     assert.equal(registry.getProvider("codex").integrationType, "native");
     assert.equal(registry.getProvider("deepseek-harness").integrationType, "native");
+    // Gemini is a first-class NATIVE provider — a manifest cannot redefine it.
+    assert.equal(registry.getProvider("gemini").integrationType, "native");
+    assert.equal(registry.getProvider("gemini").displayName, "Gemini CLI");
     assert.equal(registry.getProvider("nope"), null);
     assert.equal(registry.defaultProviderId, "claude-code");
   } finally {

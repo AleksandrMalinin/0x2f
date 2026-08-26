@@ -28,8 +28,8 @@ Node.js ≥ 20, one dependency (`ws`), no build step, local-first.
         └──────────────┬──────────────┘
                        │  one worker per run
         ┌──────────────┼──────────────┐
-        ▼              ▼              ▼
-   claude-code      codex          deepseek-harness
+        ▼              ▼              ▼              ▼
+   claude-code      codex          deepseek-harness   gemini
                         │ any ACP / command agent
         └──────────────┼──────────────┘
                        ▼
@@ -195,8 +195,9 @@ a full setup-and-test walkthrough is in
 
 Requires **Node.js ≥ 20** and at least one coding harness on your PATH:
 [Claude Code](https://code.claude.com/docs) (`claude`) is the built-in
-default, [Codex](https://github.com/openai/codex) (`codex`) and
+default, [Codex](https://github.com/openai/codex) (`codex`),
 [DeepSeek Harness](https://github.com/deepseek-ai/DeepSeek-Harness) (`dsh`)
+and [Gemini CLI](https://github.com/google-gemini/gemini-cli) (`gemini`)
 are also built in, and any ACP-compatible agent or headless executable
 can be added per project (see [Providers](#providers)). 0x2F itself is one
 small package — `ws` is its only dependency, no build step, no accounts, no
@@ -220,6 +221,36 @@ Inside the repository you want to work on:
 2f open 1                        # run detail, history, result
 2f ui                            # open the Web UI (starts the local runtime)
 ```
+
+To run a task with the built-in Codex provider, install the
+[Codex CLI](https://github.com/openai/codex), sign in, and select it explicitly:
+
+```bash
+codex login
+2f providers                     # confirm: codex  native  yes
+2f new "Audit the auth flow" --provider codex
+```
+
+Codex runs headlessly with workspace-write sandboxing by default and supports
+same-thread resume. Its structured-event and permission boundaries are
+documented in [`docs/codex-capability-map.md`](docs/codex-capability-map.md).
+
+To run a task with the built-in Gemini CLI provider, install the
+[Gemini CLI](https://github.com/google-gemini/gemini-cli), authenticate once
+(run `gemini` interactively, or set `GEMINI_API_KEY` / Vertex credentials),
+and select it explicitly:
+
+```bash
+gemini          # first run: sign in interactively
+2f providers    # confirm: gemini  native  yes
+2f new "Audit the auth flow" --provider gemini
+```
+
+Gemini runs headlessly (`-p --skip-trust -o stream-json`), auto-approves
+file edits (`--approval-mode auto_edit`; override with `GEMINI_APPROVAL_MODE`),
+and supports same-session resume by UUID. Its structured-event, permission
+and resume boundaries are documented in
+[`docs/gemini-capability-map.md`](docs/gemini-capability-map.md).
 
 `2f init` creates `.work/` with `project.md`, `rules.md`, `knowledge.md`,
 `decisions.md` and `providers/` — edit `project.md` and `rules.md` once;
@@ -264,20 +295,20 @@ to the install.
 
 | Integration | What it is | Use |
 | --- | --- | --- |
-| **Native** | Deep adapter for one harness's specific capabilities | `claude-code` (permissions → `needs_you` → same-session resume), `codex` (structured exec events + thread resume), `deepseek-harness` |
-| **ACP** | One generic provider speaking the [Agent Client Protocol](https://agentclientprotocol.com) v1 over stdio | Any ACP-compatible agent — Gemini CLI, Cursor, OpenCode — configured by manifest |
+| **Native** | Deep adapter for one harness's specific capabilities | `claude-code` (permissions → `needs_you` → same-session resume), `codex` (structured exec events + thread resume), `deepseek-harness`, `gemini` (structured stream events + UUID session resume) |
+| **ACP** | One generic provider speaking the [Agent Client Protocol](https://agentclientprotocol.com) v1 over stdio | Any ACP-compatible agent — Cursor, OpenCode — configured by manifest |
 | **Command** | One generic provider for headless executables | Any CLI that takes a prompt and prints a result — configured by manifest |
 
-`claude-code`, `codex` and `deepseek-harness` are built in. Everything else is
-added **declaratively**: drop one JSON manifest into `.work/providers/` and it
-becomes a provider — no source changes:
+`claude-code`, `codex`, `deepseek-harness` and `gemini` are built in.
+Everything else is added **declaratively**: drop one JSON manifest into
+`.work/providers/` and it becomes a provider — no source changes:
 
 ```json
 {
-  "id": "gemini",
-  "displayName": "Gemini CLI",
+  "id": "cursor",
+  "displayName": "Cursor",
   "transport": "acp",
-  "command": ["gemini", "--acp"]
+  "command": ["cursor", "--acp"]
 }
 ```
 

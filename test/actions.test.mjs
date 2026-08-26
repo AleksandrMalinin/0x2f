@@ -299,7 +299,7 @@ test("createWork rejects an unknown provider with the shared error", async () =>
   try {
     await assert.rejects(
       () => runtime.actions.createWork({ brief: "Nope", provider: "unknown-agent" }),
-      /Unknown execution provider "unknown-agent"\. Available: claude-code, codex, deepseek-harness\./
+      /Unknown execution provider "unknown-agent"\. Available: claude-code, codex, deepseek-harness, gemini\./
     );
     assert.deepEqual(runtime.node.calls, []); // nothing launched
   } finally {

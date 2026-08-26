@@ -1,7 +1,7 @@
 // Provider registry — the single place that knows which execution providers
 // exist. It now holds three integration types behind ONE contract:
 //
-//   Native    claude-code, codex, deepseek-harness   (deep provider adapters)
+//   Native    claude-code, codex, deepseek-harness, gemini   (deep provider adapters)
 //   ACP       any agent exposing the Agent Client Protocol (manifests)
 //   Command   any headless executable                (manifests)
 //
@@ -24,22 +24,24 @@
 
 import fsSync from "node:fs";
 import path from "node:path";
-import { claudeCodeProvider, claudeBin } from "./claude-code.mjs";
-import { codexProvider, codexBin } from "./codex.mjs";
-import { deepseekHarnessProvider, dshBin } from "./deepseek-harness.mjs";
+import { claudeCodeProvider } from "./claude-code.mjs";
+import { codexProvider } from "./codex.mjs";
+import { deepseekHarnessProvider } from "./deepseek-harness.mjs";
+import { geminiProvider } from "./gemini.mjs";
 import { loadManifestProviders } from "./manifests.mjs";
 
 export const defaultProviderId = "claude-code";
 
 // Native providers are singletons; integrationType is a registry descriptor.
-for (const provider of [claudeCodeProvider, codexProvider, deepseekHarnessProvider]) {
+for (const provider of [claudeCodeProvider, codexProvider, deepseekHarnessProvider, geminiProvider]) {
   provider.integrationType ??= "native";
 }
 
 const NATIVE_PROVIDERS = {
   [claudeCodeProvider.id]: claudeCodeProvider,
   [codexProvider.id]: codexProvider,
-  [deepseekHarnessProvider.id]: deepseekHarnessProvider
+  [deepseekHarnessProvider.id]: deepseekHarnessProvider,
+  [geminiProvider.id]: geminiProvider
 };
 
 // Deterministic, cheap availability: resolve the executable WITHOUT spawning
@@ -68,10 +70,16 @@ export function executableAvailable(name, env = process.env) {
 }
 
 // Which executable a native provider runs — its own env override, then PATH.
+// The override is read from the SAME env the availability check resolves
+// against (the registry's injected env, defaulting to process.env), never
+// from the ambient process.env alone — a controlled test env must be able to
+// pin a native's executable deterministically.
 function nativeExecutable(provider, env) {
-  if (provider.id === "claude-code") return claudeBin() || "claude";
-  if (provider.id === "codex") return codexBin() || "codex";
-  if (provider.id === "deepseek-harness") return dshBin() || "dsh";
+  const e = env ?? process.env;
+  if (provider.id === "claude-code") return e.CLAUDE_BIN || "claude";
+  if (provider.id === "codex") return e.CODEX_BIN || "codex";
+  if (provider.id === "deepseek-harness") return e.DSH_BIN || "dsh";
+  if (provider.id === "gemini") return e.GEMINI_BIN || "gemini";
   return null;
 }
 

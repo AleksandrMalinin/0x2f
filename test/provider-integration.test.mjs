@@ -132,7 +132,7 @@ test("API: configured providers appear in /api/providers with their integration 
       const providers = await fetch(handle.url + "/api/providers", { headers: authHeaders() }).then(r => r.json());
       assert.deepEqual(
         providers.map(p => p.id),
-        ["claude-code", "codex", "deepseek-harness", "hello"]
+        ["claude-code", "codex", "deepseek-harness", "gemini", "hello"]
       );
       const hello = providers.find(p => p.id === "hello");
       assert.equal(hello.displayName, "Hello Agent");
@@ -178,6 +178,7 @@ test("CLI: `2f providers` lists natives and configured providers with availabili
     assert.match(res.out, /claude-code\s+native\s+(yes|no)/);
     assert.match(res.out, /codex\s+native\s+(yes|no)/);
     assert.match(res.out, /deepseek-harness\s+native\s+(yes|no)/);
+    assert.match(res.out, /gemini\s+native\s+(yes|no)/);
     assert.match(res.out, /hello\s+command\s+yes/);
     assert.match(res.out, /ghost\s+command\s+no/);
   } finally {
@@ -282,11 +283,11 @@ test("E2E: native + ACP + command providers coexist in one workspace", async () 
     // before hello.json).
     assert.deepEqual(
       runtime.providers.listProviders().map(p => p.integrationType),
-      ["native", "native", "native", "acp", "command"]
+      ["native", "native", "native", "native", "acp", "command"]
     );
     assert.equal(runtime.providers.defaultProviderId, "claude-code");
     const ids = runtime.providers.listProviders().map(p => p.id);
-    for (const id of ["claude-code", "codex", "deepseek-harness", "hello", "acp-agent"]) {
+    for (const id of ["claude-code", "codex", "deepseek-harness", "gemini", "hello", "acp-agent"]) {
       assert.ok(ids.includes(id), `${id} present`);
     }
   } finally {

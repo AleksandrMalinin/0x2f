@@ -1,6 +1,0 @@
-{
-  "id": "gemini",
-  "displayName": "Gemini CLI",
-  "transport": "acp",
-  "command": ["gemini", "--acp"]
-}

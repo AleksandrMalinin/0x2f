@@ -24,7 +24,7 @@ import path from "node:path";
 import { createRuntime } from "../src/runtime.mjs";
 import { startServer } from "../src/server.mjs";
 import { applyOutcome } from "../src/core/lifecycle.mjs";
-import { TEST_AUTH_TOKEN, authHeaders } from "./helpers.mjs";
+import { TEST_AUTH_TOKEN, authHeaders, unavailableNativesEnv } from "./helpers.mjs";
 
 function fakeNode() {
   const calls = [];
@@ -47,11 +47,12 @@ function fakeNode() {
 
 // A runtime whose PATH cannot resolve ANY provider executable: both natives
 // are deterministically unavailable, exactly like a machine without either
-// harness installed.
+// harness installed. The native bin overrides are neutralized too — a *_BIN
+// env var on the machine must not leak a native into availability.
 async function makeRuntimeWithoutProviders() {
   const base = await fs.mkdtemp(path.join(os.tmpdir(), "work-unavailable-"));
   const bins = await fs.mkdtemp(path.join(os.tmpdir(), "work-unavailable-bins-"));
-  const env = { ...process.env, PATH: bins };
+  const env = { ...process.env, PATH: bins, ...unavailableNativesEnv(bins) };
   const node = fakeNode();
   const runtime = createRuntime(base, { node, env });
   return { ...runtime, node, base, bins };
@@ -67,7 +68,9 @@ test("createWork refuses a manually selected unavailable provider BEFORE persist
       error => {
         assert.equal(error.status, 400);
         assert.match(error.message, /Execution provider "deepseek-harness" is unavailable/);
-        assert.match(error.message, /Expected executable: dsh/);
+        // The executable is whatever the provider would run — the bare name
+        // "dsh", or the configured DSH_BIN override when one is pinned.
+        assert.match(error.message, /Expected executable: .*dsh/);
         assert.match(error.message, /Install or configure DeepSeek Harness, then retry\./);
         return true;
       }
@@ -181,7 +184,7 @@ test("POST /api/tasks with an unavailable provider -> 400 from the shared action
       assert.equal(res.status, 400);
       const body = await res.json();
       assert.match(body.error, /Execution provider "deepseek-harness" is unavailable/);
-      assert.match(body.error, /Expected executable: dsh/);
+      assert.match(body.error, /Expected executable: .*dsh/);
 
       // The server enforced it independently of any client: no task exists.
       const tasks = await fetch(handle.url + "/api/tasks", { headers: authHeaders() }).then(r => r.json());

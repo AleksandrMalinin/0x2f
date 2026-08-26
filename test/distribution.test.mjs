@@ -146,7 +146,9 @@ test("the packed artifact supports the full first-install journey", async t => {
   const env = {
     ...process.env,
     CLAUDE_BIN: path.join(work, "missing-claude"),
-    DSH_BIN: path.join(work, "missing-dsh")
+    CODEX_BIN: path.join(work, "missing-codex"),
+    DSH_BIN: path.join(work, "missing-dsh"),
+    GEMINI_BIN: path.join(work, "missing-gemini")
   };
   const cliRun = (args, opts = {}) =>
     run(process.execPath, [cli, ...args], { cwd: proj, env, ...opts });

@@ -38,6 +38,22 @@ export function withEnv(name, value, fn) {
   });
 }
 
+// The mirror image of withFakeBin: an env fragment that makes EVERY native
+// provider deterministically UNAVAILABLE regardless of the machine's PATH and
+// installed harnesses. PATH-controlled tests (which replace PATH with a bin
+// dir and assume no native resolves) must spread this in — otherwise a CI or
+// dev machine that sets CLAUDE_BIN / CODEX_BIN / DSH_BIN / GEMINI_BIN would
+// make a "native" available through the override and change the routing
+// decision. Each override points at a path that cannot exist.
+export function unavailableNativesEnv(missingDir) {
+  return {
+    CLAUDE_BIN: path.join(missingDir, "missing-claude"),
+    CODEX_BIN: path.join(missingDir, "missing-codex"),
+    DSH_BIN: path.join(missingDir, "missing-dsh"),
+    GEMINI_BIN: path.join(missingDir, "missing-gemini")
+  };
+}
+
 // Run `fn` with a provider's bin env var (DSH_BIN, CLAUDE_BIN, ...) pointing
 // at a real executable, so `providers.available(id)` resolves true for the
 // duration — provider-selection tests behave identically on any machine.
