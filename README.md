@@ -205,16 +205,6 @@ daemon.
 npm install -g 0x2f        # the `2f` command lands on your PATH
 ```
 
-0x2F is not on the public registry yet — until then, install the packed
-artifact from this repository:
-
-```bash
-git clone https://github.com/AleksandrMalinin/0x2f.git
-cd 0x2f
-npm pack                   # builds 0x2f-0.5.0.tgz
-npm install -g ./0x2f-0.5.0.tgz
-```
-
 `npx --yes 0x2f ...` works for a one-off, but install globally for regular
 use — `2f` is a local app you invoke repeatedly, not a one-shot script.
 

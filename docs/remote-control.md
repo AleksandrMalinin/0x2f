@@ -27,7 +27,7 @@ exists unchanged: `2f pair --relay https://…` / `--client https://…`, or the
 
 ## Prerequisites
 
-- Node.js ≥ 20 and a checkout of the 0x2F repository (this repo)
+- Node.js ≥ 20 and 0x2F installed globally (`npm install -g 0x2f`)
 - The Mac and the phone on the **same Wi-Fi / local network**
 - One terminal
 
