@@ -139,39 +139,55 @@ UI. Runtime output lands in `.work/ui.log`. The browser calls the same shared
 actions over a local HTTP/SSE API and subscribes to the same normalized
 events.
 
-Control 0x2F from your phone while away from the laptop — the Mac keeps
-running the work; the phone is a compact control surface:
+Control 0x2F from your phone on the **same Wi-Fi** — the Mac keeps running
+the work; the phone is a compact control surface:
 
 ```bash
-2f pair --relay https://relay.example.com
+2f pair
 ```
 
-The runtime connects **outbound** to the relay (works behind NAT), rotates
-its device credential, prints a short-lived pairing URL **plus a pairing
-code**, and you open the URL on your phone and type the code into the trusted
-client page (served by the client origin — the local runtime by default, a
-static host in deployment — **never by the relay**). The phone then speaks
-the same Web UI against the relay: see NEEDS YOU / WORKING / READY / FAILED,
-open a task, and ANSWER / ALLOW / REJECT / NOTE / SEND BACK / ACCEPT. Every
-command, ack, event and snapshot between the phone and the Mac is
-end-to-end encrypted (AES-256-GCM keyed by the pairing code), so the relay
-can route it but can neither read nor forge it — **a compromised relay does
-not grant execution authority on your Mac**. While the Mac is offline the
-phone shows its own last-known state with a **MAC OFFLINE** banner and
-disables actions; commands are never queued, and a retried command reuses
-its `requestId` so it can never execute twice.
+No flags, no IPs to find, no relay to configure. `2f pair` detects the Mac's
+private LAN address, enables the pairing surface on that interface (and only
+while pairing is active), and prints a phone-openable URL **plus a one-time
+pairing code**:
+
+```
+0x2F PAIR
+
+same Wi-Fi required
+
+  http://192.168.1.163:4242/pair?relay=…&token=…&device=…
+
+code  ZEPQQ-N4WH8-NG4D
+```
+
+Open the URL on your phone and type the code into the trusted page (served by
+the Mac itself). The phone then speaks the same Web UI against the Mac: see
+NEEDS YOU / WORKING / READY / FAILED, open a task, and ANSWER / ALLOW /
+REJECT / NOTE / SEND BACK / ACCEPT. Every command, ack, event and snapshot is
+end-to-end encrypted (AES-256-GCM keyed by the pairing code) — the same
+encrypted channel the hosted relay uses, so a passive observer on the Wi-Fi
+sees only ciphertext. While the Mac is offline the phone shows its own
+last-known state with a **MAC OFFLINE** banner and disables actions; commands
+are never queued, and a retried command reuses its `requestId` so it can
+never execute twice.
 
 Pairing tokens are one-time and expire in 10 minutes; phone sessions live 30
-days and are revoked by `2f pair --off` (a real revocation at the relay, not
-just a local disconnect) or by re-pairing, which also rotates the Mac's
-credential and the E2E key — so a stale phone session can never silently
-come back after the Mac reconnects. The relay URL must be `https://` (plain
-`http://` only for localhost development).
+days and are revoked by `2f pair --off` (a real revocation — the LAN surface
+closes within a second, and normal `2f` / `2f ui` stay loopback-only the whole
+time) or by re-pairing, which also rotates the Mac's credential and the E2E
+key. The LAN surface serves only the pairing client + relay protocol on
+private-LAN addresses (RFC 1918) — the normal local API is never reachable
+from other devices on the network.
 
-The relay is **private infrastructure, not part of the local product**: it is
-a small standalone app that forwards normalized events and proxies commands,
-and it never holds task state or provider credentials. Deployment details
-live in [`relay/README.md`](https://github.com/AleksandrMalinin/0x2f/blob/main/relay/README.md);
+For **remote control away from the LAN** (future use, or your own
+deployment), the hosted relay path is unchanged: `2f pair --relay https://…`
+/ `--client https://…`, or the `0X2F_RELAY_URL` / `0X2F_CLIENT_ORIGIN` env
+vars (see [`deploy/README.md`](deploy/README.md)). The hosted relay is
+**private infrastructure, not part of the local product**: a small standalone
+app that forwards encrypted envelopes, holds no task state, and is never
+shipped in the npm package. Deployment details live in
+[`relay/README.md`](https://github.com/AleksandrMalinin/0x2f/blob/main/relay/README.md);
 a full setup-and-test walkthrough is in
 [`docs/remote-control.md`](https://github.com/AleksandrMalinin/0x2f/blob/main/docs/remote-control.md).
 

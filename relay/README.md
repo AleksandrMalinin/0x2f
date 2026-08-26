@@ -1,7 +1,7 @@
 # 0x2F Relay
 
 The connectivity layer between a phone and a local 0x2F runtime on your Mac.
-Phase 3A: the relay is an **opaque broker**, not an execution authority.
+The relay is an **opaque broker**, not an execution authority.
 
 ```text
 Phone client (client origin) ── HTTPS + E2E envelopes ──► 0x2F Relay ◄──
@@ -14,6 +14,13 @@ event and snapshot between the phone and the Mac is an end-to-end
 AES-256-GCM envelope keyed by the pairing code — which the relay never sees
 (the user types it into the trusted client page, which the relay does not
 serve).
+
+The implementation lives in `src/relay/server.mjs` and is shared: the local
+product mounts it **in-process** for LAN-first pairing (v0.5 — a phone on the
+same Wi-Fi talks to the Mac directly through the same protocol; see
+[`docs/remote-control.md`](../docs/remote-control.md)), while this directory
+is the **private hosted deployment** for future remote use — never shipped in
+the npm package.
 
 ## Deployment requirements
 
@@ -30,9 +37,10 @@ serve).
   ```
 
 - **The phone client is NOT served here.** The pairing page and the web
-  client live on a separate **client origin** that you control (the local
-  runtime `http://127.0.0.1:4242` for development; a static host such as
-  `client.relay.example.com` in production). `2f pair --client <url>` points
+  client live on a separate **client origin** that you control (the hosted
+  client origin by default — `src/relay/defaults.mjs`, see
+  [`deploy/README.md`](../deploy/README.md); the local runtime
+  `http://127.0.0.1:4242` for development). `2f pair --client <url>` points
   the pairing URL at it. Because the relay never serves the client, a
   compromised relay cannot substitute modified JavaScript at pairing time.
 - **A state directory** (default `relay/data/state.json`) that persists across
@@ -50,7 +58,20 @@ node server.mjs --port 8080 --host 127.0.0.1 --data ./data/state.json
 
 ## Pairing
 
-On the Mac, in the workspace you want remote control over:
+**v0.5 is LAN-first.** On the Mac, in the workspace you want remote control
+over, run `2f pair` with no flags — it detects the Mac's private LAN address,
+turns the Mac's runtime into its own local relay for the pairing window, and
+prints a same-Wi-Fi URL + code (see
+[`docs/remote-control.md`](../docs/remote-control.md)):
+
+```bash
+2f pair
+```
+
+The **hosted** path (future remote use, or your own deployment) is unchanged:
+point the CLI at it with `--relay` / `--client` (or `0X2F_RELAY_URL` /
+`0X2F_CLIENT_ORIGIN`) — the full runbook is in
+[`deploy/README.md`](../deploy/README.md):
 
 ```bash
 2f pair --relay https://relay.example.com --client https://client.example.com
@@ -64,8 +85,9 @@ pairing with a signed handshake. `2f pair --off` revokes remote access at the
 relay (see below).
 
 **Transport policy:** the relay URL must be `https://`. Plain `http://` is
-accepted only for explicit localhost development (`127.0.0.1`, `localhost`,
-`[::1]`) — the deviceSecret must never cross an unauthenticated network path.
+accepted only for explicit loopback development and private-LAN (RFC 1918)
+pairing — the deviceSecret must not cross an unauthenticated path beyond the
+same-Wi-Fi boundary.
 
 ## What pairing grants
 

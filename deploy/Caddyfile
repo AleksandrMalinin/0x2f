@@ -1,0 +1,27 @@
+# 0x2F hosted endpoints — one box, two origins.
+#
+# The client origin and the relay MUST stay on separate hostnames: the E2E
+# guarantee ("a compromised relay can neither read nor forge phone <-> Mac
+# traffic") holds only while the pairing page + web client are served from an
+# origin the relay process does not control. If the relay served the client,
+# a compromised relay could substitute a pairing page that captures the code
+# the user types and derive the E2E key.
+#
+# Replace both hostnames with your own, then point the CLI at them:
+#
+#   export 0X2F_RELAY_URL=https://relay.your.domain
+#   export 0X2F_CLIENT_ORIGIN=https://app.your.domain
+#
+# Caddy terminates TLS (Let's Encrypt) and serves the static client; the relay
+# process only ever sees plain HTTP on 127.0.0.1. The Mac connects outbound,
+# so no inbound ports, NAT rules, or static IPs are needed.
+
+app.0x2f.dev {
+	root * /srv/0x2f/client
+	encode gzip
+	file_server
+}
+
+relay.0x2f.dev {
+	reverse_proxy 127.0.0.1:8080
+}

@@ -1,0 +1,28 @@
+# 0x2F Relay — systemd unit (one small Node process; TLS is terminated by
+# Caddy, see deploy/Caddyfile). Install:
+#
+#   sudo cp deploy/relay.service /etc/systemd/system/0x2f-relay.service
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now 0x2f-relay
+
+[Unit]
+Description=0x2F Relay (opaque broker for phone <-> Mac remote control)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=0x2f
+Group=0x2f
+WorkingDirectory=/srv/0x2f/relay
+ExecStart=/usr/bin/node /srv/0x2f/relay/server.mjs --port 8080 --host 127.0.0.1 --data /srv/0x2f/relay/state.json
+Restart=on-failure
+RestartSec=3
+# The relay state file holds live credentials (device secrets, session
+# cookies, pairing tokens) — keep it private.
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
