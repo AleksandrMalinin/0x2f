@@ -231,31 +231,40 @@ export function createRelayAgent({
 
   // Encrypt + send one Mac → phone envelope.
   async function sendEnvelope(plaintext, requestId) {
-    if (!sessionKey || !cfg) return false;
+    // Snapshot: the frame must be addressed from the SAME device identity the
+    // payload was encrypted for, and `cfg` can be reassigned (or nulled) by
+    // the config poller during the await below.
+    const config = cfg;
+    if (!sessionKey || !config) return false;
     try {
       const { iv, data } = await encrypt(sessionKey, plaintext, {
-        from: cfg.deviceId,
+        from: config.deviceId,
         requestId
       });
-      return send(makeRelayFrame(cfg.deviceId, requestId, { iv, data }));
+      return send(makeRelayFrame(config.deviceId, requestId, { iv, data }));
     } catch (err) {
       error(`relay: could not encrypt a message: ${err.message}`);
       return false;
     }
   }
 
-  function wsUrl() {
-    const base = cfg.url.replace(/\/+$/, "");
+  function wsUrl(config) {
+    const base = config.url.replace(/\/+$/, "");
     return base.replace(/^http/, "ws") + "/ws";
   }
 
   function connect() {
     if (stopped || !cfg || ws || state === "connecting") return;
+    // This socket belongs to the config that opened it. The handlers below
+    // fire later (on "open", on the hello ack), by which time the poller may
+    // have replaced or nulled `cfg` — a socket must not identify itself with
+    // a device identity other than the one it was dialled for.
+    const config = cfg;
     state = "connecting";
     lastError = null;
     let sock;
     try {
-      sock = new WebSocket(wsUrl());
+      sock = new WebSocket(wsUrl(config));
     } catch (error) {
       lastError = error.message;
       state = "reconnecting";
@@ -273,13 +282,13 @@ export function createRelayAgent({
 
     sock.on("open", () => {
       send(
-        makeFrame("hello", cfg.deviceId, crypto.randomUUID(), {
+        makeFrame("hello", config.deviceId, crypto.randomUUID(), {
           protocolVersion: PROTOCOL_VERSION,
           apiVersion: API_VERSION,
-          agentName: cfg.agentName ?? "0x2f-mac",
-          deviceSecret: cfg.deviceSecret,
-          token: cfg.token ?? null,
-          tokenExpiresAt: cfg.tokenExpiresAt ?? null
+          agentName: config.agentName ?? "0x2f-mac",
+          deviceSecret: config.deviceSecret,
+          token: config.token ?? null,
+          tokenExpiresAt: config.tokenExpiresAt ?? null
         })
       );
     });
@@ -349,15 +358,21 @@ export function createRelayAgent({
   }
 
   function onHelloAck(frame) {
+    // Deferred socket callback: the poller may have nulled `cfg` between the
+    // hello being sent and this ack arriving. The state transitions below are
+    // still correct in that case — only the log line needs a config to read.
+    const config = cfg;
     const p = frame.payload;
     if (p.ok) {
       state = "online";
       attempt = 0;
       lastError = null;
-      info(
-        `relay: online (${cfg.url})` +
-          (cfg.pairing === "pending" ? " — waiting for the phone to pair" : "")
-      );
+      if (config) {
+        info(
+          `relay: online (${config.url})` +
+            (config.pairing === "pending" ? " — waiting for the phone to pair" : "")
+        );
+      }
       return;
     }
     lastError = p.error ?? "hello rejected";
@@ -408,23 +423,43 @@ export function createRelayAgent({
   // the exact current token, and before the token expires. A replayed
   // pair-hello (after confirmation or rotation) cannot establish trust.
   async function onPairHello(frame, plaintext) {
+    // ONE consistent snapshot for the whole ceremony. `cfg` is module-level
+    // and the config poller reassigns it every CONFIG_POLL_MS — to null when
+    // the relay is disabled or its config file disappears. Validating `cfg`
+    // and then reading it again after an await is a use-after-null: the
+    // poll can land during `writeConfig` and turn the next line into a
+    // TypeError. Everything below reads `config`, never `cfg`.
+    const config = cfg;
     const valid =
-      cfg &&
-      cfg.pairing === "pending" &&
-      plaintext.token === cfg.token &&
+      config &&
+      config.pairing === "pending" &&
+      plaintext.token === config.token &&
       typeof plaintext.phoneId === "string" &&
       plaintext.phoneId.length >= 8 &&
       frame.from === plaintext.phoneId &&
-      (!cfg.tokenExpiresAt || Date.parse(cfg.tokenExpiresAt) > Date.now());
+      (!config.tokenExpiresAt || Date.parse(config.tokenExpiresAt) > Date.now());
     if (!valid) {
       warn("relay: rejected a pair-hello — pairing is not pending or the token does not match");
       return;
     }
-    cfg.phoneId = plaintext.phoneId;
-    cfg.pairing = "confirmed";
-    await writeConfig(cfg);
-    info(`relay: phone paired (${cfg.phoneId}) — remote control is on`);
-    await sendEnvelope({ cmd: "ack", ok: true, status: 200, body: { phoneId: cfg.phoneId } }, frame.requestId);
+    config.phoneId = plaintext.phoneId;
+    config.pairing = "confirmed";
+    await writeConfig(config);
+    // The config this ceremony validated may have stopped being the live one
+    // while that write was in flight (the relay was disabled, or its config
+    // was removed). The pairing is on disk, but this agent has nothing live
+    // to serve it from — so drop it quietly instead of telling the phone it
+    // is paired. A confirmed pairing the Mac cannot honor is worse than none.
+    //
+    // A normal pairing never trips this: `pairing`/`phoneId` are part of
+    // neither connectionKey nor cryptoKey, so the poller leaves `cfg`
+    // pointing at this same object after our write.
+    if (cfg !== config) {
+      warn("relay: the configuration changed while pairing — not confirming to the phone");
+      return;
+    }
+    info(`relay: phone paired (${config.phoneId}) — remote control is on`);
+    await sendEnvelope({ cmd: "ack", ok: true, status: 200, body: { phoneId: config.phoneId } }, frame.requestId);
   }
 
   // --- commands -------------------------------------------------------------
