@@ -1254,7 +1254,9 @@ function renderActivitySection(row) {
     el("div", { class: "band-item" }, [
       el("span", {
         class: "band-verb",
-        style: { color: step.human ? COLORS.accent : COLORS.inkSoft },
+        // The verb is the label; its argument is the value. They were tied
+        // at one rung. YOU entries keep the accent — that is your own act.
+        style: { color: step.human ? COLORS.accent : COLORS.muted },
         text: step.verb
       }),
       el("span", {
@@ -1533,10 +1535,13 @@ function renderRow(row, accent) {
 
 // --- chrome ----------------------------------------------------------------
 
-function counter(value, label, color, extraClass = "") {
+// A count and its label are two rungs of the ladder, never one: the count
+// carries the value, the label only names what is being counted. Painting
+// both with the count's colour is what made NEEDS YOU shout at zero.
+function counter(value, label, color, labelColor, extraClass = "") {
   return el("div", { class: "counter " + extraClass }, [
     el("div", { class: "counter-n", style: { color }, text: value }),
-    el("div", { class: "counter-k", style: { color }, text: label })
+    el("div", { class: "counter-k", style: { color: labelColor }, text: label })
   ]);
 }
 
@@ -1544,7 +1549,10 @@ function renderChrome(ledger, accent) {
   const now = new Date();
   const clock = [now.getHours(), now.getMinutes(), now.getSeconds()].map(two).join(":");
   const needsColor = ledger.counts.needs_you ? accent : "#a8b3bc";
-  const clockCounter = counter(clock, "TODAY", "#c3ccd3", "clock");
+  // The accent means "your act is required". At zero nothing is required, so
+  // the label drops to the chrome's label value; the count keeps its own.
+  const needsLabelColor = ledger.counts.needs_you ? accent : "#79838c";
+  const clockCounter = counter(clock, "TODAY", "#c3ccd3", "#9aa6b0", "clock");
   clockNode = clockCounter.querySelector(".counter-n");
 
   // The "/" mark pulses with the sound: one fade for READY, a split fade for
@@ -1597,14 +1605,28 @@ function renderChrome(ledger, accent) {
         renderNotifyControl()
       ]),
       el("div", { class: "counters" }, [
-        counter(ledger.countNeeds, "NEEDS YOU", needsColor),
-        counter(ledger.countWorking, "WORKING", "#f2f5f7"),
-        counter(ledger.countReady, "READY", "#f2f5f7"),
+        counter(ledger.countNeeds, "NEEDS YOU", needsColor, needsLabelColor),
+        counter(ledger.countWorking, "WORKING", "#f2f5f7", "#a8b3bc"),
+        counter(ledger.countReady, "READY", "#f2f5f7", "#a8b3bc"),
         clockCounter
       ])
     ])
   ]);
 }
+
+// The shortcut bar, as key/label pairs. Kept as data so the two rungs can
+// never drift back into one string.
+const LEGEND = [
+  ["J K", "SELECT"],
+  ["\u21b5", "OPEN"],
+  ["A", "ALLOW / ACCEPT"],
+  ["R", "REJECT"],
+  ["S", "SEND BACK"],
+  ["I", "INSPECT"],
+  ["X", "CLOSE"],
+  ["/", "SUBMIT"],
+  ["ESC", "COLLAPSE"]
+];
 
 let composerInput = null;
 let composerNode = null;
@@ -1963,15 +1985,15 @@ function buildComposer() {
 
     el("div", { class: "legend" }, [
       el("div", { class: "legend-inner" }, [
-        el("span", { text: "J K SELECT" }),
-        el("span", { text: "\u21b5 OPEN" }),
-        el("span", { text: "A ALLOW / ACCEPT" }),
-        el("span", { text: "R REJECT" }),
-        el("span", { text: "S SEND BACK" }),
-        el("span", { text: "I INSPECT" }),
-        el("span", { text: "X CLOSE" }),
-        el("span", { text: "/ SUBMIT" }),
-        el("span", { text: "ESC COLLAPSE" }),
+        // The keystroke and what it does are two different things and were
+        // one flat value, which made the whole bar a sentence. Split, it is
+        // a row of pairs: the eye finds the key first and stops there.
+        ...LEGEND.map(([key, label]) =>
+          el("span", { class: "legend-pair" }, [
+            el("span", { class: "legend-key", text: key }),
+            el("span", { class: "legend-label", text: label })
+          ])
+        ),
         adapterNode
       ])
     ])
@@ -2941,7 +2963,7 @@ function renderMobileDetailContent(row, detail, accent, frozen) {
       if (row.permPath) {
         parts.push(
           el("div", { class: "m-dsection first" }, [
-            el("div", { class: "m-dresult", style: { marginTop: 0 }, text: "wants to modify" }),
+            el("div", { class: "m-dresult", style: { marginTop: 0, color: "#5c6771" }, text: "wants to modify" }),
             el("div", { class: "m-dtitle", style: { fontSize: "19px", marginTop: "8px" }, text: row.permPath }),
             row.permWhy ? el("div", { class: "m-dlimit", text: row.permWhy }) : null
           ])

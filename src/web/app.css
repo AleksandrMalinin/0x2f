@@ -5,7 +5,15 @@
   /* Ledger column geometry. The header and the rows are separate layouts, so
      the ONLY way they stay in one grid is by sharing these. Never hard-code a
      column width or the row gap again — they drift silently. */
-  :root { --col-exec: 170px; --col-state: 78px; --col-gap: 20px; }
+  /* EXECUTION is ONE axis, not two things that happen to sit next to each
+     other: the status phrase starts on it and the trace follows. The phrase
+     therefore needs its own fixed column (--col-sub) instead of a shrink-wrapped
+     span pinned to its right edge, and the header cell that names the axis spans
+     phrase + gap + trace + the gap before STATE. */
+  :root {
+    --col-sub: 210px; --col-exec: 170px; --col-state: 78px; --col-gap: 20px;
+    --col-exec-head: calc(var(--col-sub) + var(--col-gap) + var(--col-exec) + var(--col-gap));
+  }
 
   html, body { margin: 0; height: 100%; background: #e4e8ec; }
   body {
@@ -84,8 +92,10 @@
   .head { display: grid; grid-template-columns: 56px 1fr; border-bottom: 1px solid #2f2f2f; position: sticky; top: 0; background: #f6f8fa; z-index: 3; }
   .head-gutter { padding: 11px 12px 10px; text-align: right; font-size: 10px; letter-spacing: .16em; color: #5c6771; }
   .head-cols { border-left: 1px solid #dbe2e7; padding: 11px 24px 10px 20px; display: flex; justify-content: space-between; gap: 20px; font-size: 10px; letter-spacing: .16em; color: #5c6771; }
-  .head-right { display: flex; gap: var(--col-gap); }
-  .head-exec { width: var(--col-exec); text-align: left; }
+  /* gap: 0 — the gaps are already inside --col-exec-head, so the header
+     cells and the row cells land on the same edges. */
+  .head-right { display: flex; gap: 0; }
+  .head-exec { width: var(--col-exec-head); text-align: left; }
   .head-state { width: var(--col-state); text-align: right; }
 
   .row { display: grid; grid-template-columns: 56px 1fr; }
@@ -100,7 +110,11 @@
   .compact { display: flex; align-items: center; gap: var(--col-gap); cursor: pointer; min-width: 0; }
   .compact:hover { background: #edf1f5; }
   .compact-title { flex: 1; min-width: 0; font-family: "Instrument Sans", system-ui, sans-serif; letter-spacing: -.011em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .compact-sub { font-size: 12px; flex: none; white-space: nowrap; max-width: 300px; overflow: hidden; text-overflow: ellipsis; text-align: right; font-variant-numeric: tabular-nums; }
+  /* Fixed cell, left-aligned: the phrase starts under EXECUTION and stays
+     there. Right-aligned inside a shrink-wrapped span, its left edge moved
+     with every string. Live telemetry, so it reads at the label value —
+     .compact-sub's colour comes from ledger.mjs (READY keeps the diff bright). */
+  .compact-sub { font-size: 12px; flex: none; width: var(--col-sub); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: left; font-variant-numeric: tabular-nums; }
   .compact-mini { display: flex; align-items: flex-end; gap: 5px; height: 16px; width: var(--col-exec); justify-content: flex-start; flex: none; }
   .compact-state { font-size: 10px; letter-spacing: .15em; width: var(--col-state); text-align: right; flex: none; }
 
@@ -157,7 +171,8 @@
   /* needs you */
   .halt-card { margin-top: 30px; padding: 26px 26px 24px; background: #e5ecf9; max-width: 860px; }
   .halt-kind { font-size: 11px; letter-spacing: .2em; font-weight: 600; }
-  .halt-verb { margin-top: 18px; font-family: "Instrument Sans", system-ui, sans-serif; font-size: 17px; color: #37424c; letter-spacing: -.01em; }
+  /* connective grammar — it recedes below the filename it introduces */
+  .halt-verb { margin-top: 18px; font-family: "Instrument Sans", system-ui, sans-serif; font-size: 17px; color: #5c6771; letter-spacing: -.01em; }
   .halt-path { margin-top: 7px; font-size: 20px; color: #2f2f2f; letter-spacing: -.012em; font-weight: 500; word-break: break-all; }
   .halt-why { margin-top: 14px; font-size: 13px; color: #37424c; overflow-wrap: anywhere; }
   .halt-detail { margin-top: 16px; padding: 14px; background: #f6f8fa; border: 1px solid #c6d3ea; font-size: 12px; color: #37424c; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 260px; overflow: auto; }
@@ -332,14 +347,17 @@
      BRIEF stays secondary to START on the right */
   .composer-acts { display: flex; align-items: center; gap: 10px; min-height: 32px; }
   .composer-hint-group { flex: 1 1 auto; min-width: 0; display: flex; align-items: center; gap: 14px; overflow: hidden; }
-  .composer-hint { font-size: 10px; letter-spacing: .16em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; color: #9aa6b0; }
-  .composer-hint.armed { color: #2f5fa8; }
+  /* The hint is a LABEL until there is a draft, then it is the one action
+     available right now. Brightness marks availability better than hue does:
+     accent read dim on graphite and fought the caret beside it. */
+  .composer-hint { font-size: 10px; letter-spacing: .16em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; color: #79838c; }
+  .composer-hint.armed { color: #f2f5f7; font-weight: 500; }
   .composer-hint.refining { color: #c3ccd3; animation: wk-live 1.5s ease-in-out infinite; }
   .composer-hint.error { color: #b8532a; }
   /* §02: "RUNS IN <workspace> ON <node>" — the destination reads in the same
      saccade as the intent being typed. Dim sentence, bright workspace name,
      the same weighting the chrome mark uses for its own workspace label. */
-  .composer-hint.workspace { color: #9aa6b0; }
+  .composer-hint.workspace { color: #79838c; }
   .composer-hint-emph { color: #f2f5f7; }
   .composer-meta-divider { width: 1px; height: 11px; background: rgba(255,255,255,.18); flex: none; display: block; }
   .composer-meta { font-size: 10px; letter-spacing: .16em; color: #79838c; flex: 0 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -366,6 +384,11 @@
   .composer-divider { width: 1px; height: 20px; background: rgba(255,255,255,.14); flex: none; display: block; margin: 0 2px; }
   .legend { border-top: 1px solid rgba(255,255,255,.12); }
   .legend-inner { max-width: 1280px; margin: 0 auto; padding: 0 32px; display: flex; align-items: center; gap: 22px; height: 30px; font-size: 10px; letter-spacing: .13em; color: #9aa6b0; overflow: hidden; white-space: nowrap; }
+  /* Key and label are two rungs. One flat value made the bar a sentence;
+     split, it is a row of pairs and the eye finds the keystroke first. */
+  .legend-pair { display: flex; gap: 7px; }
+  .legend-key { color: #dde4e9; font-weight: 500; }
+  .legend-label { color: #79838c; }
   .legend-adapter { margin-left: auto; color: #7d8892; }
 
   .empty { padding: 60px 24px 60px 20px; border-left: 1px solid #dbe2e7; color: #5c6771; font-size: 13px; letter-spacing: .04em; }
@@ -400,7 +423,8 @@
     .composer-inner { padding: 16px 18px 14px; }
     .head, .row { grid-template-columns: 44px 1fr; }
     .band, .result { grid-template-columns: 112px 1fr; }
-    :root { --col-exec: 120px; }
+    /* the phrase is hidden here, so the axis is the trace alone */
+    :root { --col-sub: 0px; --col-exec: 120px; --col-exec-head: calc(var(--col-exec) + var(--col-gap)); }
     .compact-sub { display: none; }
   }
   @media (max-width: 899px) {
@@ -449,7 +473,7 @@
     .m-count { color: #5c6771; }
     .m-toolbar-fill { flex: 1; }
     .m-toolbar-asof { color: #8f9aa4; }
-    .m-back { color: #5c6771; flex: 1; min-width: 0; cursor: pointer; padding: 4px 0; min-height: 44px; display: flex; align-items: center; }
+    .m-back { color: #37424c; font-weight: 500; flex: 1; min-width: 0; cursor: pointer; padding: 4px 0; min-height: 44px; display: flex; align-items: center; }
     .m-back-badge { color: #2f5fa8; font-weight: 600; flex: none; cursor: pointer; min-height: 44px; display: flex; align-items: center; }
 
     /* the scroller — the ONLY region that scrolls */
@@ -479,12 +503,14 @@
     .m-ask-t { font-size: 11.5px; color: #2f5fa8; font-variant-numeric: tabular-nums; flex: none; }
     .m-ask.frozen .m-ask-t { color: #5c6771; }
     .m-ask-title { margin-top: 8px; font-family: "Instrument Sans", system-ui, sans-serif; font-size: 15.5px; font-weight: 500; letter-spacing: -.012em; line-height: 1.3; color: #2f2f2f; overflow-wrap: anywhere; }
-    .m-ask-verb { margin-top: 13px; font-size: 12px; color: #37424c; }
+    .m-ask-verb { margin-top: 13px; font-size: 12px; color: #5c6771; }
     .m-ask-path { margin-top: 5px; font-size: 14.5px; color: #2f2f2f; letter-spacing: -.01em; font-weight: 500; word-break: break-all; overflow-wrap: anywhere; }
     .m-ask-why { margin-top: 8px; font-size: 11.5px; color: #5c6771; line-height: 1.55; overflow-wrap: anywhere; }
     .m-ask-acts { margin-top: 16px; display: flex; gap: 8px; }
     .m-ask.frozen .m-ask-acts { opacity: .32; pointer-events: none; }
-    .m-ask-hint { margin-top: 12px; font-size: 11px; color: #2f5fa8; letter-spacing: .02em; cursor: pointer; }
+    /* An explanation is not an action. Dressed in accent beside ALLOW it
+       read as a third button; only the button is the action. */
+    .m-ask-hint { margin-top: 12px; font-size: 11px; color: #5c6771; letter-spacing: .02em; cursor: pointer; }
     .m-ask-hint.offline { color: #b8532a; cursor: default; }
 
     /* inline overview buttons (48px) */
@@ -559,11 +585,12 @@
 
     .m-devent { display: flex; align-items: baseline; gap: 12px; margin-top: 9px; }
     .m-devent:first-of-type { margin-top: 10px; }
-    .m-devent-verb { width: 54px; flex: none; font-size: 10px; letter-spacing: .14em; color: #37424c; font-weight: 500; }
+    .m-devent-verb { width: 54px; flex: none; font-size: 10px; letter-spacing: .14em; color: #5c6771; font-weight: 500; }
     .m-devent-arg { flex: 1; min-width: 0; font-size: 13px; color: #2f2f2f; overflow-wrap: anywhere; }
     .m-devent-t { flex: none; font-size: 11px; color: #5c6771; font-variant-numeric: tabular-nums; }
 
-    .m-disclosure { margin-top: 12px; min-height: 44px; display: flex; align-items: center; font-size: 11.5px; color: #5c6771; cursor: pointer; }
+    /* tappable reads as tappable: one step above the static labels around it */
+    .m-disclosure { margin-top: 12px; min-height: 44px; display: flex; align-items: center; font-size: 11.5px; color: #37424c; font-weight: 500; cursor: pointer; }
 
     .m-dresult { margin-top: 11px; font-family: "Instrument Sans", system-ui, sans-serif; font-size: 15px; line-height: 1.55; color: #2f2f2f; letter-spacing: -.008em; overflow-wrap: anywhere; }
     .m-dresult > *:first-child { margin-top: 0; }
@@ -628,7 +655,7 @@
     .m-sheet { position: absolute; left: 0; right: 0; bottom: 0; background: #f6f8fa; border-top: 1px solid #2f2f2f; padding: 18px 14px max(16px, env(safe-area-inset-bottom)); z-index: 9; box-sizing: border-box; }
     .m-sheet-head { display: flex; align-items: baseline; gap: 12px; }
     .m-sheet-kind { font-size: 10px; letter-spacing: .2em; color: #2f5fa8; font-weight: 600; flex: 1; }
-    .m-sheet-cancel { font-size: 11px; color: #5c6771; cursor: pointer; min-height: 44px; display: flex; align-items: center; }
+    .m-sheet-cancel { font-size: 11px; color: #37424c; font-weight: 500; cursor: pointer; min-height: 44px; display: flex; align-items: center; }
     .m-sheet-input { margin-top: 14px; background: #fff; border: 1px solid #2f5fa8; padding: 12px 14px; min-height: 104px; font-size: 16px; line-height: 1.5; color: #2f2f2f; font-family: inherit; width: 100%; resize: none; outline: none; box-sizing: border-box; }
     .m-sheet-note { margin-top: 12px; font-size: 11.5px; color: #5c6771; line-height: 1.6; }
     .m-sheet-acts { margin-top: 14px; display: flex; gap: 8px; }

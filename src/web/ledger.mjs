@@ -1065,7 +1065,10 @@ export function projectRow(task, events, opts = {}) {
       : done ? "15px" : "17.5px",
     titleWeight: done ? 400 : 500,
     titleColor: done ? COLORS.muted : COLORS.ink,
-    subColor: done ? COLORS.muted : COLORS.inkSoft,
+    // While a run is live the subline is telemetry and must not compete with
+    // the title one line above it. On READY it IS the result — the diff — so
+    // it alone keeps the actionable value.
+    subColor: ready ? COLORS.inkSoft : COLORS.muted,
     numColor: done ? COLORS.muted : halted ? accent : COLORS.inkSoft,
     bg: halted ? "#e9eefb" : selected && !open ? "#eef2f6" : "#f6f8fa",
     borderT: halted ? "1px solid " + accent : "none",
