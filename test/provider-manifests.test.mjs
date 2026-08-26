@@ -79,10 +79,14 @@ test("manifests: every failure mode fails loudly, naming the file", () => {
 });
 
 test("manifests: a manifest cannot shadow a built-in provider", () => {
-  const nativeIds = ["claude-code", "deepseek-harness"];
+  const nativeIds = ["claude-code", "codex", "deepseek-harness"];
   assert.throws(
     () => validateManifest({ ...CMD_MANIFEST, id: "claude-code" }, "x.json", { nativeIds }),
     /built-in provider and cannot be redefined/
+  );
+  assert.throws(
+    () => validateManifest({ ...CMD_MANIFEST, id: "codex" }, "x.json", { nativeIds }),
+    /built-in provider/
   );
   assert.throws(
     () => validateManifest({ ...CMD_MANIFEST, id: "deepseek-harness" }, "x.json", { nativeIds }),
@@ -146,7 +150,7 @@ test("registry: native + configured providers coexist behind one contract", asyn
   try {
     const registry = createProviderRegistry({ base });
     const ids = registry.listProviders().map(p => p.id);
-    assert.deepEqual(ids, ["claude-code", "deepseek-harness", "gemini", "my-agent"]);
+    assert.deepEqual(ids, ["claude-code", "codex", "deepseek-harness", "gemini", "my-agent"]);
 
     // The rest of 0x2F cannot tell which integration type created a provider.
     const gemini = registry.getProvider("gemini");
@@ -164,6 +168,7 @@ test("registry: native + configured providers coexist behind one contract", asyn
 
     // Natives are unchanged, now tagged with their integration type.
     assert.equal(registry.getProvider("claude-code").integrationType, "native");
+    assert.equal(registry.getProvider("codex").integrationType, "native");
     assert.equal(registry.getProvider("deepseek-harness").integrationType, "native");
     assert.equal(registry.getProvider("nope"), null);
     assert.equal(registry.defaultProviderId, "claude-code");

@@ -119,9 +119,10 @@ Two shapes of `needs_you`/permission, distinguished by `blockedOn.live`:
   cleared).
 - **Session-resume** — the run ended (e.g. Claude Code headless finished
   with a permission denial). `allowWork`/`rejectWork` resume the persisted
-  provider session (`claude -p --resume <id>`, ACP `session/load`) through a
-  fresh worker. Providers that cannot resume a session (`deepseek-harness`,
-  `command`) refuse loudly — the capability is declared, never faked.
+  provider session (`claude -p --resume <id>`, `codex exec resume <thread>`,
+  ACP `session/load`) through a fresh worker. Providers that cannot resume a
+  session (`deepseek-harness`, `command`) refuse loudly — the capability is
+  declared, never faked.
 
 A `decision` block is answered with `answerWork` (`2f answer`): the answer is
 persisted twice — `answer.json` (human-readable record) and the task's
@@ -195,9 +196,13 @@ Normalized outcome shapes (`src/core/lifecycle.mjs`):
 ```
 
 - **Native**: `claude-code.mjs` (stream-json, session resume,
-  permission-denial detection, mutating-tool file.changed) and
-  `deepseek-harness.mjs` (`dsh --profile headless`, one-shot, no structured
-  events, no resume). Each file is the only place vendor shapes may appear.
+  permission-denial detection, mutating-tool file.changed),
+  `codex.mjs` (`codex exec --json` JSONL events, `codex exec resume` thread
+  continuation, command_execution tool events, no file-change items and no
+  permission surface — an honest declaration, see
+  `docs/codex-capability-map.md`), and `deepseek-harness.mjs`
+  (`dsh --profile headless`, one-shot, no structured events, no resume).
+  Each file is the only place vendor shapes may appear.
 - **ACP** (`acp.mjs`): one generic provider speaking Agent Client Protocol
   v1 over stdio — `initialize`, `session/new`, `session/load`,
   `session/prompt`, `session/request_permission` (interactive → live

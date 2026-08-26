@@ -68,24 +68,13 @@ Verified: `opencode acp` starts OpenCode as an ACP-compatible subprocess
 }
 ```
 
-## `codex-acp.json` — Codex via the official ACP adapter (ACP)
+## `codex-acp.json` — (removed: Codex is now a built-in native provider)
 
-Verified: `@agentclientprotocol/codex-acp` is an official stdio ACP server
-that drives the OpenAI Codex runtime (`github.com/agentclientprotocol/codex-acp`).
-
-```json
-{
-  "id": "codex",
-  "displayName": "Codex",
-  "transport": "acp",
-  "command": ["codex-acp"]
-}
-```
-
-Requires the adapter: `npm install -g @agentclientprotocol/codex-acp`
-(or use `["npx", "-y", "@agentclientprotocol/codex-acp"]`). Authentication is
-handled via the adapter's runtime options (`CODEX_API_KEY` / `OPENAI_API_KEY`
-in the environment).
+Codex no longer needs an ACP manifest: since 0x2F v0.6, `codex` is a built-in
+native provider (`codex exec --json` + `codex exec resume`), with its own
+documented capability boundaries (see `docs/codex-capability-map.md`). A
+`.work/providers/*.json` manifest with `"id": "codex"` is rejected as a
+redefinition of a built-in provider.
 
 ## `my-agent.json` — any headless executable (command)
 
@@ -112,5 +101,8 @@ never a shell) with the workspace as its working directory.
   `needs_you` → interactive `--resume` flow is richer than the headless ACP
   surface expresses. No ACP manifest is claimed for it here because the
   invocation has not been verified against official docs.
+- **Codex** is a built-in native provider (`codex exec --json` + thread
+  resume) — no manifest needed; see `docs/codex-capability-map.md` for its
+  verified capability boundaries.
 - **DeepSeek Harness** stays native: its headless CLI exposes no ACP surface
   and its honest no-resume/no-events declaration is provider-specific.

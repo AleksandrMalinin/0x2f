@@ -492,7 +492,7 @@ test("GET /api/providers lists the registry (default first) with normalized desc
     const providers = await apiFetch(handle.url + "/api/providers").then(r => r.json());
     assert.deepEqual(
       providers.map(p => p.id),
-      ["claude-code", "deepseek-harness"]
+      ["claude-code", "codex", "deepseek-harness"]
     );
     const dsh = providers.find(p => p.id === "deepseek-harness");
     assert.equal(dsh.displayName, "DeepSeek Harness");
@@ -503,6 +503,13 @@ test("GET /api/providers lists the registry (default first) with normalized desc
     const cc = providers.find(p => p.id === "claude-code");
     assert.equal(cc.capabilities.supportsResume, true);
     assert.equal(cc.integrationType, "native");
+    const codex = providers.find(p => p.id === "codex");
+    assert.equal(codex.displayName, "Codex");
+    assert.equal(codex.integrationType, "native");
+    assert.equal(codex.capabilities.supportsResume, true);
+    assert.equal(codex.capabilities.supportsStructuredEvents, true);
+    assert.equal(codex.capabilities.supportsFileChanges, false);
+    assert.equal(codex.capabilities.supportsPermissionRequests, false);
     // No vendor internals leak through the API.
     for (const p of providers) {
       assert.deepEqual(
@@ -543,10 +550,10 @@ test("POST /api/tasks with an unknown provider -> 400 from the shared action", a
   try {
     const res = await postJson(handle.url + "/api/tasks", {
       brief: "Nope",
-      provider: "codex"
+      provider: "unknown-agent"
     });
     assert.equal(res.status, 400);
-    assert.match((await res.json()).error, /Unknown execution provider "codex"/);
+    assert.match((await res.json()).error, /Unknown execution provider "unknown-agent"/);
   } finally {
     await handle.close();
     await fs.rm(base, { recursive: true, force: true });

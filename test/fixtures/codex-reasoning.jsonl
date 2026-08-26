@@ -1,0 +1,5 @@
+{"type":"thread.started","thread_id":"01a03e6b-0ac3-7822-8ddd-bf3a977eb292"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"reasoning","text":"mock reasoning summary"}}
+{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"Final answer."}}
+{"type":"turn.completed","usage":{"input_tokens":0,"cached_input_tokens":0,"cache_write_input_tokens":0,"output_tokens":0,"reasoning_output_tokens":0}}

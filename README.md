@@ -29,8 +29,8 @@ Node.js ≥ 20, one dependency (`ws`), no build step, local-first.
                        │  one worker per run
         ┌──────────────┼──────────────┐
         ▼              ▼              ▼
-   claude-code    deepseek-harness   any ACP /
-                                    command agent
+   claude-code      codex          deepseek-harness
+                        │ any ACP / command agent
         └──────────────┼──────────────┘
                        ▼
               your local project
@@ -195,8 +195,9 @@ a full setup-and-test walkthrough is in
 
 Requires **Node.js ≥ 20** and at least one coding harness on your PATH:
 [Claude Code](https://code.claude.com/docs) (`claude`) is the built-in
-default, [DeepSeek Harness](https://github.com/deepseek-ai/DeepSeek-Harness)
-(`dsh`) is also built in, and any ACP-compatible agent or headless executable
+default, [Codex](https://github.com/openai/codex) (`codex`) and
+[DeepSeek Harness](https://github.com/deepseek-ai/DeepSeek-Harness) (`dsh`)
+are also built in, and any ACP-compatible agent or headless executable
 can be added per project (see [Providers](#providers)). 0x2F itself is one
 small package — `ws` is its only dependency, no build step, no accounts, no
 daemon.
@@ -263,12 +264,12 @@ to the install.
 
 | Integration | What it is | Use |
 | --- | --- | --- |
-| **Native** | Deep adapter for one harness's specific capabilities | `claude-code` (permissions → `needs_you` → same-session resume), `deepseek-harness` |
-| **ACP** | One generic provider speaking the [Agent Client Protocol](https://agentclientprotocol.com) v1 over stdio | Any ACP-compatible agent — Gemini CLI, Cursor, OpenCode, Codex — configured by manifest |
+| **Native** | Deep adapter for one harness's specific capabilities | `claude-code` (permissions → `needs_you` → same-session resume), `codex` (structured exec events + thread resume), `deepseek-harness` |
+| **ACP** | One generic provider speaking the [Agent Client Protocol](https://agentclientprotocol.com) v1 over stdio | Any ACP-compatible agent — Gemini CLI, Cursor, OpenCode — configured by manifest |
 | **Command** | One generic provider for headless executables | Any CLI that takes a prompt and prints a result — configured by manifest |
 
-`claude-code` and `deepseek-harness` are built in. Everything else is added
-**declaratively**: drop one JSON manifest into `.work/providers/` and it
+`claude-code`, `codex` and `deepseek-harness` are built in. Everything else is
+added **declaratively**: drop one JSON manifest into `.work/providers/` and it
 becomes a provider — no source changes:
 
 ```json
@@ -324,7 +325,7 @@ Execution node     local machine (spawns the detached worker)
 Provider           native · ACP · command
     │
     ▼
-Coding harness     claude-code · dsh · gemini · cursor · any command
+Coding harness     claude-code · codex · dsh · gemini · cursor · any command
 ```
 
 The CLI and the browser never implement lifecycle or provider logic — both

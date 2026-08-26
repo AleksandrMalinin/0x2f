@@ -330,8 +330,8 @@ test("rerunWork rejects an unknown provider with the shared error", async () => 
     const task = await runtime.actions.createWork({ brief: "Nope" });
     await applyWorkerOutcome(runtime, task, { status: "ready", result: "done" });
     await assert.rejects(
-      () => runtime.actions.rerunWork(task.id, { provider: "codex" }),
-      /Unknown execution provider "codex"\. Available: claude-code, deepseek-harness\./
+      () => runtime.actions.rerunWork(task.id, { provider: "unknown-agent" }),
+      /Unknown execution provider "unknown-agent"\. Available: claude-code, codex, deepseek-harness\./
     );
   } finally {
     await fs.rm(runtime.base, { recursive: true, force: true });

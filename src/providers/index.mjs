@@ -1,9 +1,9 @@
 // Provider registry — the single place that knows which execution providers
 // exist. It now holds three integration types behind ONE contract:
 //
-//   Native    claude-code, deepseek-harness      (deep provider adapters)
+//   Native    claude-code, codex, deepseek-harness   (deep provider adapters)
 //   ACP       any agent exposing the Agent Client Protocol (manifests)
-//   Command   any headless executable            (manifests)
+//   Command   any headless executable                (manifests)
 //
 // Work Core, the worker, and every client consume providers through a
 // registry's getProvider(); nothing else imports a vendor module directly.
@@ -25,18 +25,20 @@
 import fsSync from "node:fs";
 import path from "node:path";
 import { claudeCodeProvider, claudeBin } from "./claude-code.mjs";
+import { codexProvider, codexBin } from "./codex.mjs";
 import { deepseekHarnessProvider, dshBin } from "./deepseek-harness.mjs";
 import { loadManifestProviders } from "./manifests.mjs";
 
 export const defaultProviderId = "claude-code";
 
 // Native providers are singletons; integrationType is a registry descriptor.
-for (const provider of [claudeCodeProvider, deepseekHarnessProvider]) {
+for (const provider of [claudeCodeProvider, codexProvider, deepseekHarnessProvider]) {
   provider.integrationType ??= "native";
 }
 
 const NATIVE_PROVIDERS = {
   [claudeCodeProvider.id]: claudeCodeProvider,
+  [codexProvider.id]: codexProvider,
   [deepseekHarnessProvider.id]: deepseekHarnessProvider
 };
 
@@ -68,6 +70,7 @@ export function executableAvailable(name, env = process.env) {
 // Which executable a native provider runs — its own env override, then PATH.
 function nativeExecutable(provider, env) {
   if (provider.id === "claude-code") return claudeBin() || "claude";
+  if (provider.id === "codex") return codexBin() || "codex";
   if (provider.id === "deepseek-harness") return dshBin() || "dsh";
   return null;
 }

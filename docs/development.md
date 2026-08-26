@@ -42,6 +42,7 @@ src/
   providers/
     index.mjs         provider registry (native + manifest providers)
     claude-code.mjs   native adapter
+    codex.mjs         native adapter (exec --json + thread resume)
     deepseek-harness.mjs  native adapter
     acp.mjs           generic ACP provider
     command.mjs       generic command provider

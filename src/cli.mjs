@@ -266,7 +266,7 @@ async function main() {
     if (available.length) {
       console.log(`Provider: ${available.join(", ")} detected and ready.`);
     } else {
-      console.log("No coding harness detected on PATH — install Claude Code (`claude`) or");
+      console.log("No coding harness detected on PATH — install Claude Code (`claude`), Codex (`codex`), or");
       console.log("DeepSeek Harness (`dsh`), or add a manifest to .work/providers/.");
       console.log("(2f providers lists what 0x2F sees and whether each is available.)");
     }

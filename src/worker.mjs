@@ -320,7 +320,8 @@ try {
       externalSessionId: current.execution?.externalSessionId,
       grant,
       onEvent,
-      permission: { decisionFile: permissionDecisionFile }
+      permission: { decisionFile: permissionDecisionFile },
+      model: current.execution?.model
     });
   } else {
     if (task.status !== "working") {
@@ -335,7 +336,8 @@ try {
       cwd: base,
       prompt,
       onEvent,
-      permission: { decisionFile: permissionDecisionFile }
+      permission: { decisionFile: permissionDecisionFile },
+      model: task.execution?.model
     });
   }
 
