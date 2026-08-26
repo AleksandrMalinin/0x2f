@@ -8,6 +8,7 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import {
   markClass,
   MARK_CLASS,
@@ -15,6 +16,7 @@ import {
   toSteps,
   tail,
   TAIL,
+  MINI_CAP_PX,
   trace,
   brackets,
   sections,
@@ -613,7 +615,7 @@ test("failed shows FAILURE and FILES but never COMMANDS; provenance is labelled 
   assert.equal(row.provenance.heading, "BEFORE THE STOP");
 });
 
-test("done carries no trace at all — the whole fix for the old three-empty-band screen", () => {
+test("done carries no EXPANDED trace — the whole fix for the old three-empty-band screen", () => {
   const events = log([
     ["tool.started", 1, { name: "Read", input: { file_path: "a.ts" } }],
     ["tool.started", 9, { name: "Edit", input: { file_path: "a.ts" } }],
@@ -626,11 +628,20 @@ test("done carries no trace at all — the whole fix for the old three-empty-ban
   assert.equal(row.provenance, null);
   assert.equal(row.activitySection, null);
   assert.equal(row.filesSection, null);
-  assert.deepEqual(row.mini, []);
 
-  // A task still in flight keeps its mini trace.
+  // The COLLAPSED trace survives, flattened: same marks, one rule colour,
+  // archive height. Shape without voice.
+  assert.ok(row.mini.length > 0);
+  assert.deepEqual([...new Set(row.mini.map(c => c.c))], ["#dbe2e7"]);
+  assert.ok(row.mini.every(c => parseFloat(c.h) <= 4));
+
+  // A task still in flight keeps the loud one: class colours, accent on the
+  // change it made, and a live head after the last mark.
   const live = projectRow(task({ status: "working" }), events, { providers: RICH });
-  assert.ok(live.mini.length > 0);
+  assert.ok(live.mini.length > row.mini.length);
+  assert.ok(live.mini.some(c => c.c === "#2f5fa8"));
+  assert.ok(live.mini.some(c => c.isHead));
+  assert.ok(live.mini.some(c => parseFloat(c.h) > 4));
 });
 
 test("a coarse ready row reports files as absent (no section), not as zero", () => {
@@ -721,7 +732,7 @@ test("projectRow renders the ready result from the files the run actually change
   assert.equal(row.elapsed, "0:04");
 });
 
-test("projectRow compresses a done task and drops its trace, as the design does", () => {
+test("projectRow compresses a done task and archives its trace, as the design does", () => {
   const events = log([
     ["tool.started", 1, { name: "Read", input: { file_path: "a.ts" } }],
     ["tool.started", 9, { name: "Edit", input: { file_path: "a.ts" } }],
@@ -734,7 +745,8 @@ test("projectRow compresses a done task and drops its trace, as the design does"
   assert.equal(row.titleWeight, 400);
   assert.equal(row.titleColor, "#5c6771");
   assert.match(row.sub, /^closed · /);
-  assert.deepEqual(row.mini, []);
+  assert.ok(row.mini.length > 0);
+  assert.deepEqual([...new Set(row.mini.map(c => c.c))], ["#dbe2e7"]);
 });
 
 test("a closed row's sub keeps a fixed width so EXECUTION reads as a grid", () => {
@@ -1167,4 +1179,32 @@ test("briefTruncated is carried through so a cut remote brief can say it was cut
   assert.equal(plain.briefTruncated, false);
   const cut = projectRow(task({ title: "t", brief: "t and more", briefTruncated: true }), [], { open: true });
   assert.equal(cut.briefTruncated, true);
+});
+
+test("a coarse run's collapsed bar leaves room for the live head inside --col-exec", () => {
+  // The bar is bounded in pixels, the lane in CSS. If they ever drift the
+  // head — the only mark that says the run is still moving — is the first
+  // thing clipped, so the two are asserted against each other here.
+  const COL_EXEC = Number(
+    /--col-exec:\s*(\d+)px/.exec(readFileSync(new URL("../src/web/app.css", import.meta.url), "utf8"))[1]
+  );
+  const HEAD_W = 2;
+  const GAP = 8;
+  assert.ok(MINI_CAP_PX + GAP + HEAD_W <= COL_EXEC, "the ambient bar plus its head must fit the column");
+
+  const hours = 60 * 60;
+  const laid = trace([], { w: HEAD_W, scale: 0.5, coarse: true, live: true, cap: MINI_CAP_PX, elapsedSeconds: hours });
+  assert.equal(laid.cells[0].w, MINI_CAP_PX + "px");
+  assert.ok(laid.cells.at(-1).isHead);
+  assert.ok(parseFloat(laid.totalW) <= COL_EXEC);
+
+  // The expanded lane is not a fixed column and keeps the wider default.
+  const wide = trace([], { w: 4, coarse: true, live: true, elapsedSeconds: hours });
+  assert.equal(wide.cells[0].w, "220px");
+});
+
+test("a closed coarse run archives its ambient bar in the rule colour too", () => {
+  const laid = trace([], { w: 2, scale: 0.26, coarse: true, flat: "#dbe2e7", cap: MINI_CAP_PX, elapsedSeconds: 600 });
+  assert.equal(laid.cells[0].c, "#dbe2e7");
+  assert.equal(laid.cells.length, 1, "no head, no tear — the run is over");
 });

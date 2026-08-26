@@ -121,7 +121,13 @@
   /* Fixed width, left-aligned: the phrase starts under EXECUTION and stays
      there whatever it says. Colour comes from ledger.mjs, not from here. */
   .compact-sub { display: inline-block; font-size: 12px; flex: none; width: var(--col-phrase); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: left; font-variant-numeric: tabular-nums; }
-  .compact-mini { display: flex; align-items: flex-end; gap: 5px; height: 16px; width: var(--col-exec); justify-content: flex-start; flex: none; }
+  /* 1px between marks, not 5px: in the design the wider gap separates phase
+     GROUPS, and this projection has no phases — every mark sits in the one
+     implicit group, so the trace reads as a bar of texture rather than a
+     dotted line. overflow is a backstop only — ledger.mjs caps the coarse
+     ambient bar (MINI_CAP_PX) so the live head always lands inside --col-exec
+     rather than being clipped away with the bar's tail. */
+  .compact-mini { display: flex; align-items: flex-end; gap: 1px; height: 16px; width: var(--col-exec); justify-content: flex-start; flex: none; overflow: hidden; }
   .compact-state { font-size: 10px; letter-spacing: .15em; width: var(--col-state); text-align: right; flex: none; }
 
   .detail-head { display: flex; align-items: baseline; gap: 24px; cursor: pointer; min-width: 0; }

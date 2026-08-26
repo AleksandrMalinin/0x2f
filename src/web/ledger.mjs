@@ -467,6 +467,10 @@ export function toSteps(task, events = [], opts = {}) {
 
 export const TAIL = { expanded: 24, collapsed: 12, provenance: 12 };
 
+// The widest the collapsed row's coarse ambient bar may draw, in px. Kept in
+// step with --col-exec in app.css by the test below it.
+export const MINI_CAP_PX = 150;
+
 export function tail(steps, n) {
   const units = steps.filter(s => s.kind !== "halt" && s.kind !== "fail");
   return { marks: units.slice(-n), truncated: units.length > n, total: units.length };
@@ -509,11 +513,10 @@ function classColor(cls, accent, finished) {
 // (capped, so its length can never be mistaken for a step count), the same
 // head/tear the live lane uses, and the elapsed-time readout that already
 // exists in the status line.
-function coarseTrace({ w, scale, accent, live, halted, elapsedSeconds }) {
-  const CAP_PX = 220;
+function coarseTrace({ w, scale, accent, live, halted, elapsedSeconds, flat, cap }) {
   const PX_PER_SECOND = 0.5;
-  const barW = Math.max(10, Math.min(CAP_PX, Math.round(elapsedSeconds * PX_PER_SECOND)));
-  const cells = [{ x: 0, w: barW + "px", h: Math.round(4 * scale) + "px", c: COLORS.unobserved, ambient: true }];
+  const barW = Math.max(10, Math.min(cap, Math.round(elapsedSeconds * PX_PER_SECOND)));
+  const cells = [{ x: 0, w: barW + "px", h: Math.round(4 * scale) + "px", c: flat ?? COLORS.unobserved, ambient: true }];
   let x = barW;
   const doneW = x;
   if (halted) {
@@ -546,10 +549,20 @@ export function trace(steps, opts = {}) {
     halted = false,
     finished = false,
     coarse = false,
-    elapsedSeconds = 0
+    elapsedSeconds = 0,
+    // One colour for every unit, class colours suppressed. Only a closed run
+    // asks for this: it keeps the shape of what happened without keeping the
+    // voice — see the archive mini in projectRow().
+    flat = null,
+    // How long the coarse ambient bar may grow. A rich trace is bounded by
+    // its tail budget, but the ambient bar is bounded only in pixels, so the
+    // caller has to say how much room the lane has: the collapsed row's lane
+    // is one fixed column and the bar must leave space for the live head
+    // after it, or the head lands outside the column and is clipped away.
+    cap = 220
   } = opts;
 
-  if (coarse) return coarseTrace({ w, scale, accent, live, halted, elapsedSeconds });
+  if (coarse) return coarseTrace({ w, scale, accent, live, halted, elapsedSeconds, flat, cap });
 
   const { marks: units, truncated, total } = tail(steps, n);
   const cells = [];
@@ -561,7 +574,7 @@ export function trace(steps, opts = {}) {
       x,
       w: w + "px",
       h: classHeight(cls, scale) + "px",
-      c: classColor(cls, accent, finished),
+      c: flat ?? classColor(cls, accent, finished),
       cls,
       arg: step.arg
     });
@@ -948,17 +961,23 @@ export function projectRow(task, events, opts = {}) {
     };
   }
 
-  // A closed task carries no trace at all — the ledger compresses it out of
-  // the way and the EXECUTION column belongs to work that is still live.
-  const mini = done
-    ? { cells: [], doneW: "0px", totalW: "0px" }
-    : (() => {
-        const laid = trace(steps, {
-          n: TAIL.collapsed, w: 2, scale: 0.5, accent, coarse,
-          live: running, halted, finished, elapsedSeconds
-        });
-        return { cells: laid.cells, doneW: laid.doneW, totalW: laid.totalW };
-      })();
+  // Closed runs keep their shape but not their voice: the same marks the run
+  // always had, drawn once in the rule colour at roughly half height — no
+  // class colours, no accent on the changes, no head. A closed row is an
+  // archive of what happened, not a decision aid, so it must read as texture
+  // beside the rows above it that still want something from you. The EXECUTION
+  // column stays populated all the way down instead of emptying out at DONE.
+  const mini = (() => {
+    const laid = trace(steps, {
+      n: TAIL.collapsed, w: 2, scale: done ? 0.26 : 0.5, accent, coarse,
+      flat: done ? COLORS.rule : null,
+      // --col-exec is 170px; 150 + the 8px gap + the 2px head fits with room
+      // to spare, at every width the collapsed trace is shown at.
+      cap: MINI_CAP_PX,
+      live: running, halted, finished, elapsedSeconds
+    });
+    return { cells: laid.cells, doneW: laid.doneW, totalW: laid.totalW };
+  })();
 
   const lastActivity = steps.filter(s => s.kind === "tool" || s.kind === "command").slice(-1)[0];
   // A long intent is a paragraph, not a heading: keep the expanded title at
