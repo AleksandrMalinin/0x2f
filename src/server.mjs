@@ -38,9 +38,11 @@
 // The API is protected by four layers, all enforced HERE at the boundary:
 //
 //   1. Host allowlist — only Host headers naming 127.0.0.1 / localhost /
-//      [::1] are served. A DNS-rebinding page resolves a foreign host to the
-//      loopback address, but its Host header is the attacker's name, so it is
-//      refused before any routing happens.
+//      [::1] are served, PLUS, only while LAN pairing is active (`2f pair`,
+//      v0.5), private-LAN hosts — and even then only the BOUNDED LAN surface
+//      below, never the local API. A DNS-rebinding page resolves a foreign
+//      host to the loopback address, but its Host header is the attacker's
+//      name, so it is refused before any routing happens.
 //   2. Browser-request validation — an Origin header, when present, must be
 //      this server's own origin, and Sec-Fetch-Site (when present) must be
 //      same-origin or none. Cross-site "simple requests", form posts and
@@ -51,6 +53,17 @@
 //      browser path), or as the x-0x2f-auth header (programmatic path for
 //      local scripts/tests). The token is generated per server process.
 //   4. Request-body cap — bodies are bounded before any JSON.parse.
+//
+// LAN-first pairing (v0.5): `2f pair` is the ONLY thing that turns the LAN
+// surface on. When it does, the runtime is started with LAN mode: it binds
+// all interfaces and serves private-LAN hosts ONLY the static client (the
+// pairing page + app) and an in-process instance of the RELAY protocol — the
+// phone talks to the Mac directly through the exact protocol the hosted
+// relay speaks, so the existing pairing client and E2E encrypted channel are
+// reused unchanged. The normal local API (/api/tasks, /api/providers, …) is
+// never served to LAN hosts, and `2f pair --off` closes the LAN surface
+// within a second. The relay's own protections (one-time token, session
+// bearer, GCM envelopes, rate limits) all apply on the LAN surface.
 //
 // Two properties every client can rely on:
 //
@@ -77,6 +90,8 @@ import { createRuntime } from "./runtime.mjs";
 import { createTailer } from "./core/events.mjs";
 import { WorkError } from "./core/errors.mjs";
 import { MAX_BODY_BYTES } from "./core/limits.mjs";
+import { createRelayServer } from "./relay/server.mjs";
+import { isPrivateLanIp } from "./relay/lan.mjs";
 
 // The Web surface is served as static files from src/ — the shell and the
 // browser client from src/web/, plus the relay client protocol module the
@@ -92,6 +107,24 @@ import { MAX_BODY_BYTES } from "./core/limits.mjs";
 //
 // The allowlist below is the whole static story: no directory walking, no
 // user-supplied paths, nothing outside these exact entries can be requested.
+//
+// Vendored pure-JS crypto (scripts/vendor-crypto.mjs) — the transitive file
+// graph of @noble/hashes + @noble/ciphers that e2e.mjs needs when WebCrypto
+// is unavailable. Kept in sync with scripts/vendor-crypto.mjs and
+// deploy/client/build.mjs.
+const VENDOR_CRYPTO_FILES = [
+  "@noble/hashes/pbkdf2.js",
+  "@noble/hashes/sha2.js",
+  "@noble/hashes/_md.js",
+  "@noble/hashes/_u64.js",
+  "@noble/hashes/crypto.js",
+  "@noble/hashes/hmac.js",
+  "@noble/hashes/utils.js",
+  "@noble/ciphers/aes.js",
+  "@noble/ciphers/_polyval.js",
+  "@noble/ciphers/utils.js"
+];
+
 const ASSETS = {
   "/": ["web/index.html", "text/html; charset=utf-8"],
   "/pair": ["web/pair.html", "text/html; charset=utf-8"],
@@ -115,7 +148,16 @@ const ASSETS = {
   // resolves in Node AND from /app/ledger.mjs in the browser) is what keeps
   // those two from drifting — the same reason ledger.mjs itself is shared.
   // It is a pure string function: no store, no fs, no secrets.
-  "/core/title.mjs": ["core/title.mjs", "text/javascript; charset=utf-8"]
+  "/core/title.mjs": ["core/title.mjs", "text/javascript; charset=utf-8"],
+  // The pure-JS crypto fallback (see src/web/e2e.mjs): WebCrypto's subtle API
+  // is unavailable in insecure contexts, so a phone on a plain-http LAN page
+  // imports these vendored modules. Kept in sync with scripts/vendor-crypto.mjs.
+  ...Object.fromEntries(
+    VENDOR_CRYPTO_FILES.map(file => [
+      "/app/vendor/" + file,
+      ["web/vendor/" + file, "text/javascript; charset=utf-8"]
+    ])
+  )
 };
 
 // --- local-boundary security ------------------------------------------------
@@ -129,6 +171,10 @@ const ASSETS = {
 // attacker's hostname reaching this process; none of these names can be
 // resolved to the loopback address by an attacker.
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "[::1]", "::1"]);
+
+// How stale the LAN-mode config check may be. `2f pair --off` writes
+// enabled:false and the LAN surface closes within ~this long.
+const LAN_GATE_TTL_MS = 1000;
 
 // The per-runtime credential: carried by the HttpOnly SameSite=Strict cookie
 // the shell sets (browser path) or the x-0x2f-auth header (programmatic
@@ -184,14 +230,16 @@ function requestHostname(req) {
   return colon > 0 ? host.slice(0, colon) : host;
 }
 
-// Layer 1: the Host header must name a loopback host. Answers the request
-// (403) and returns false when the request is refused.
-function guardHost(req, res) {
-  if (!LOOPBACK_HOSTS.has(requestHostname(req))) {
-    json(res, { error: "Forbidden — 0x2F only serves its own loopback origin." }, 403);
-    return false;
-  }
-  return true;
+// Layer 1 (LAN-aware): a request is served only when its Host header names a
+// loopback host, OR a private-LAN host while LAN pairing is active (checked
+// against the live config, so `2f pair --off` closes the LAN surface quickly).
+// `lanRelay` is the mounted in-process relay (present only in LAN mode).
+async function guardHostLan(req, res, lanRelay, lanEnabledNow) {
+  const hostname = requestHostname(req);
+  if (LOOPBACK_HOSTS.has(hostname)) return true;
+  if (lanRelay && isPrivateLanIp(hostname) && (await lanEnabledNow())) return true;
+  json(res, { error: "Forbidden — 0x2F only serves its own loopback origin." }, 403);
+  return false;
 }
 
 // Layer 2a: a present Origin header must be THIS server's own origin —
@@ -452,11 +500,48 @@ async function readHistory(store) {
 export async function startServer(base = process.cwd(), port = 4242, opts = {}) {
   const runtime = opts.runtime ?? createRuntime(base, opts);
   const { store, actions, events } = runtime;
-  const host = opts.host ?? "127.0.0.1";
+  // LAN mode (`2f pair`): bind all interfaces so the phone on the same Wi-Fi
+  // can reach the pairing surface; the per-request gate still restricts what
+  // LAN hosts are served. Loopback-only remains the default for everything
+  // else (plain `2f` / `2f ui`).
+  const lan = opts.lan === true;
+  const host = lan ? "0.0.0.0" : (opts.host ?? "127.0.0.1");
   const interval = opts.interval ?? 250;
+  const lanGateTtlMs = opts.lanGateTtlMs ?? LAN_GATE_TTL_MS;
 
   // The per-runtime credential. Random per process (or injected by tests).
   const authToken = opts.authToken ?? crypto.randomBytes(32).toString("base64url");
+
+  // LAN mode: an in-process instance of the relay protocol, MOUNTED on this
+  // server (it never listens on its own socket). The phone on the same Wi-Fi
+  // talks to the Mac through the exact protocol the hosted relay speaks —
+  // one remote-control implementation, two transports. Its credential state
+  // (tokens, sessions, device identity) persists in .work/relay-state.json,
+  // mode 0600, exactly like the standalone relay's state file.
+  let lanRelay = null;
+  let lanGateCache = { at: 0, enabled: false };
+  async function lanEnabledNow() {
+    const cfgPath = path.join(base, ".work", "relay.json");
+    const nowMs = Date.now();
+    if (nowMs - lanGateCache.at >= lanGateTtlMs) {
+      try {
+        const cfg = JSON.parse(await fs.readFile(cfgPath, "utf8"));
+        lanGateCache = { at: nowMs, enabled: cfg?.enabled === true && cfg?.transport === "lan" };
+      } catch {
+        lanGateCache = { at: nowMs, enabled: false };
+      }
+    }
+    return lanGateCache.enabled;
+  }
+  if (lan) {
+    lanRelay = await createRelayServer({
+      dataFile: path.join(base, ".work", "relay-state.json"),
+      host: "127.0.0.1",
+      port: 0,
+      mount: true,
+      log: opts.relayLog ?? console
+    }).start();
+  }
 
   // One tailer per server: new lines in any task's event log become bus
   // events, so events written by OTHER processes (e.g. `2f allow` in a
@@ -474,11 +559,39 @@ export async function startServer(base = process.cwd(), port = 4242, opts = {}) 
     try {
       const url = new URL(req.url || "/", `http://${host}:${port}`);
 
-      // Local-boundary gate: Host allowlist, Origin, Sec-Fetch-Site. Runs
-      // before ANY routing — a refused request never reaches a handler.
-      if (!guardHost(req, res)) return;
+      // Local-boundary gate: Host allowlist (loopback, or private-LAN while
+      // LAN pairing is active), then Origin, then Sec-Fetch-Site. Runs before
+      // ANY routing — a refused request never reaches a handler.
+      if (!(await guardHostLan(req, res, lanRelay, lanEnabledNow))) return;
       if (!guardOrigin(req, res)) return;
       if (!guardFetchSite(req, res)) return;
+
+      // LAN surface: a phone on the same Wi-Fi gets ONLY the static client
+      // (pairing page + app) and the mounted relay protocol — never the local
+      // API. The shell carries no auth cookie here: the LAN client uses the
+      // relay session, not the per-runtime token.
+      if (lanRelay && isPrivateLanIp(requestHostname(req))) {
+        if (req.method === "GET" && (url.pathname === "/" || ASSETS[url.pathname])) {
+          if (url.pathname === "/") {
+            res.writeHead(200, {
+              "content-type": "text/html; charset=utf-8",
+              "cache-control": "no-store",
+              ...SECURITY_HEADERS
+            });
+            res.end(await readShell(store.base));
+          } else {
+            const [name, type] = ASSETS[url.pathname];
+            res.writeHead(200, {
+              "content-type": type,
+              "cache-control": "no-store",
+              ...SECURITY_HEADERS
+            });
+            res.end(await readAsset(name));
+          }
+          return;
+        }
+        return lanRelay.handler(req, res);
+      }
 
       // The Web shell. Setting the auth cookie here is the bootstrap: the
       // browser stores it (HttpOnly, SameSite=Strict) and attaches it to the
@@ -510,10 +623,20 @@ export async function startServer(base = process.cwd(), port = 4242, opts = {}) 
       }
 
       // The launcher probe: unauthenticated by design, leaks nothing beyond
-      // "this is the local 0x2F runtime". `2f ui` uses it to distinguish a
-      // healthy 0x2F runtime from "another process owns the port".
+      // "this is the local 0x2F runtime" (the workspace path is only visible
+      // to loopback callers; LAN hosts never reach this route). `2f ui` uses
+      // it to distinguish a healthy 0x2F runtime from "another process owns
+      // the port". `lan` tells `2f pair` whether an already-running runtime
+      // has the LAN surface mounted; `base` tells it whether that runtime
+      // belongs to THIS workspace (a foreign runtime on the port must not be
+      // restarted — the pairing falls back to another port instead).
       if (req.method === "GET" && url.pathname === "/api/health") {
-        json(res, { ok: true, mode: "local" });
+        json(res, {
+          ok: true,
+          mode: "local",
+          base: store.base,
+          ...(lanRelay ? { lan: true } : {})
+        });
         return;
       }
 
@@ -740,6 +863,15 @@ export async function startServer(base = process.cwd(), port = 4242, opts = {}) 
     }
   });
 
+  // WebSocket upgrades: only the Mac's relay agent upgrades (its outbound
+  // /ws channel). In LAN mode the agent connects to THIS server; the mounted
+  // relay authenticates the deviceSecret and handles the upgrade. Without
+  // LAN mode there is no /ws surface at all.
+  server.on("upgrade", (req, socket, head) => {
+    if (lanRelay) return lanRelay.handleUpgrade(req, socket, head);
+    socket.destroy();
+  });
+
   // Bind. On failure (e.g. EADDRINUSE) reject with a clear error instead of
   // leaving an unhandled 'error' event — the CLI and `2f ui` distinguish "0x2F
   // already running" from "another process owns the port" from this signal.
@@ -774,8 +906,12 @@ export async function startServer(base = process.cwd(), port = 4242, opts = {}) 
     url,
     port: actualPort,
     runtime,
+    // The mounted LAN relay (null when LAN mode is off) — exposes its state
+    // for tests and operators.
+    relay: lanRelay,
     close: async () => {
       tailer.stop();
+      if (lanRelay) await lanRelay.close().catch(() => {});
       server.closeAllConnections?.();
       await new Promise(resolve => server.close(resolve));
     }

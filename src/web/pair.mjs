@@ -63,7 +63,11 @@ async function pair(code) {
   }
   setBusy(true);
   try {
-    setStatus("Deriving the pairing key…");
+    setStatus("Deriving the pairing key… (a few seconds on this page)");
+    // Yield so the status text paints before the (pure-JS on a plain-http LAN
+    // page) derivation starts — otherwise the phone shows nothing for the
+    // seconds it takes.
+    await new Promise(r => setTimeout(r, 0));
     const raw = await deriveKeyRaw(code, token);
     const key = await importKey(raw);
     const phoneId = randomId();
@@ -125,7 +129,9 @@ async function pair(code) {
 }
 
 go.addEventListener("click", () => {
-  const code = input.value.trim().toUpperCase();
+  // Dashes/whitespace are display grouping only — the derivation uses the
+  // raw code, so "ZEPQ-QN4W-H8NG" and "ZEPQQN4WH8NG4D" are the same code.
+  const code = input.value.trim().toUpperCase().replace(/[-\s]/g, "");
   if (!code) return;
   pair(code);
 });

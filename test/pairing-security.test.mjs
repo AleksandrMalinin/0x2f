@@ -17,6 +17,12 @@ import { WebSocket } from "ws";
 import { createRelayServer } from "../relay/server.mjs";
 import { createRelayAgent } from "../src/relay/agent.mjs";
 import { pairDevice, pairOff, validateRelayUrl } from "../src/relay/pair.mjs";
+import {
+  defaultRelayUrl,
+  defaultClientOrigin,
+  DEFAULT_RELAY_URL,
+  DEFAULT_CLIENT_ORIGIN
+} from "../src/relay/defaults.mjs";
 import { createRuntime } from "../src/runtime.mjs";
 import { createTailer } from "../src/core/events.mjs";
 
@@ -431,17 +437,24 @@ test("2f pair falls back to a fresh identity when the relay rejects the old cred
 
 // --- transport policy --------------------------------------------------------
 
-test("plain-HTTP relay URLs are refused except explicit loopback development", async () => {
-  assert.ok(validateRelayUrl("http://192.168.1.5:8080"));
+test("plain-HTTP relay URLs are refused except loopback and private-LAN development", async () => {
+  // Public / arbitrary http is refused — the deviceSecret must not cross an
+  // unauthenticated network path.
   assert.ok(validateRelayUrl("http://relay.example.com"));
+  assert.ok(validateRelayUrl("http://203.0.113.5:8080"));
   assert.ok(validateRelayUrl("ftp://relay.example.com"));
+  // Loopback development remains allowed.
   assert.equal(validateRelayUrl("http://127.0.0.1:8080"), null);
   assert.equal(validateRelayUrl("http://localhost:8080"), null);
   assert.equal(validateRelayUrl("http://[::1]:8080"), null);
+  // Private-LAN (same-Wi-Fi pairing, v0.5) is allowed.
+  assert.equal(validateRelayUrl("http://10.0.0.5:8080"), null);
+  assert.equal(validateRelayUrl("http://172.16.5.5:8080"), null);
+  assert.equal(validateRelayUrl("http://192.168.1.5:8080"), null);
   assert.equal(validateRelayUrl("https://relay.example.com"), null);
 });
 
-test("2f pair refuses a non-loopback plain-HTTP relay; the agent refuses to connect to one", async t => {
+test("2f pair refuses a public plain-HTTP relay; the agent refuses to connect to one", async t => {
   const base = await fs.mkdtemp(path.join(os.tmpdir(), "work-pairsec-"));
   t.after(() => fs.rm(base, { recursive: true, force: true }));
 
@@ -449,18 +462,18 @@ test("2f pair refuses a non-loopback plain-HTTP relay; the agent refuses to conn
     () =>
       pairDevice({
         base,
-        url: "http://192.168.1.5:8080",
-        ensure: async () => ({ status: "reused", url: "http://192.168.1.5:8080" })
+        url: "http://203.0.113.5:8080",
+        ensure: async () => ({ status: "reused", url: "http://203.0.113.5:8080" })
       }),
     /must use https/
   );
 
-  // A hand-edited config pointing at a plaintext non-loopback relay: the agent
+  // A hand-edited config pointing at a plaintext non-private relay: the agent
   // goes idle instead of sending the deviceSecret over the wire.
   const { handle } = await makeRelay(t);
   const configPath = path.join(base, ".work", "relay.json");
   await writeRelayConfig(configPath, {
-    url: "http://192.168.1.5:9999",
+    url: "http://203.0.113.5:9999",
     enabled: true,
     deviceId: "device-plain",
     deviceSecret: "secret-plain",
@@ -496,4 +509,157 @@ test("relay.json and the relay state file are written with mode 0600", async t =
   await handle.state.flushSave();
   const stateMode = (await fs.stat(dataFile)).mode & 0o777;
   assert.equal(stateMode, 0o600, "relay state.json must be owner-only");
+});
+
+// --- hosted defaults (the `2f pair` real-phone flow) -------------------------
+
+test("hosted defaults are https and pass the relay transport policy", () => {
+  assert.match(DEFAULT_RELAY_URL, /^https:\/\//);
+  assert.match(DEFAULT_CLIENT_ORIGIN, /^https:\/\//);
+  assert.equal(validateRelayUrl(DEFAULT_RELAY_URL), null);
+  // The phone's pairing page is served from the client origin — it must be TLS.
+  assert.equal(new URL(DEFAULT_CLIENT_ORIGIN).protocol, "https:");
+});
+
+test("0X2F_RELAY_URL / 0X2F_CLIENT_ORIGIN override the hosted defaults", t => {
+  const savedRelay = process.env["0X2F_RELAY_URL"];
+  const savedClient = process.env["0X2F_CLIENT_ORIGIN"];
+  t.after(() => {
+    if (savedRelay === undefined) delete process.env["0X2F_RELAY_URL"];
+    else process.env["0X2F_RELAY_URL"] = savedRelay;
+    if (savedClient === undefined) delete process.env["0X2F_CLIENT_ORIGIN"];
+    else process.env["0X2F_CLIENT_ORIGIN"] = savedClient;
+  });
+  process.env["0X2F_RELAY_URL"] = "https://relay.example.com";
+  process.env["0X2F_CLIENT_ORIGIN"] = "https://app.example.com";
+  assert.equal(defaultRelayUrl(), "https://relay.example.com");
+  assert.equal(defaultClientOrigin(), "https://app.example.com");
+  assert.equal(validateRelayUrl(defaultRelayUrl()), null);
+});
+
+test("2f pair with no flags resolves the LAN transport (same Wi-Fi)", async t => {
+  // Deterministic: the env must not leak from the override test above.
+  delete process.env["0X2F_RELAY_URL"];
+  delete process.env["0X2F_CLIENT_ORIGIN"];
+  const base = await fs.mkdtemp(path.join(os.tmpdir(), "work-pairdef-"));
+  t.after(() => fs.rm(base, { recursive: true, force: true }));
+
+  // A fake private-LAN interface list — deterministic regardless of the
+  // machine the suite runs on.
+  const fakeIfaces = () => ({
+    en0: [
+      { family: "IPv4", internal: false, address: "192.168.1.163" },
+      { family: "IPv6", internal: false, address: "fe80::1" }
+    ],
+    lo0: [{ family: "IPv4", internal: true, address: "127.0.0.1" }]
+  });
+
+  const result = await pairDevice({
+    base,
+    waitMs: 50,
+    pollMs: 10,
+    networkInterfaces: fakeIfaces,
+    killImpl: async () => {},
+    ensure: async () => ({ status: "reused", url: "http://127.0.0.1:4242" }),
+    fetchImpl: async url => {
+      if (url.endsWith("/api/health")) {
+        return { ok: true, json: async () => ({ ok: true, mode: "local", base, lan: true }) };
+      }
+      return { ok: true, json: async () => ({ registered: true }) };
+    }
+  });
+  const cfg = JSON.parse(await fs.readFile(path.join(base, ".work", "relay.json"), "utf8"));
+  assert.equal(cfg.transport, "lan");
+  assert.equal(cfg.url, "http://192.168.1.163:4242");
+  assert.equal(cfg.clientOrigin, "http://192.168.1.163:4242");
+  // The printed pairing URL points the phone at the Mac's LAN address — the
+  // runtime IS the relay on the LAN, one origin, one port.
+  assert.ok(result.url.startsWith("http://192.168.1.163:4242/pair?"));
+  assert.ok(result.url.includes(encodeURIComponent("http://192.168.1.163:4242")));
+});
+
+test("2f pair --relay still resolves the hosted transport; --lan forces LAN", async t => {
+  delete process.env["0X2F_RELAY_URL"];
+  delete process.env["0X2F_CLIENT_ORIGIN"];
+  const base = await fs.mkdtemp(path.join(os.tmpdir(), "work-pairdef-"));
+  t.after(() => fs.rm(base, { recursive: true, force: true }));
+
+  const hosted = await pairDevice({
+    base,
+    url: "https://relay.example.com",
+    client: "https://app.example.com",
+    waitMs: 50,
+    pollMs: 10,
+    ensure: async () => ({ status: "reused", url: "http://127.0.0.1:4242" }),
+    fetchImpl: async () => ({ ok: true, json: async () => ({ registered: true }) })
+  });
+  assert.equal(hosted.transport, "hosted");
+  assert.ok(hosted.url.startsWith("https://app.example.com/pair?"));
+
+  // --lan wins even when a hosted pairing is stored.
+  const fakeIfaces = () => ({ en0: [{ family: "IPv4", internal: false, address: "10.1.2.3" }] });
+  const lan = await pairDevice({
+    base,
+    lan: true,
+    waitMs: 50,
+    pollMs: 10,
+    networkInterfaces: fakeIfaces,
+    killImpl: async () => {},
+    ensure: async () => ({ status: "reused", url: "http://127.0.0.1:4242" }),
+    fetchImpl: async url => {
+      if (url.endsWith("/api/health")) {
+        return { ok: true, json: async () => ({ ok: true, mode: "local", base, lan: true }) };
+      }
+      if (url.includes("/api/devices/rotate")) {
+        return { ok: true, json: async () => ({ ok: true, generation: 2 }) };
+      }
+      return { ok: true, json: async () => ({ registered: true }) };
+    }
+  });
+  assert.equal(lan.transport, "lan");
+  assert.ok(lan.url.startsWith("http://10.1.2.3:4242/pair?"));
+});
+
+test("2f pair with no LAN address fails closed with a clear message", async t => {
+  delete process.env["0X2F_RELAY_URL"];
+  delete process.env["0X2F_CLIENT_ORIGIN"];
+  const base = await fs.mkdtemp(path.join(os.tmpdir(), "work-pairdef-"));
+  t.after(() => fs.rm(base, { recursive: true, force: true }));
+
+  await assert.rejects(
+    () =>
+      pairDevice({
+        base,
+        waitMs: 50,
+        pollMs: 10,
+        networkInterfaces: () => ({ lo0: [{ family: "IPv4", internal: true, address: "127.0.0.1" }] }),
+        ensure: async () => ({ status: "reused", url: "http://127.0.0.1:4242" })
+      }),
+    /No private LAN address found/
+  );
+});
+
+test("a plain-HTTP env override of the relay default is still refused", async t => {
+  const savedRelay = process.env["0X2F_RELAY_URL"];
+  const savedClient = process.env["0X2F_CLIENT_ORIGIN"];
+  t.after(() => {
+    if (savedRelay === undefined) delete process.env["0X2F_RELAY_URL"];
+    else process.env["0X2F_RELAY_URL"] = savedRelay;
+    if (savedClient === undefined) delete process.env["0X2F_CLIENT_ORIGIN"];
+    else process.env["0X2F_CLIENT_ORIGIN"] = savedClient;
+  });
+  process.env["0X2F_RELAY_URL"] = "http://relay.example.com";
+  const base = await fs.mkdtemp(path.join(os.tmpdir(), "work-pairdef-"));
+  t.after(() => fs.rm(base, { recursive: true, force: true }));
+
+  await assert.rejects(
+    () =>
+      pairDevice({
+        base,
+        waitMs: 50,
+        pollMs: 10,
+        ensure: async () => ({ status: "reused", url: "http://127.0.0.1:4242" })
+      }),
+    /must use https/
+  );
 });

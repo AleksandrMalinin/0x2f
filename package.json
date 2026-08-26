@@ -29,10 +29,14 @@
   "homepage": "https://github.com/AleksandrMalinin/0x2f#readme",
   "scripts": {
     "start": "node src/cli.mjs",
-    "check": "find src test relay \\( -name '*.mjs' -o -name '*.js' \\) -exec node --check {} \\;",
-    "test": "node --test \"test/*.test.mjs\""
+    "check": "find src test relay scripts deploy -name node_modules -prune -o \\( -name '*.mjs' -o -name '*.js' \\) -exec node --check {} \\;",
+    "test": "node --test \"test/*.test.mjs\"",
+    "build:client": "node deploy/client/build.mjs",
+    "verify:phone": "node scripts/verify-phone.mjs"
   },
   "dependencies": {
+    "@noble/ciphers": "^1.3.0",
+    "@noble/hashes": "^1.8.0",
     "ws": "^8.21.3"
   }
 }

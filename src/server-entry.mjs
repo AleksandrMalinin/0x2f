@@ -17,6 +17,7 @@
 // written by `2f pair`.
 
 import path from "node:path";
+import fs from "node:fs/promises";
 import { startServer } from "./server.mjs";
 import { createRelayAgent } from "./relay/agent.mjs";
 
@@ -24,8 +25,22 @@ const [, , base, portArg] = process.argv;
 const port = portArg ? Number(portArg) : 4242;
 
 try {
-  const handle = await startServer(base, port);
-  console.log(`0x2F UI: ${handle.url}`);
+  // LAN-first pairing (v0.5): when `.work/relay.json` was written by
+  // `2f pair` with the LAN transport, this runtime is the Mac's own relay —
+  // it binds the LAN interface and serves the phone the pairing page +
+  // relay protocol (see src/server.mjs). A loopback-only runtime cannot
+  // serve the phone, so `2f pair` restarts it when needed.
+  let lan = false;
+  try {
+    const cfg = JSON.parse(
+      await fs.readFile(path.join(base, ".work", "relay.json"), "utf8")
+    );
+    lan = cfg?.enabled === true && cfg?.transport === "lan";
+  } catch {
+    /* no pairing config — loopback-only runtime, as before */
+  }
+  const handle = await startServer(base, port, { lan });
+  console.log(`0x2F UI: ${handle.url}${lan ? " (LAN pairing on)" : ""}`);
   // The HTTP server keeps the event loop alive — this process runs until
   // it is killed (the runtime, like a local app, does not exit on its own).
   const agent = createRelayAgent({

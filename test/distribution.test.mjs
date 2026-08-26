@@ -238,7 +238,10 @@ test("the packed artifact supports the full first-install journey", async t => {
   assert.match(ui.stdout, new RegExp(`0x2F UI: http://127\\.0\\.0\\.1:${port}`));
 
   // Wait for health, then exercise the browser path: the shell mints the
-  // auth cookie, the API is token-gated, task state is reachable.
+  // auth cookie, the API is token-gated, task state is reachable. Health also
+  // reports the workspace path (loopback-only; the shell bootstrap already
+  // carries it to the local browser) so `2f pair` can recognize a
+  // same-workspace runtime when choosing a LAN port.
   let health = null;
   for (let i = 0; i < 40; i++) {
     try {
@@ -249,7 +252,7 @@ test("the packed artifact supports the full first-install journey", async t => {
       await new Promise(r => setTimeout(r, 250));
     }
   }
-  assert.deepEqual(health, { ok: true, mode: "local" });
+  assert.deepEqual(health, { ok: true, mode: "local", base: await fsp.realpath(proj) });
   assert.equal((await fetch(`http://127.0.0.1:${port}/api/tasks`)).status, 401);
   const shell = await fetch(`http://127.0.0.1:${port}/`);
   assert.ok(shell.headers.get("set-cookie")?.includes("0x2f_auth="), "shell must set the auth cookie");

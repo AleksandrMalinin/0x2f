@@ -460,7 +460,13 @@ test("the health probe is unauthenticated but Host-guarded; static assets carry 
   try {
     const health = await fetch(handle.url + "/api/health");
     assert.equal(health.status, 200);
-    assert.deepEqual(await health.json(), { ok: true, mode: "local" });
+    // Unauthenticated, but the ONLY thing beyond the mode is the workspace
+    // path — which the browser shell bootstrap and the AUTHENTICATED
+    // /api/status already carry, and which LAN hosts never see (the LAN
+    // surface serves the relay protocol, not this route). `2f pair` uses
+    // `base` to tell a same-workspace runtime from a foreign one when it must
+    // choose a LAN port.
+    assert.deepEqual(await health.json(), { ok: true, mode: "local", base });
 
     const rebound = await rawRequest({
       port: handle.port,

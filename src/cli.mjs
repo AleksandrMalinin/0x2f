@@ -20,6 +20,7 @@ import {
 } from "./render.mjs";
 import { launchUi } from "./ui.mjs";
 import { pairDevice, pairOff } from "./relay/pair.mjs";
+import { formatCode } from "./web/e2e.mjs";
 import { unavailableMessage } from "./providers/index.mjs";
 
 function help() {
@@ -38,11 +39,11 @@ Commands:
   2f reject <id>    decline the requested change
   2f answer <id> <answer>   answer a NEEDS YOU decision (not allow/reject)
   2f close <id>      stop working on a task; moves it to DONE
-  2f pair [--relay <url>] [--client <url>]   pair this Mac with the 0x2F relay for
-                          remote control from your phone (--off revokes remote
-                          access at the relay and disables the connection;
-                          --client sets the phone-client origin, default the
-                          local runtime)
+  2f pair [--relay <url>] [--client <url>] [--lan]   pair this Mac for phone control over
+                          the same Wi-Fi: prints a phone-openable URL + one-time code
+                          (default; --relay/--client or 0X2F_RELAY_URL/0X2F_CLIENT_ORIGIN
+                          pair through a hosted relay instead; --lan forces LAN;
+                          --off revokes remote access and disables the connection)
   2f providers      list execution providers (native + configured)
   2f ui [port]      open the Web UI (start the runtime if needed; --no-browser
                     starts it without opening a browser)
@@ -88,6 +89,8 @@ function parseFlags(args) {
       flags.port = arg.slice("--port=".length);
     } else if (arg === "--off") {
       flags.off = true;
+    } else if (arg === "--lan") {
+      flags.lan = true;
     } else if (arg === "--no-browser") {
       flags.noBrowser = true;
     } else {
@@ -481,29 +484,48 @@ async function main() {
     return;
   }
 
-  // `2f pair [--relay <url>] [--client <url>] [--port <n>]` — one-time
-  // pairing for remote control from a phone. Prints a short-lived URL and the
-  // E2E pairing code; the phone opens the URL once and types the code into
-  // the trusted client page. `--off` revokes remote access.
+  // `2f pair [--relay <url>] [--client <url>] [--lan] [--port <n>]` — one-time
+  // pairing for remote control from a phone. v0.5 pairs over the local
+  // network by default (same Wi-Fi); `--relay` / `--client` (or the
+  // 0X2F_RELAY_URL / 0X2F_CLIENT_ORIGIN env vars) pair through a hosted
+  // relay. Prints a phone-openable URL and the E2E pairing code; the phone
+  // opens the URL once and types the code into the trusted client page.
+  // `--off` revokes remote access.
   if (command === "pair") {
     await requireProject(base);
     const { flags } = parseFlags(args);
     if (flags.off) {
       await pairOff({ base });
       console.log("Remote control revoked at the relay and disabled locally.");
-      console.log('Re-enable with: 2f pair --relay <url>');
+      console.log('Re-enable with: 2f pair');
       return;
     }
     const port = flags.port ? Number(flags.port) : 4242;
     if (!Number.isFinite(port)) {
-      throw new Error('Usage: 2f pair [--relay <url>] [--client <url>] [--port <n>]');
+      throw new Error('Usage: 2f pair [--relay <url>] [--client <url>] [--lan] [--port <n>]');
     }
-    const result = await pairDevice({ base, url: flags.relay, client: flags.client, port });
-    console.log("Open this URL on your phone (the pairing page is served by the");
-    console.log("client origin — never by the relay):");
-    console.log(`  ${result.url}`);
-    console.log("");
-    console.log(`Pairing code:  ${result.code}`);
+    const result = await pairDevice({
+      base,
+      url: flags.relay,
+      client: flags.client,
+      port,
+      lan: flags.lan
+    });
+    if (result.transport === "lan") {
+      console.log("0x2F PAIR");
+      console.log("");
+      console.log("same Wi-Fi required");
+      console.log("");
+      console.log(`  ${result.url}`);
+      console.log("");
+      console.log(`code  ${formatCode(result.code)}`);
+    } else {
+      console.log("Open this URL on your phone (the pairing page is served by the");
+      console.log("client origin — never by the relay):");
+      console.log(`  ${result.url}`);
+      console.log("");
+      console.log(`Pairing code:  ${formatCode(result.code)}`);
+    }
     console.log(`It expires ${result.expiresAt} and is one-time — a second phone re-pairs with 2f pair again.`);
     if (!result.registered) {
       console.log("The relay has not confirmed the token yet — it will register as soon as the agent connects.");

@@ -231,23 +231,38 @@ function richBody(text) {
 // talks to the relay as an opaque broker over E2E-encrypted envelopes. When
 // a previous pairing is stored, every API call is a signed command the Mac
 // verifies; the relay cannot read or forge anything.
+//
+// `createRemoteClient` is async (key import), so there is a window after
+// boot where the pairing exists but `remoteClient` is not yet assigned.
+// `remoteReady` lets the boot path (loadAll/connect/api) WAIT for it instead
+// of falling back to the local API — on a LAN/remote origin that fallback
+// would hit the relay and 404.
 const remoteState = loadRemoteState();
 let remoteClient = null;
+let remoteReady = null;
 if (remoteState) {
-  createRemoteClient(remoteState).then(client => {
-    remoteClient = client;
-  }).catch(() => {
-    // Key material unusable — drop the pairing and fall back to local mode.
-    try {
-      localStorage.removeItem("0x2f.remote");
-    } catch {
-      /* storage unavailable */
-    }
-  });
+  remoteReady = createRemoteClient(remoteState)
+    .then(client => {
+      remoteClient = client;
+    })
+    .catch(() => {
+      // Key material unusable — drop the pairing and fall back to local mode.
+      try {
+        localStorage.removeItem("0x2f.remote");
+      } catch {
+        /* storage unavailable */
+      }
+    });
 }
 
 async function api(path, options) {
   if (remoteClient) return remoteClient.api(path, options);
+  if (remoteState) {
+    // A pairing is stored but the client is still coming up (or was dropped
+    // as unusable). Never fall back to the local API from a remote origin.
+    await remoteReady;
+    if (remoteClient) return remoteClient.api(path, options);
+  }
   const opts = { ...options };
   // Every mutating request carries a unique idempotency key. The relay
   // forwards it as the command requestId and the Mac never executes the same
@@ -289,7 +304,17 @@ async function checkStatus() {
     } else {
       const res = await fetch("/api/status");
       if (res.status === 401) {
-        location.href = "/"; // session lost — the relay serves the pairing page
+        // No usable session on this origin. On the loopback runtime the
+        // shell re-issues the auth cookie on reload; from a LAN/remote
+        // origin there is no local API — send the visitor to the pairing
+        // page instead of looping on "/".
+        const hostname = location.hostname;
+        const loopback =
+          hostname === "127.0.0.1" ||
+          hostname === "localhost" ||
+          hostname === "[::1]" ||
+          hostname === "::1";
+        location.href = loopback ? "/" : "/pair";
         return;
       }
       if (res.ok) info = await res.json();
@@ -509,6 +534,24 @@ function persistRemoteCache() {
 }
 
 async function loadAll() {
+  if (remoteState) {
+    // The phone's data path is remote — wait for the client instead of
+    // bootstrapping against the local API (which does not exist on a
+    // LAN/remote origin).
+    await remoteReady;
+    if (!remoteClient) {
+      const hostname = location.hostname;
+      const loopback =
+        hostname === "127.0.0.1" ||
+        hostname === "localhost" ||
+        hostname === "[::1]" ||
+        hostname === "::1";
+      if (!loopback) {
+        location.href = "/pair"; // pairing was dropped — re-pair
+        return;
+      }
+    }
+  }
   if (remoteClient) {
     try {
       const snap = await remoteClient.snapshot();
@@ -2204,7 +2247,8 @@ function onKeyDown(event) {
 
 // --- live stream -----------------------------------------------------------
 
-function connect() {
+async function connect() {
+  if (remoteState) await remoteReady;
   if (remoteClient) {
     remoteConnect();
     return;

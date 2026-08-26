@@ -146,12 +146,15 @@ export function createPhoneClient({ relayUrl, session, phoneId, deviceId, key, r
       return res.json();
     },
     // Decrypt Mac envelopes from the SSE stream; resolves when aborted.
-    async events(onMessage, { signal } = {}) {
+    // `onOpen` fires once the stream response has started (so a caller can
+    // trigger work after the subscription is live, not before).
+    async events(onMessage, { signal, onOpen } = {}) {
       const res = await fetch(`${relayUrl}/api/events`, {
         headers: { authorization: "Bearer " + session },
         signal
       });
       if (!res.ok) throw new Error(`SSE HTTP ${res.status}`);
+      onOpen?.();
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
