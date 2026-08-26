@@ -408,7 +408,15 @@ test("the browser client's full module graph is served (no blank-page regression
     const origin = new URL(handle.url).origin;
     const seen = new Set();
     const queue = ["/app/app.js", "/app/pair.mjs"];
-    const specRE = /\bimport\s+(?:[^"'\n]*?\s+from\s+)?["']([^"']+)["']/g;
+    // Strip comments first (an import-looking word in a comment is not an
+    // import) and allow newlines inside the import statement — multi-line
+    // `import {\n ...\n} from "..."` (the ledger import is exactly that)
+    // would otherwise be missed and the walk would stop short of the module.
+    const stripComments = src =>
+      src
+        .replace(/\/\*[\s\S]*?\*\//g, "")
+        .replace(/(^|[^:])\/\/.*$/gm, "$1");
+    const specRE = /\bimport\s+(?:[^"']*?\s+from\s+)?["']([^"']+)["']/g;
 
     while (queue.length) {
       const path = queue.shift();
@@ -417,7 +425,7 @@ test("the browser client's full module graph is served (no blank-page regression
 
       const res = await apiFetch(handle.url + path);
       assert.equal(res.status, 200, `module must be served: ${path}`);
-      const text = await res.text();
+      const text = stripComments(await res.text());
       for (const match of text.matchAll(specRE)) {
         const spec = match[1];
         if (!spec || spec.startsWith("http:") || spec.startsWith("https:")) continue;
@@ -427,12 +435,11 @@ test("the browser client's full module graph is served (no blank-page regression
       }
     }
 
-    // The relay client protocol module the E2E envelope code imports must be
-    // part of the graph — the historical blank-page regression.
-    assert.ok(
-      seen.has("/relay/protocol.mjs"),
-      "e2e.mjs's relay protocol import must be served by the local runtime"
-    );
+    // Modules the browser client imports from outside src/web must be part
+    // of the graph — the historical blank-page regressions.
+    for (const required of ["/relay/protocol.mjs", "/core/title.mjs"]) {
+      assert.ok(seen.has(required), `${required} must be served by the local runtime`);
+    }
   } finally {
     await handle.close();
     await fs.rm(base, { recursive: true, force: true });
