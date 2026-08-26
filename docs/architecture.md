@@ -322,10 +322,14 @@ detects remote mode from the stored pairing and never queues commands.
 
 ## Remote control — `src/relay/`, `relay/`, `src/web/`
 
-- `pair.mjs` — `2f pair`: ensures `.work/relay.json` (stable `deviceId` +
-  long-lived `deviceSecret`), rotates the credential at the relay, generates a
-  short-lived one-time token **and a pairing code**, and prints the client
-  origin URL + code. `2f pair --off` revokes remote access at the relay.
+- `pair.mjs` — `2f pair`: LAN-first by default (v0.5) — detects the Mac's
+  private LAN address and writes `.work/relay.json` (stable `deviceId` +
+  long-lived `deviceSecret`) with the LAN transport, so the Mac's own runtime
+  serves the phone. `--relay <url>` / `--client <url>` (or the
+  `0X2F_RELAY_URL` / `0X2F_CLIENT_ORIGIN` env vars) keep the hosted path.
+  Either way it rotates the credential at the relay, generates a short-lived
+  one-time token **and a pairing code**, and prints the pairing URL + code.
+  `2f pair --off` revokes remote access at the relay.
 - `agent.mjs` — the outbound link, an in-process module of the UI runtime.
   It subscribes to the normalized event bus, projects events to the REMOTE
   (redacted) shape, encrypts them, and executes remote commands **through the
@@ -337,22 +341,35 @@ detects remote mode from the stored pairing and never queues commands.
 - `protocol.mjs` — the versioned wire contract. `hello` frames carry
   transport auth (deviceSecret); `relay` frames are opaque AES-256-GCM
   envelopes between the phone and the Mac.
-- `e2e.mjs` — the shared (Node + browser Web Crypto) primitives: pairing code
-  → PBKDF2-SHA256 (600k iterations, code + token salt) → AES-256-GCM with a
-  fixed byte encoding for the authenticated metadata.
+- `e2e.mjs` — the shared (Node + browser) primitives: pairing code →
+  PBKDF2-SHA256 (600k iterations, code + token salt) → AES-256-GCM with a
+  fixed byte encoding for the authenticated metadata. WebCrypto's `subtle`
+  API is secure-context only, so a plain-http LAN phone page falls back to
+  the vendored pure-JS implementation (`src/web/vendor/`, @noble) — byte
+  identical to WebCrypto, pinned by tests; the derivation yields to the
+  event loop so the phone UI stays responsive.
 - `project.mjs` — the single data-minimization boundary: what the phone
   receives (redacted tasks/events, relative paths, truncated prose) versus
   what stays on the Mac (`blockedOn.raw`, complete tool inputs, edit diffs,
   session ids, absolute paths, the workspace `base`).
-- `relay/server.mjs` — the standalone relay: an **opaque broker**. Pairing
-  tokens/sessions (expiry + generation-bound), Mac authentication, online/
-  offline status, and routing of opaque envelopes (`/api/command`, SSE). It
-  holds **no task/event/result content**, cannot decrypt or forge anything,
-  and **never queues commands** — offline is an explicit 503.
+- `src/relay/server.mjs` — the SHARED relay implementation: an **opaque
+  broker** (pairing tokens/sessions with expiry + generation binding, Mac
+  authentication, online/offline status, routing of opaque envelopes via
+  `/api/command` + SSE). It holds **no task/event/result content**, cannot
+  decrypt or forge anything, and **never queues commands** — offline is an
+  explicit 503. It runs two ways: mounted **in-process** by the local
+  runtime for LAN pairing (`mount: true` — the Mac's runtime IS the relay on
+  the same Wi-Fi, one origin), and standalone behind TLS as the hosted relay
+  (`relay/server.mjs` is the private deployment wrapper, never shipped in the
+  npm package).
 
 ```text
-Phone client (client origin, trusted) ── HTTPS + E2E envelopes ──► Relay ◄──
-                     outbound WSS ── Mac agent (verifies every command)
+LAN (v0.5 default)   phone ── http://<mac's LAN IP>:4242 ──► Mac runtime
+                       (pairing page + relay protocol, in-process mount)
+
+Hosted (future/remote)
+  Phone client (client origin, trusted) ── HTTPS + E2E envelopes ──► Relay ◄──
+                       outbound WSS ── Mac agent (verifies every command)
 ```
 
 ## Security boundary
@@ -379,6 +396,17 @@ malicious at the moment of pairing AND serves a modified client to the phone
 can capture the code (the ceremony is the trust anchor — ship the client from
 a static origin you control; a native app would fully remove this). See
 [`relay/README.md`](../relay/README.md) for the deployment statement.
+
+**LAN mode is explicit and bounded.** The LAN surface exists only while a LAN
+pairing is active (`2f pair` writes the config; `2f pair --off` closes it
+within a second), only on private-LAN addresses (RFC 1918: 10/8, 172.16/12,
+192.168/16), and serves only the static client + the relay protocol — the
+normal local API stays loopback-only, so `2f ui` is never reachable from
+other LAN devices. Plain `http://` on the LAN is the documented same-Wi-Fi
+tradeoff (a passive observer sees only AES-GCM ciphertext; an ACTIVE attacker
+on the network could intercept the pairing page, since the pairing code is
+typed into it) — LAN pairing is for trusted networks. The hosted relay
+remains HTTPS-only.
 
 ## Persistence layout
 

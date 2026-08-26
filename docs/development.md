@@ -21,8 +21,14 @@ src/
     agent.mjs         remote-control agent: outbound WS; verifies every command
                       (AES-GCM + freshness + persisted idempotency), sends the
                       redacted encrypted projection
-    pair.mjs          `2f pair`: pairing code + client-origin URL, credential
-                      rotation, revocation
+    pair.mjs          `2f pair`: pairing code + pairing URL, credential rotation,
+                      revocation; LAN-first (detects the Mac's LAN address) with
+                      the hosted relay available via --relay/--client/env
+    lan.mjs           LAN transport helpers (private IPv4 detection)
+    server.mjs        the SHARED relay implementation: mounted in-process by the
+                      runtime for LAN pairing (mount: true), or standalone
+                      (relay/server.mjs wraps it for the private deployment)
+    defaults.mjs      hosted-endpoint defaults (env-overridable)
     protocol.mjs      the versioned wire contract (hello + opaque relay frames)
     project.mjs       the remote data-minimization projection (what leaves the Mac)
   core/
@@ -47,7 +53,9 @@ src/
     pair.html/pair.mjs  the pairing ceremony page (client origin only)
     app.js            browser client (fetch + SSE + DOM; remote mode adapter)
     remote.mjs        the remote transport: E2E envelopes, SSE reader, cache
-    e2e.mjs           shared Node/browser crypto: PBKDF2 code → AES-256-GCM
+    e2e.mjs           shared Node/browser crypto: PBKDF2 code → AES-256-GCM;
+                      pure-JS fallback (src/web/vendor/) for plain-http LAN pages
+    vendor/           vendored @noble crypto for the fallback (scripts/vendor-crypto.mjs)
     ledger.mjs        pure event → ledger projection (shared with tests)
     sound-policy.mjs  when 0x2F may make a sound (pure, testable)
     sound.mjs         the slash — Web Audio, no assets
@@ -150,7 +158,8 @@ are in `src/core/lifecycle.mjs`.
 cd relay && npm install
 node server.mjs --port 8080 --data ./data/state.json
 # in another terminal, in a workspace:
-2f pair --relay http://127.0.0.1:8080
+2f pair          # LAN-first (same Wi-Fi) — the runtime is its own relay
+2f pair --relay http://127.0.0.1:8080   # or against a local relay for dev
 ```
 
 See [`docs/remote-control.md`](remote-control.md) for the full walkthrough
