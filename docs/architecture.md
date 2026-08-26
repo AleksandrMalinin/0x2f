@@ -305,7 +305,8 @@ surface is served with a restrictive CSP and no external dependencies.
 
 `index.html` + `app.js` (DOM + transport) + `ledger.mjs` (pure event →
 ledger projection, shared with the Node tests) + `sound-policy.mjs` /
-`sound.mjs` (the one sound: READY one stroke, NEEDS YOU two). The client
+`sound.mjs` (the one sound: READY one stroke, NEEDS YOU two — audible only
+while the page does NOT have focus; on screen, the "/" pulse alone). The client
 fetches state and calls actions; it never decides what a status means. Every
 mark on the execution trace corresponds to one real event — nothing is
 inferred from absence, and the ACTIVITY / FILES / COMMANDS bands exist only

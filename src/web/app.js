@@ -378,13 +378,25 @@ function post(path) {
 const slash = createSlashPlayer();
 const policy = createSoundPolicy({ onIntent: handleIntent });
 
+// A sound exists to reach the human who is NOT looking. While this page is
+// the surface they are actually on, the "/" pulse already says it — sounding
+// as well is an interruption for something the eye has in front of it. A
+// page that is merely visible (a second window, a monitor off to the side)
+// still sounds: `hasFocus()` is the honest test for "you are here", not
+// `hidden`, which is only true once the tab is fully out of sight.
+function pageHasAttention() {
+  if (document.hidden) return false;
+  return typeof document.hasFocus === "function" ? document.hasFocus() : true;
+}
+
 function handleIntent(intent) {
+  const watching = pageHasAttention();
   if (intent.type === "needs_you") {
-    if (state.soundOn) slash.needsYou();
+    if (state.soundOn && !watching) slash.needsYou();
     pulse("needs_you");
     if (state.notifyOn && document.hidden) notifyNeedsYou(intent);
   } else {
-    if (state.soundOn) slash.ready();
+    if (state.soundOn && !watching) slash.ready();
     pulse("ready");
   }
 }
@@ -955,9 +967,11 @@ function renderTrack(row, accent) {
     "div",
     { class: "track-brackets" },
     t.brackets.map(b =>
-      el("div", { class: "track-bracket", style: { left: b.x, width: b.w } }, [
-        el("span", { class: "track-bracket-label", text: b.label })
-      ])
+      el(
+        "div",
+        { class: "track-bracket", style: { left: b.x, width: b.w } },
+        b.label ? [el("span", { class: "track-bracket-label", text: b.label })] : []
+      )
     )
   );
 
@@ -986,9 +1000,11 @@ function renderProvenance(row, accent) {
     "div",
     { class: "track-brackets" },
     p.brackets.map(b =>
-      el("div", { class: "track-bracket", style: { left: b.x, width: b.w } }, [
-        el("span", { class: "track-bracket-label", text: b.label })
-      ])
+      el(
+        "div",
+        { class: "track-bracket", style: { left: b.x, width: b.w } },
+        b.label ? [el("span", { class: "track-bracket-label", text: b.label })] : []
+      )
     )
   );
   return el("div", { class: "provenance-wrap" }, [
@@ -1574,7 +1590,9 @@ function renderChrome(ledger, accent) {
           class: "setting",
           onClick: toggleSound,
           text: state.soundOn ? "SOUND ON" : "SOUND OFF",
-          title: state.soundOn ? "the slash is on" : "silent — no audio at all"
+          title: state.soundOn
+            ? "the slash sounds when you are away — silent while this page has focus"
+            : "silent — no audio at all"
         }),
         renderNotifyControl()
       ]),

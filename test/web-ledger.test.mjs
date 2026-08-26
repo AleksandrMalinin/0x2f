@@ -401,6 +401,39 @@ test("brackets: two separated runs of edits give two brackets", () => {
   assert.equal(out.length, 2);
 });
 
+test("brackets: labels that would print on top of each other are dropped, not stacked", () => {
+  // Three edit runs a couple of marks apart: every bracket still draws, but
+  // only the ones far enough apart to fit the word carry it. Two labels at
+  // the same few pixels used to render one on top of the other.
+  const events = log([
+    ["file.changed", 1, { path: "a.ts" }],
+    ["tool.started", 2, { name: "Bash", input: { command: "npm test" } }],
+    ["file.changed", 3, { path: "b.ts" }],
+    ["tool.started", 4, { name: "Bash", input: { command: "npm test" } }],
+    ["file.changed", 5, { path: "c.ts" }]
+  ]);
+  const { steps } = toSteps(task(), events);
+  const laid = trace(steps, { live: false, finished: true });
+  const out = brackets(laid.units, { supportsFileChanges: true }, laid.cells);
+  assert.equal(out.length, 3);
+  assert.deepEqual(out.map(b => b.label), ["CHANGES", null, null]);
+
+  // Far apart, both spans are labelled: the rule is distance, not "first only".
+  const spread = log([
+    ["file.changed", 1, { path: "a.ts" }],
+    ...Array.from({ length: 12 }, (_, i) => [
+      "tool.started",
+      i + 2,
+      { name: "Bash", input: { command: "npm test" } }
+    ]),
+    ["file.changed", 20, { path: "b.ts" }]
+  ]);
+  const spreadSteps = toSteps(task(), spread).steps;
+  const spreadLaid = trace(spreadSteps, { live: false, finished: true });
+  const spreadOut = brackets(spreadLaid.units, { supportsFileChanges: true }, spreadLaid.cells);
+  assert.deepEqual(spreadOut.map(b => b.label), ["CHANGES", "CHANGES"]);
+});
+
 test("brackets: zero evidence in the tail is a valid, complete reading", () => {
   const events = log([["tool.started", 1, { name: "Read", input: { file_path: "a.ts" } }]]);
   const { steps } = toSteps(task(), events);

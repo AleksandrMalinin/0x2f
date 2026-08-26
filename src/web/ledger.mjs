@@ -616,19 +616,30 @@ function contiguousRuns(list, predicate) {
   return runs;
 }
 
+// A label is drawn at its own bracket's left edge and never wraps, so two
+// brackets closer together than the label is wide would print one word on
+// top of the other. The projection decides here which spans can carry the
+// word: the rest stay bracketed but unlabelled (`label: null`), so the
+// shape still reads and the text never collides.
+const BRACKET_LABEL_W = 56; // "CHANGES" at 9.5px/.14em in the mono face, plus a gap
+
 // `units` and `cells` come from the SAME trace() call (units[i] <-> cells[i]
 // for i < units.length) so a bracket's pixels always agree with what is
 // actually drawn.
 export function brackets(units, caps = {}, cells = []) {
   const out = [];
   if (caps?.supportsFileChanges === true) {
+    let labelledX = -Infinity;
     for (const span of contiguousRuns(units, s => markClass(s) === "change")) {
       const from = cells[span.from];
       const to = cells[span.to];
       if (!from || !to) continue;
+      const x = Math.round(from.x);
+      const room = x - labelledX >= BRACKET_LABEL_W;
+      if (room) labelledX = x;
       out.push({
-        label: "CHANGES",
-        x: Math.round(from.x) + "px",
+        label: room ? "CHANGES" : null,
+        x: x + "px",
         w: Math.round(to.x + parseFloat(to.w) - from.x) + "px"
       });
     }
