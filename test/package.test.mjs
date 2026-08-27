@@ -63,6 +63,7 @@ test("the packed artifact ships only the local product", () => {
   for (const needed of [
     "src/server.mjs",
     "src/cli.mjs",
+    "src/tui/index.mjs",
     "src/web/app.js",
     "src/web/index.html",
     "src/web/pair.html",

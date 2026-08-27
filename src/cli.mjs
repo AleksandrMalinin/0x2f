@@ -19,6 +19,7 @@ import {
   renderProviders
 } from "./render.mjs";
 import { launchUi } from "./ui.mjs";
+import { runTui } from "./tui/index.mjs";
 import { pairDevice, pairOff } from "./relay/pair.mjs";
 import { formatCode } from "./web/e2e.mjs";
 import { unavailableMessage } from "./providers/index.mjs";
@@ -47,6 +48,9 @@ Commands:
   2f providers      list execution providers (native + configured)
   2f ui [port]      open the Web UI (start the runtime if needed; --no-browser
                     starts it without opening a browser)
+  2f tui [--light]  open the terminal client: the whole ledger, one task in
+                    full, and the action it is waiting for — the same runtime
+                    the Web UI and the phone speak to
 
 Providers: auto (routing), claude-code (default), codex, deepseek-harness, gemini
 Configured: ACP/command providers from .work/providers/*.json
@@ -93,6 +97,8 @@ function parseFlags(args) {
       flags.lan = true;
     } else if (arg === "--no-browser") {
       flags.noBrowser = true;
+    } else if (arg === "--light") {
+      flags.light = true;
     } else {
       rest.push(arg);
     }
@@ -481,6 +487,18 @@ async function main() {
     if (!result.opened) {
       console.log(`Open ${result.url} in your browser.`);
     }
+    return;
+  }
+
+  // `2f tui` — the terminal client. Another CLIENT of the same runtime, not
+  // another runtime: it builds `createRuntime(base)` exactly as every other
+  // command here does, calls the SAME shared actions, and tails the same
+  // event logs the Web server tails. Nothing about task semantics is decided
+  // in src/tui. The default `2f` behavior is unchanged — this is opt-in.
+  if (command === "tui") {
+    await requireProject(base);
+    const { flags } = parseFlags(args);
+    await runTui({ base, theme: flags.light ? "light" : "dark" });
     return;
   }
 
