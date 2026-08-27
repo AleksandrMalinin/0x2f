@@ -87,6 +87,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { URL } from "node:url";
 import { createRuntime } from "./runtime.mjs";
+import { deriveWorkspace } from "./project.mjs";
 import { createTailer } from "./core/events.mjs";
 import { WorkError } from "./core/errors.mjs";
 import { MAX_BODY_BYTES } from "./core/limits.mjs";
@@ -300,14 +301,8 @@ async function readAsset(name) {
 // The chrome already answers "which machine" (the runtime host) and never
 // answered "which checkout" — two 0x2F tabs against different repositories
 // are visually identical. `base` was already returned by /api/status, but
-// nothing rendered it. `label` is the basename the client displays; `path`
-// is the full absolute path, used ONLY as a local `title` attribute (never
-// sent to the relay — see src/relay/project.mjs, which deliberately strips
-// `base` from every remote payload).
-function deriveWorkspace(base) {
-  const label = path.basename(base) || base;
-  return { label, path: base };
-}
+// nothing rendered it. The derivation itself lives in project.mjs, so the
+// Web shell and the TUI name the same checkout the same way.
 
 // "Which machine" for a message that must say so ("<provider> needs to be
 // re-authenticated on <node>" — §01). os.hostname() works with no pairing
@@ -448,28 +443,10 @@ function sendSse(res, event) {
 
 // Read every task's event log once. The tailer diffs against what it has
 // already emitted, so this is cheap even on a workspace with many tasks.
+// The read itself belongs to the store (the only module that knows the
+// `.work` layout) — the TUI tails the same logs through the same call.
 function makeReadLines(store) {
-  return async () => {
-    const dir = store.tasksDir();
-    let entries;
-    try {
-      entries = await fs.readdir(dir, { withFileTypes: true });
-    } catch {
-      return [];
-    }
-    const out = [];
-    for (const entry of entries) {
-      if (!entry.isDirectory()) continue;
-      const logPath = path.join(dir, entry.name, "events.jsonl");
-      try {
-        const text = await fs.readFile(logPath, "utf8");
-        out.push({ slug: entry.name, text });
-      } catch {
-        // no event log yet for this task
-      }
-    }
-    return out;
-  };
+  return () => store.readEventLogs();
 }
 
 // Newest MAX_HISTORY events per task. A long-running task can write a lot of

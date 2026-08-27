@@ -85,6 +85,17 @@ export async function initProject(base = process.cwd()) {
   return wd;
 }
 
+// Which checkout this runtime is serving. `label` is the basename a surface
+// displays; `path` is the absolute path, used only locally (never sent to
+// the relay — src/relay/project.mjs strips `base` from every remote
+// payload). Two 0x2F surfaces open on different repositories are otherwise
+// visually identical, so every surface shows this: the Web shell embeds it,
+// the TUI prints it in its header.
+export function deriveWorkspace(base = process.cwd()) {
+  const label = path.basename(base) || base;
+  return { label, path: base };
+}
+
 export async function requireProject(base = process.cwd()) {
   if (!(await exists(path.join(base, ".work")))) {
     throw new Error("No .work project found. Run `2f init` first.");

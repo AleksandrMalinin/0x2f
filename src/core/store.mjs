@@ -207,6 +207,30 @@ export function createStore(base = process.cwd()) {
     return readText(eventLogPath(slug));
   }
 
+  // Every task's raw event log, in one pass — the input shape the live
+  // tailer (core/events.mjs) consumes: [{ slug, text }]. The tailer diffs
+  // against what it has already emitted, so this stays cheap on a workspace
+  // with many tasks. It lives HERE rather than in a surface because more
+  // than one surface tails the same logs (the Web server's SSE bridge and
+  // the TUI's live refresh), and neither may know the `.work` layout.
+  async function readEventLogs() {
+    const dir = tasksDir();
+    let entries;
+    try {
+      entries = await fs.readdir(dir, { withFileTypes: true });
+    } catch {
+      return [];
+    }
+    const out = [];
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const text = await readText(eventLogPath(entry.name), null);
+      // A task with no event log yet simply has nothing to tail.
+      if (typeof text === "string") out.push({ slug: entry.name, text });
+    }
+    return out;
+  }
+
   // The task's normalized event log as parsed events (append-only JSON lines).
   // Unparseable lines are skipped exactly as the live tailer skips them.
   async function readEvents(slug) {
@@ -275,6 +299,7 @@ export function createStore(base = process.cwd()) {
     readRunPrompt,
     readTaskLog,
     readEventLog,
+    readEventLogs,
     readEvents,
     appendEvent,
     writePermissionDecision,
