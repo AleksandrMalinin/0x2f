@@ -30,8 +30,10 @@
   "homepage": "https://github.com/AleksandrMalinin/0x2f#readme",
   "scripts": {
     "start": "node src/cli.mjs",
-    "check": "find src test relay scripts deploy -name node_modules -prune -o \\( -name '*.mjs' -o -name '*.js' \\) -exec node --check {} \\;",
+    "check": "find src test relay scripts deploy -name node_modules -prune -o \\( -name '*.mjs' -o -name '*.js' \\) -exec node --check {} \\; && python3 -c \"import ast,glob,sys; [ast.parse(open(f, encoding='utf-8').read(), f) for f in glob.glob('test/tui-pty/*.py')]\"",
     "test": "node --test \"test/*.test.mjs\"",
+    "test:tui": "node --test test/tui-pty-e2e.test.mjs",
+    "dogfood:tui": "node scripts/dogfood-tui.mjs",
     "build:client": "node deploy/client/build.mjs",
     "verify:phone": "node scripts/verify-phone.mjs"
   },

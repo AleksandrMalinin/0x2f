@@ -130,6 +130,54 @@ Run one file:
 node --test test/actions.test.mjs
 ```
 
+## The TUI dogfood suite
+
+`test/tui-pty-e2e.test.mjs` is the golden-path E2E for the terminal client —
+the reason a human no longer has to click through the basic TUI workflow
+before every release. It drives the REAL `2f tui` entry point on a REAL
+pseudo-terminal (`test/tui-pty/pty-relay.py` allocates the PTY; the test
+writes keystrokes to it and reads the ANSI output), through the same
+keyboard/terminal path a user uses — never through the controller functions.
+Runs execute through the real detached worker against deterministic fake ACP
+providers (`test/tui-pty/agents/fake-agent.mjs`): they perform real work
+(they edit a real file in the workspace) and pause for real permission and
+decision stops, so the suite needs no network and no model credentials and
+is reproducible on any machine.
+
+The journey covered: launch → verify the workspace → create a task with a
+multi-line brief (⌃n newlines) → WORKING → live permission / NEEDS YOU →
+inspect → ALLOW → READY → the real CHANGES/diff view → SEND BACK with a
+correction → run 02 rebuilt with it → a decision, read in full → ANSWER &
+CONTINUE → run 03 → READY → ACCEPT → DONE → overview → quit. Separate tests
+cover RETRY after a normalized provider-auth failure with `p` provider
+switching between runs, scrolling/navigation/search/help across a ledger
+that overflows the viewport, terminal resize, and clean terminal restoration
+on both `q` and SIGTERM/⌃C. Every checkpoint asserts both the visible
+screen and the canonical state on disk (`task.json`, event logs, per-run
+prompts), so a visually plausible screen cannot hide a broken task.
+
+It requires `python3` (macOS and Linux ship it) and `git` — the relay in
+`test/tui-pty/pty-relay.py` allocates the pseudo-terminal.
+
+```bash
+npm run test:tui        # just the TUI dogfood suite
+npm test                # the whole suite (includes it)
+```
+
+The shared driver (`test/tui-pty/driver.mjs`) — PTY session, a small ANSI
+emulator, key encoding, disk-state waits — also powers the exploratory mode:
+
+```bash
+npm run dogfood:tui                  # the same journey against a real provider
+npm run dogfood:tui -- --provider claude-code --timeout 900
+```
+
+`dogfood:tui` (`scripts/dogfood-tui.mjs`) is **not** part of the regression
+suite on purpose: it makes real model calls and needs a real harness
+installed. It runs the same golden path against a real provider in a scratch
+workspace (kept for inspection unless `--clean`), shows what the TUI showed
+at every checkpoint, and verifies clean terminal restoration.
+
 ## Adding a provider
 
 **Configured (no source change):** drop one manifest into
