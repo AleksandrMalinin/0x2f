@@ -282,6 +282,39 @@ test("renderLine emits truecolor when the terminal has it and 256 when it does n
   assert.equal(renderLine(cells, 1, { support: "none" }), "x");
 });
 
+// Count printable characters emitted while NO background is in effect —
+// the cells where the user's own terminal ground would show through.
+function unpainted(line) {
+  let bgOn = false;
+  let bare = 0;
+  let i = 0;
+  while (i < line.length) {
+    if (line[i] === ESC) {
+      const end = line.indexOf("m", i);
+      const codes = line.slice(i + 2, end).split(";");
+      if (codes[0] === "0") bgOn = false;
+      for (const c of codes) if (c === "48") bgOn = true;
+      i = end + 1;
+      continue;
+    }
+    if (!bgOn) bare++;
+    i++;
+  }
+  return bare;
+}
+
+test("a cell's own background wins; every other cell sits on the frame's ground", () => {
+  const cells = [
+    { t: "ab", c: "#e2e8ee", bg: "transparent" },
+    { t: "cd", c: "#e2e8ee", bg: "#232c34" }
+  ];
+  const line = renderLine(cells, 8, { support: "truecolor", bg: "#161c21" });
+  assert.ok(line.includes("48;2;22;28;33"), "the transparent cell takes the ground");
+  assert.ok(line.includes("48;2;35;44;52"), "the selected cell keeps its own");
+  // Including the pad: an unpainted tail would stripe every short line.
+  assert.equal(unpainted(line), 0);
+});
+
 test("the painter rewrites only the rows that changed, and repaints fully on resize", () => {
   const writes = [];
   const painter = createPainter({ write: s => writes.push(s) }, { support: "none" });
@@ -404,6 +437,52 @@ test("every rendered row is exactly the terminal width, at every size", async ()
       assert.ok(!row.includes("\n"), "a row never contains a newline");
     }
   }
+});
+
+test("both themes paint their own ground, in every mode and at every size", async () => {
+  // A full-screen surface that names its own palette must paint the ground
+  // that palette was contrast-tuned against. Inheriting the terminal's
+  // background instead would make --light dark ink on a dark ground for
+  // anyone whose terminal is dark.
+  const { runtime } = await makeRuntime();
+  await blockTask(runtime, "Dedupe the capture ingest path", {
+    type: "permission",
+    tool: "Edit",
+    file: "services/capture/dedupe.ts",
+    plannedChange: "derive the ingest key in one place"
+  });
+  const model = await snapshot(runtime);
+
+  for (const theme of ["dark", "light"]) {
+    const p = palette(theme);
+    for (const size of [{ cols: 80, rows: 24 }, { cols: 132, rows: 38 }]) {
+      for (const mode of ["work", "help", "composer", "diff"]) {
+        const built = frame(model, { ...initialState(), mode }, { ...size, palette: p });
+        assert.equal(built.bg, p.bg, `${theme}: the frame reports its ground`);
+        const rows = renderFrame(built.lines, size.cols, size.rows, {
+          support: "truecolor",
+          bg: built.bg
+        });
+        const bare = rows.reduce((total, row) => total + unpainted(row), 0);
+        assert.equal(bare, 0, `${theme} ${size.cols}x${size.rows} ${mode}: unpainted cells`);
+      }
+    }
+  }
+});
+
+test("the two palettes are the design's, and they never share an ink", () => {
+  const dark = palette("dark");
+  const light = palette("light");
+  assert.equal(dark.bg, "#161c21");
+  assert.equal(light.bg, "#f2f4f6");
+  // Every role is defined in both, and no role was left pointing at the
+  // other theme's value.
+  for (const role of ["bg", "fg", "dim", "rule", "accent", "ok", "bad", "sel", "ghost"]) {
+    assert.match(dark[role], /^#[0-9a-f]{6}$/, `dark.${role}`);
+    assert.match(light[role], /^#[0-9a-f]{6}$/, `light.${role}`);
+    assert.notEqual(dark[role], light[role], `${role} is theme-specific`);
+  }
+  assert.equal(palette("nonsense").bg, dark.bg, "an unknown theme falls back to dark");
 });
 
 test("the frame shows the workspace, the counts, the halt and the action it is waiting for", async () => {

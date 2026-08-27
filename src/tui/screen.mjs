@@ -72,6 +72,16 @@ function sgrColor(value, background, support) {
 // re-emitted per cell run rather than diffed: a line is at most a few dozen
 // runs, and a stateless line cannot inherit a stale colour from the line
 // above it.
+//
+// `bg` is the frame's GROUND, and it is painted under every cell — including
+// the trailing pad. A full-screen surface that names its own palette has to
+// paint the ground that palette was drawn against: the design's two themes
+// specify #161c21 and #f2f4f6 precisely, and the ink colours are contrast-
+// tuned against them. Inheriting the terminal's own background instead would
+// make the light theme dark ink on a dark ground for anyone whose terminal is
+// dark — a theme flag that only works if you already had that theme. The alt
+// screen buffer keeps this contained: the user's terminal is untouched the
+// moment the session exits.
 export function renderLine(cells, cols, opts = {}) {
   const { support = "truecolor", bg = null } = opts;
   let out = "";
@@ -94,7 +104,10 @@ export function renderLine(cells, cols, opts = {}) {
     } else {
       const fg = sgrColor(cell.c, false, support);
       if (fg) codes.push(fg);
-      const back = cell.bg && cell.bg !== "transparent" ? sgrColor(cell.bg, true, support) : "";
+      // A cell's own background (a selected row, the provider chip) wins;
+      // everything else sits on the frame's ground.
+      const ground = cell.bg && cell.bg !== "transparent" ? cell.bg : bg;
+      const back = ground ? sgrColor(ground, true, support) : "";
       if (back) codes.push(back);
       // Weight is styling too: a terminal we are not styling for (NO_COLOR,
       // a dumb TERM, a test asserting on plain text) gets plain text, not
@@ -103,7 +116,13 @@ export function renderLine(cells, cols, opts = {}) {
     }
     out += codes.length ? ESC + codes.join(";") + "m" + slice + RESET : slice;
   }
-  if (width < cols) out += " ".repeat(cols - width);
+  if (width < cols) {
+    // The pad is ground too — an unpainted tail would stripe every short
+    // line with the terminal's own background.
+    const pad = " ".repeat(cols - width);
+    const back = bg ? sgrColor(bg, true, support) : "";
+    out += back ? ESC + back + "m" + pad + RESET : pad;
+  }
   return out;
 }
 
