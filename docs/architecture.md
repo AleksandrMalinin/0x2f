@@ -280,9 +280,44 @@ chronology regardless of which process performed the action.
 
 One client of the shared actions. Commands: `init`, `new`, `status` (bare
 `2f`), `open [--run]`, `rerun`, `note`, `allow`, `reject`, `answer`, `close`,
-`providers`, `ui`, `pair`. Rendering is a client concern
+`providers`, `ui`, `tui`, `pair`. Rendering is a client concern
 (`src/render.mjs`): the CLI groups tasks NEEDS YOU / WORKING / READY /
 FAILED / DONE, and renders run history as inspection — never evaluation.
+
+### Terminal client — `src/tui/`
+
+The full-screen surface (`2f tui`). Another client of the shared actions, not
+a second runtime: it builds `createRuntime(base)` exactly as the CLI does,
+calls `src/core/actions.mjs` for every mutation, and reuses the Web's
+projection (`src/web/ledger.mjs` — DOM-free by design) for run traces, run
+history, changed files and failure classification. Live updates come from
+`store.readEventLogs()` through the same `createTailer` the server uses, so
+the TUI observes work done by a detached worker, by the CLI, by the browser
+or by the phone.
+
+```text
+src/tui/
+  index.mjs   the session — raw-mode tty, alternate screen, resize, tailer
+  app.mjs     the controller — intent -> shared action, and the message line
+  state.mjs   TUI-only state + the keymap (pure; returns state + an intent)
+  model.mjs   Work state -> the view model (reuses src/web/ledger.mjs)
+  view.mjs    the frame builders (pure: model + state -> lines of cells)
+  screen.mjs  cells -> ANSI, and a line-diffing painter
+  keys.mjs    raw stdin bytes -> key names (pure)
+  theme.mjs   the two palettes + provider signatures (CC · DS · CX · GM)
+```
+
+Only `index.mjs` performs I/O. Everything else is pure, which is why the
+keymap and the whole visual layer are asserted in `test/tui.test.mjs` without
+a terminal. No external TUI framework: the design is a cell grid, and Node's
+`tty` raw mode plus ANSI covers it (truecolor, degrading to xterm-256 and to
+plain text under `NO_COLOR` / `TERM=dumb`).
+
+The TUI holds no lifecycle opinion. `↵` resolves to ALLOW / ANSWER & CONTINUE
+/ ACCEPT / RETRY / REOPEN and `x` to REJECT / SAVE ONLY / SEND BACK / DROP
+purely from Work status; when a task moves between the key press and the call
+(a worker finishes, another surface acts), the shared action refuses and the
+TUI shows that refusal verbatim rather than re-deciding it.
 
 ### Local HTTP/SSE API — `src/server.mjs`
 

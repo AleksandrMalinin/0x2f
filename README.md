@@ -124,9 +124,47 @@ persistent; provider sessions are disposable. Add a constraint with
 part of the next run's context, with no manual copying. The original
 `prompt.md` is never overwritten.
 
+## The terminal client
+
+`2f tui` is the full-screen surface: the whole ledger on the left, the
+selected task in full on the right, and — pinned to the bottom of the detail
+pane — the one action that task is waiting for.
+
+```bash
+2f tui                     # or: 2f tui --light
+```
+
+It is a client, not a second runtime. It builds the same runtime every other
+command builds, calls the same shared actions, and tails the same event logs
+the Web server tails — so a run finishing in the background, a `2f allow`
+typed in another terminal and a tap on your phone all land in it live, and
+anything you do in it lands everywhere else.
+
+The keymap is the surface's own, not a file manager's:
+
+| key | what it does |
+| --- | --- |
+| `j` `k` | move between tasks (`g` / `G` jump to first / last) |
+| `J` `K` | scroll the task detail |
+| `tab` | filter — all · needs you · failed · ready · working |
+| `/` | search by title, brief or number |
+| `↵` | the one action this task is waiting for (shown bottom-left) |
+| `x` | the alternative — reject · save only · send back · drop |
+| `d` | changes — the planned write, or what the run already touched |
+| `c` | note or correct — kept on the task, carried into every later run |
+| `p` | point the next run at another provider |
+| `t` | expand the trace of the current run |
+| `n` | new task (`⌥↵` expands your note into a brief, `↵` starts it) |
+| `?` | the key list · `q` detaches — runs keep executing without you |
+
+`↵` is deliberately not "open": on a permission it ALLOWS, on a decision it is
+ANSWER & CONTINUE, on a READY task it ACCEPTS, on a FAILED one it RETRIES. The
+alternative under `x` is the other half of the same pair. Both go through the
+shared actions, so the TUI can never allow something the CLI would refuse.
+
 ## Desktop + mobile
 
-The CLI and the Web are two surfaces over the same core:
+The CLI, the TUI and the Web are three surfaces over the same core:
 
 ```bash
 2f ui                      # or: 2f ui <port>, 2f ui --no-browser
@@ -219,6 +257,7 @@ Inside the repository you want to work on:
 2f new "Investigate why retries restart the whole run"
 2f                               # list tasks
 2f open 1                        # run detail, history, result
+2f tui                           # open the terminal client (full screen)
 2f ui                            # open the Web UI (starts the local runtime)
 ```
 
@@ -341,7 +380,7 @@ persisted with the run and shown by `2f open` / the Web UI. Override any time:
 ## Architecture
 
 ```text
-CLI · Web
+CLI · TUI · Web · phone
     │   shared actions + normalized events
     ▼
 Work Core          lifecycle · actions · runs · events · store
@@ -359,8 +398,8 @@ Provider           native · ACP · command
 Coding harness     claude-code · codex · dsh · gemini · cursor · any command
 ```
 
-The CLI and the browser never implement lifecycle or provider logic — both
-call the same shared actions (`src/core/actions.mjs`) and read the same
+No surface implements lifecycle or provider logic — the CLI, the terminal
+client (`src/tui/`) and the browser all call the same shared actions (`src/core/actions.mjs`) and read the same
 normalized events (`src/core/events.mjs`). Everything a task needs persists
 under `.work/` in the repository you run 0x2F in: task state and run history
 (`.work/tasks/<slug>/`), the project context every prompt is built from
