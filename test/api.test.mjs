@@ -696,6 +696,30 @@ test("DECISION FLOW: answer then SEND BACK continues the same task (the dogfoodi
   }
 });
 
+test("POST /api/tasks/:id/correct records a SEND-BACK correction as its own event", async () => {
+  const { base, node, runtime, handle } = await startTestServer();
+  try {
+    const task = await runtime.actions.createWork({ brief: "Rate-limit headers" });
+    await runtime.store.updateTask(applyOutcome(task, { status: "ready", result: "done" }));
+
+    const res = await postJson(handle.url + "/api/tasks/" + task.id + "/correct", {
+      correction: "use a 503, not a 429"
+    });
+    assert.equal(res.status, 202);
+    const updated = await res.json();
+    assert.deepEqual(updated.context.notes.map(n => n.text), ["use a 503, not a 429"]);
+
+    const events = await runtime.store.readEvents(task.slug);
+    assert.ok(events.some(e => e.type === "task.corrected" && e.correction === "use a 503, not a 429"));
+    assert.ok(!events.some(e => e.type === "task.note"), "a correction is never a plain note");
+    assert.equal(updated.status, "ready", "recording a correction starts no execution");
+    assert.deepEqual(node.calls, [["start", task.slug]]);
+  } finally {
+    await handle.close();
+    await fs.rm(base, { recursive: true, force: true });
+  }
+});
+
 test("DECISION FLOW: a body-less rerun POST is a valid request, not a 500", async () => {
   const { base, runtime, handle } = await startTestServer();
   try {

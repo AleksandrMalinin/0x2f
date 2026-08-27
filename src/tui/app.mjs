@@ -68,6 +68,26 @@ export function createApp(runtime, opts = {}) {
   // The label a message uses for a task, matching the ledger's own.
   const ref = id => "#" + String(id).padStart(3, "0");
 
+  // Load the REAL change set for the diff view — the shared action computes
+  // per-file hunks from the working tree (src/core/diff.mjs). Loaded lazily
+  // when `d` opens the view, never at snapshot time; while it loads (or when
+  // git has no baseline for the files) the view falls back to the reported
+  // file list.
+  async function loadDiff() {
+    const task = selected(model.tasks, state);
+    if (!task?.hasChanges) return;
+    try {
+      const files = await runtime.actions.getTaskDiff(task.id);
+      state = { ...state, diff: files };
+    } catch {
+      // A workspace that cannot be diffed (no git, an unreadable file)
+      // shows the reported file list instead — the diff view never blocks
+      // the keypress loop on it.
+      state = { ...state, diff: [] };
+    }
+    opts.onChange?.();
+  }
+
   async function run(intent) {
     if (!intent) return;
     const actions = runtime.actions;
@@ -112,7 +132,7 @@ export function createApp(runtime, opts = {}) {
           break;
         }
         case "sendback": {
-          await actions.noteWork(intent.id, { note: intent.text });
+          await actions.correctWork(intent.id, { correction: intent.text });
           const task = await actions.rerunWork(intent.id);
           const run = task.runs?.at(-1)?.run ?? 1;
           setFlash(
@@ -197,6 +217,7 @@ export function createApp(runtime, opts = {}) {
     // intent it produced.
     async key(key) {
       if (!model) return null;
+      const previous = state;
       const result = apply(state, key, {
         tasks: model.tasks,
         providerOrder,
@@ -204,6 +225,9 @@ export function createApp(runtime, opts = {}) {
       });
       state = result.state;
       if (result.intent) await run(result.intent);
+      // Opening the diff view fetches the real hunks — the mode transition
+      // is TUI state, but the data behind it comes from the shared action.
+      if (state.mode === "diff" && previous.mode !== "diff") await loadDiff();
       return result.intent;
     },
     selected() {

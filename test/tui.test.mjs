@@ -13,6 +13,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { execFile } from "node:child_process";
 
 import { createRuntime } from "../src/runtime.mjs";
 import { applyOutcome } from "../src/core/lifecycle.mjs";
@@ -81,6 +82,18 @@ test("decodeKeys: a lone ESC chunk is Escape; ESC with more bytes is a modifier"
   assert.deepEqual(decodeKeys(ESC + "[Z"), [{ name: "shift-tab" }]);
   // Alt+Enter — the design's "expand this note into a brief".
   assert.deepEqual(decodeKeys(ESC + "\r"), [{ name: "enter", alt: true }]);
+});
+
+test("decodeKeys: Shift+Enter decodes when the terminal can deliver it", () => {
+  // Kitty's CSI-u form, xterm's modifyOtherKeys form and the alternate
+  // ordering — the three sequences real terminals send for Shift+Enter.
+  assert.deepEqual(decodeKeys(ESC + "[13;2u"), [{ name: "enter", shift: true }]);
+  assert.deepEqual(decodeKeys(ESC + "[27;2;13~"), [{ name: "enter", shift: true }]);
+  assert.deepEqual(decodeKeys(ESC + "[27;2;13u"), [{ name: "enter", shift: true }]);
+  // Ctrl+Enter (modifier 5) is not Shift+Enter — it stays unknown rather
+  // than being misread as a newline or a submit.
+  assert.deepEqual(decodeKeys(ESC + "[27;5;13~"), [{ name: "unknown" }]);
+  assert.deepEqual(decodeKeys("\r"), [{ name: "enter" }], "plain Enter is untouched");
 });
 
 test("decodeKeys: plain keys, control keys and a paste", () => {
@@ -220,7 +233,7 @@ test("d refuses on a task with nothing to show, and says so instead of opening a
   assert.equal(withChanges.state.mode, "diff");
 });
 
-test("the composer: Alt+Enter briefs, Ctrl+n adds a newline, Enter creates, Ctrl+z reverts", () => {
+test("the composer: Alt+Enter briefs, Shift+Enter or Ctrl+n adds a newline, Enter creates, Ctrl+z reverts", () => {
   let state = apply(initialState({ provider: "codex" }), KEY("n"), CTX).state;
   assert.equal(state.mode, "composer");
   for (const ch of "fix it") state = apply(state, KEY(ch), CTX).state;
@@ -229,8 +242,12 @@ test("the composer: Alt+Enter briefs, Ctrl+n adds a newline, Enter creates, Ctrl
     apply(state, { name: "enter", alt: true }, CTX).intent,
     { type: "refine", text: "fix it" }
   );
-  const newline = apply(state, { name: "char", ch: "n", ctrl: true }, CTX).state;
-  assert.equal(newline.composer.text, "fix it\n");
+  // The design's newline gesture: Shift+Enter when the terminal can send it.
+  const shifted = apply(state, { name: "enter", shift: true }, CTX).state;
+  assert.equal(shifted.composer.text, "fix it\n");
+  // Ctrl+n remains the universal fallback for terminals that cannot.
+  const ctrlN = apply(state, { name: "char", ch: "n", ctrl: true }, CTX).state;
+  assert.equal(ctrlN.composer.text, "fix it\n");
   assert.deepEqual(
     apply(state, { name: "enter" }, CTX).intent,
     { type: "create", brief: "fix it", provider: "codex" }
@@ -388,17 +405,19 @@ test("a permission halt carries the operation, the path and whether it resumes i
   assert.equal(task.hasChanges, true, "a planned write is something to look at");
 });
 
-test("the human record is read from the event log, so NOTE and ANSWER stay distinguishable", async () => {
+test("the human record is read from the event log, so NOTE, ANSWER and CORRECTION stay distinguishable", async () => {
   const { runtime } = await makeRuntime();
   const task = await blockTask(runtime, "Rate-limit headers", { type: "decision", text: "Seconds or ms?" });
   await runtime.actions.answerWork(task.id, { answer: "whole seconds" });
   await runtime.actions.noteWork(task.id, { note: "set them before the body flushes" });
+  await runtime.actions.correctWork(task.id, { correction: "use a 503, not a 429" });
 
   const projected = (await snapshot(runtime)).tasks[0];
-  assert.deepEqual(projected.notes.map(n => n.kind), ["answer", "note"]);
+  assert.deepEqual(projected.notes.map(n => n.kind), ["answer", "note", "correction"]);
   assert.deepEqual(projected.notes.map(n => n.text), [
     "whole seconds",
-    "set them before the body flushes"
+    "set them before the body flushes",
+    "use a 503, not a 429"
   ]);
 });
 
@@ -541,6 +560,80 @@ test("help, the composer and the changes view each render their own full frame",
   assert.ok(changes.includes("services/capture/dedupe.ts"));
 });
 
+// A real git repository in the workspace: one committed file the run then
+// modifies. The diff view must draw the ACTUAL hunks, not a file list.
+function git(args, cwd) {
+  return new Promise(resolve => {
+    execFile("git", args, { cwd }, (error, stdout) =>
+      resolve({ code: error ? error.code ?? 1 : 0, stdout: String(stdout ?? "") })
+    );
+  });
+}
+
+test("the changes view draws the REAL diff from the working tree, loaded on d", async () => {
+  const { runtime, base } = await makeRuntime();
+  await git(["init", "-q"], base);
+  await git(["config", "user.email", "test@0x2f.dev"], base);
+  await git(["config", "user.name", "0x2F test"], base);
+  await fs.writeFile(path.join(base, "dedupe.ts"), "const key = ingestKey;\n");
+  await git(["add", "."], base);
+  await git(["commit", "-qm", "init"], base);
+  await fs.writeFile(path.join(base, "dedupe.ts"), "const key = payloadHash;\n");
+
+  const task = await runtime.actions.createWork({ brief: "Dedupe the capture ingest path" });
+  // The run reported this file changed — exactly what a worker would append.
+  await runtime.store.appendEvent(task.slug, {
+    type: "file.changed",
+    path: path.join(base, "dedupe.ts"),
+    taskId: task.id,
+    at: new Date().toISOString()
+  });
+  await runtime.store.updateTask(applyOutcome(task, { status: "ready", result: "done" }));
+
+  const app = createApp(runtime);
+  await app.refresh();
+  assert.equal(app.selected().hasChanges, true);
+
+  await app.key({ name: "char", ch: "d" });
+  assert.equal(app.state.mode, "diff");
+  assert.ok(Array.isArray(app.state.diff), "the app loaded the change set");
+  assert.equal(app.state.diff[0].kind, "hunks");
+  assert.match(app.state.diff[0].hunks, /^-const key = ingestKey;$/m, "the removed line");
+  assert.match(app.state.diff[0].hunks, /^\+const key = payloadHash;$/m, "the added line");
+
+  const text = renderFrame(app.frame({ cols: 132, rows: 38 }).lines, 132, 38, { support: "none" }).join("\n");
+  assert.ok(text.includes("dedupe.ts"));
+  assert.ok(text.includes("const key = payloadHash"), "the hunk content is on screen");
+  assert.ok(text.includes("the real diff of the working tree vs HEAD"));
+});
+
+test("a working rerun's rule draws a measured percentage against its prior runs", async () => {
+  const { runtime } = await makeRuntime();
+  const task = await runtime.actions.createWork({ brief: "Rate-limit headers" });
+  // Run 1 completed in 100s; run 2 is the current working run, 50s in.
+  const started = new Date().toISOString();
+  const prior = new Date(Date.now() - 100_000).toISOString();
+  await runtime.store.updateTask({
+    ...task,
+    status: "working",
+    runs: [
+      { run: 1, provider: "claude-code", startedAt: prior, outcome: "ready", durationMs: 100_000 },
+      { run: 2, provider: "claude-code", startedAt: started, outcome: "working" }
+    ]
+  });
+
+  const model = await snapshot(runtime, { now: Date.now() + 50_000 });
+  const projected = model.tasks[0];
+  assert.equal(projected.state, "working");
+  assert.deepEqual(projected.progress, { percent: 50, basis: "previous run" });
+
+  // The detail pane names the basis so the ratio is never mistaken for a
+  // provider guarantee.
+  const built = frame(model, initialState(), { cols: 132, rows: 38, palette: palette("dark") });
+  const text = renderFrame(built.lines, 132, 38, { support: "none" }).join("\n");
+  assert.ok(text.includes("50% of previous run"));
+});
+
 test("an empty workspace says so instead of rendering a broken grid", async () => {
   const { runtime } = await makeRuntime();
   const { text } = await frameFor(runtime, initialState());
@@ -648,6 +741,12 @@ test("SEND BACK records the correction on the task, then rebuilds the next run f
   assert.equal(stored.status, "working");
   assert.equal(stored.runs.length, 2);
   assert.deepEqual(stored.context.notes.map(n => n.text), ["retry-after in whole seconds"]);
+  // A correction is its own normalized event — not a plain note.
+  const events = await runtime.store.readEvents(stored.slug);
+  assert.ok(
+    events.some(e => e.type === "task.corrected" && e.correction === "retry-after in whole seconds"),
+    "the send-back records a task.corrected event"
+  );
   // The next run's prompt is rebuilt from Task state — the correction is in it.
   const prompt = await runtime.store.readRunPrompt(stored, 2);
   assert.ok(prompt.includes("retry-after in whole seconds"));

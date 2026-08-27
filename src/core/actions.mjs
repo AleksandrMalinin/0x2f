@@ -25,6 +25,7 @@ import { workEvent } from "./events.mjs";
 import { makeRunRecord, taskRuns, legacyRun } from "./runs.mjs";
 import { MAX_BRIEF, MAX_TITLE, MAX_NOTE, MAX_ANSWER, MAX_SELECTOR } from "./limits.mjs";
 import { deriveTitle } from "./title.mjs";
+import { taskDiff } from "./diff.mjs";
 import { unavailableMessage } from "../providers/index.mjs";
 
 export function createActions(ctx) {
@@ -422,6 +423,45 @@ export function createActions(ctx) {
     return updated;
   }
 
+  // correctWork(id, { correction }): record a SEND-BACK correction on the
+  // task — what the last run got wrong, which is why the next run is
+  // rebuilt. The same task-context channel as a note (the next run's prompt
+  // carries it), but its own normalized event: a correction is not a plain
+  // constraint, and every surface must be able to tell the three kinds of
+  // human input apart — a note, an answer, a correction.
+  async function correctWork(id, { correction } = {}) {
+    const task = await store.findTask(id);
+    if (!correction || !correction.trim()) {
+      throw new WorkError("A correction is required.");
+    }
+    requireWithin(correction, MAX_NOTE, "Correction");
+    const clean = correction.trim();
+    const now = new Date().toISOString();
+    const notes = [...(task.context?.notes ?? []), { at: now, text: clean }];
+    const updated = { ...task, context: { ...(task.context ?? {}), notes } };
+    await store.updateTask(updated);
+    await record(task, "task.corrected", { correction: clean });
+    return updated;
+  }
+
+  // getTaskDiff(id): the REAL change set of the current run — one entry per
+  // file the run reported touching, with unified-diff hunks computed from the
+  // working tree vs HEAD (see core/diff.mjs). This is the shared-layer
+  // source the `d` (CHANGES) surface draws: a real diff, never a provider
+  // summary and never an invented one. A file with no baseline (untracked,
+  // outside the workspace, or no git repository) is reported without hunks.
+  async function getTaskDiff(id) {
+    const task = await store.findTask(id);
+    const events = await store.readEvents(task.slug);
+    const files = [];
+    for (const event of events) {
+      if (event.type === "file.changed" && typeof event.path === "string" && event.path) {
+        files.push(event.path);
+      }
+    }
+    return taskDiff({ base: store.base, files });
+  }
+
   // closeWork(id): user closes the task (any status -> done).
   async function closeWork(id) {
     const task = await store.findTask(id);
@@ -435,11 +475,13 @@ export function createActions(ctx) {
     listWork,
     getWork,
     getRun,
+    getTaskDiff,
     createWork,
     rerunWork,
     resumeWork,
     answerWork,
     noteWork,
+    correctWork,
     closeWork,
     allowWork: id => resumeWork(id, "allow"),
     rejectWork: id => resumeWork(id, "reject")

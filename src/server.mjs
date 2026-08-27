@@ -787,6 +787,19 @@ export async function startServer(base = process.cwd(), port = 4242, opts = {}) 
         return;
       }
 
+      // SEND BACK's correction: the same task-context channel as a note, but
+      // recorded as its own normalized event (task.corrected) so every
+      // surface can tell a correction from a note or an answer.
+      const correctMatch = url.pathname.match(/^\/api\/tasks\/(\d+)\/correct$/);
+      if (req.method === "POST" && correctMatch) {
+        const body = await readJsonBody(req);
+        const task = await actions.correctWork(Number(correctMatch[1]), {
+          correction: body.correction
+        });
+        json(res, task, 202);
+        return;
+      }
+
       const closeMatch = url.pathname.match(/^\/api\/tasks\/(\d+)\/close$/);
       if (req.method === "POST" && closeMatch) {
         json(res, await actions.closeWork(Number(closeMatch[1])));

@@ -28,6 +28,10 @@ export function initialState(opts = {}) {
     expand: false,
     rerunProvider: null,
     flash: null,
+    // The loaded change set for the diff view (actions.getTaskDiff output) —
+    // null until the view is opened, so entering `d` never blocks the frame
+    // on a git walk.
+    diff: null,
     composer: { text: "", original: null, provider: opts.provider ?? null },
     busy: false
   };
@@ -140,9 +144,11 @@ function commitInput(state, task) {
 
 // --- the composer -------------------------------------------------------------
 //
-// ⇧↵ cannot be distinguished from ↵ by any terminal, so the design's
-// "newline" gesture moves to ⌃n. ⌥↵ (brief) survives as-is: terminals
-// deliver Alt as an ESC prefix in the same read.
+// ⇧↵ inserts a newline when the terminal can deliver it (Kitty's CSI-u or
+// xterm's modifyOtherKeys — see keys.mjs); a terminal that cannot tell ⇧↵
+// from ↵ sends no distinct bytes, so ⌃n remains the universal fallback.
+// ⌥↵ (brief) survives as-is: terminals deliver Alt as an ESC prefix in the
+// same read.
 function composerKey(state, key, ctx) {
   const c = state.composer;
   const set = patch => ({ ...state, composer: { ...c, ...patch } });
@@ -151,6 +157,9 @@ function composerKey(state, key, ctx) {
   if (key.name === "enter" && key.alt) {
     if (!c.text.trim() || c.original !== null) return { state, intent: null };
     return { state, intent: { type: "refine", text: c.text } };
+  }
+  if (key.name === "enter" && key.shift) {
+    return { state: set({ text: c.text + "\n" }), intent: null };
   }
   if (key.name === "char" && key.ctrl && key.ch === "n") {
     return { state: set({ text: c.text + "\n" }), intent: null };

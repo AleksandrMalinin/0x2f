@@ -27,6 +27,18 @@ const SEQUENCES = {
   OD: "left"
 };
 
+// Shift+Enter, when the terminal can deliver it. Kitty sends the CSI-u form,
+// xterm with modifyOtherKeys the CSI~ form, and some emitters the alternate
+// ordering; in all three, modifier 2 is Shift and the code is 13 (Enter).
+// Default macOS Terminal and stock Windows Terminal send the same byte as
+// plain Enter, so ⌃n stays the universal fallback — a terminal that cannot
+// distinguish the two simply never produces these bytes.
+const SHIFT_ENTER = new Set([
+  "\u001b[13;2u", // Kitty keyboard protocol / CSI-u
+  "\u001b[27;2;13~", // xterm modifyOtherKeys
+  "\u001b[27;2;13u" // alternate ordering some emitters use
+]);
+
 function simple(code) {
   if (code === 3) return { name: "ctrl-c" };
   if (code === 13 || code === 10) return { name: "enter" };
@@ -45,6 +57,7 @@ export function decodeKeys(chunk) {
   if (text === "\x1b") return [{ name: "escape" }];
 
   if (text.charCodeAt(0) === 0x1b && text.length > 1) {
+    if (SHIFT_ENTER.has(text)) return [{ name: "enter", shift: true }];
     const rest = text.slice(1);
     const named = SEQUENCES[rest.slice(0, 2)];
     if (named) return [{ name: named }];
@@ -64,8 +77,9 @@ export function decodeKeys(chunk) {
       keys.push(named);
       continue;
     }
-    // Ctrl+<letter> arrives as the control code; the design uses Ctrl+J
-    // (newline in the composer) and Ctrl+Z (revert the brief).
+    // Ctrl+<letter> arrives as the control code; the design uses Ctrl+N
+    // (newline in the composer — the fallback when the terminal cannot send
+    // ⇧↵) and Ctrl+Z (revert the brief).
     if (code < 32) {
       keys.push({ name: "char", ch: String.fromCharCode(code + 96), ctrl: true });
       continue;

@@ -517,3 +517,70 @@ test("resumeWork refuses a permission block on a provider that cannot resume (ca
     await fs.rm(runtime.base, { recursive: true, force: true });
   }
 });
+
+test("correctWork records a SEND-BACK correction as its own event, apart from a note", async () => {
+  const runtime = await makeRuntime();
+  try {
+    const task = await runtime.actions.createWork({ brief: "Rate-limit headers" });
+    await runtime.store.updateTask(applyOutcome(task, { status: "ready", result: "done" }));
+
+    await runtime.actions.noteWork(task.id, { note: "set them before the body flushes" });
+    const corrected = await runtime.actions.correctWork(task.id, {
+      correction: "use a 503, not a 429"
+    });
+
+    // The correction travels in the same task-context channel as a note (so
+    // the next run's prompt carries it), but is recorded as task.corrected —
+    // the kind is what every surface needs to tell the three apart.
+    assert.deepEqual(corrected.context.notes.map(n => n.text), [
+      "set them before the body flushes",
+      "use a 503, not a 429"
+    ]);
+    const events = await runtime.store.readEvents(task.slug);
+    assert.ok(events.some(e => e.type === "task.corrected" && e.correction === "use a 503, not a 429"));
+    assert.ok(!events.some(e => e.type === "task.note" && e.note === "use a 503, not a 429"));
+    assert.equal((await runtime.store.findTask(task.id)).status, "ready", "no execution started");
+    assert.deepEqual(runtime.node.calls, [["start", task.slug]]);
+  } finally {
+    await fs.rm(runtime.base, { recursive: true, force: true });
+  }
+});
+
+test("correctWork validates: a correction is required and bounded", async () => {
+  const runtime = await makeRuntime();
+  try {
+    const task = await runtime.actions.createWork({ brief: "Flaky test" });
+    await assert.rejects(
+      () => runtime.actions.correctWork(task.id, { correction: "   " }),
+      /A correction is required/
+    );
+    await assert.rejects(
+      () => runtime.actions.correctWork(task.id, { correction: "x".repeat(20_000) }),
+      /Correction is too long/
+    );
+  } finally {
+    await fs.rm(runtime.base, { recursive: true, force: true });
+  }
+});
+
+test("getTaskDiff returns one entry per file.changed event, with real hunks when git has a baseline", async () => {
+  const runtime = await makeRuntime();
+  try {
+    const task = await runtime.actions.createWork({ brief: "Diff me" });
+    await runtime.store.appendEvent(task.slug, {
+      type: "file.changed",
+      path: path.join(runtime.base, "src", "a.ts"),
+      taskId: task.id,
+      at: new Date().toISOString()
+    });
+    // The workspace is not a git repository, so the file is reported without
+    // hunks — never an invented diff.
+    const diff = await runtime.actions.getTaskDiff(task.id);
+    assert.equal(diff.length, 1);
+    assert.equal(diff[0].path, path.join("src", "a.ts"));
+    assert.equal(diff[0].kind, "reported");
+    assert.equal(diff[0].hunks, null);
+  } finally {
+    await fs.rm(runtime.base, { recursive: true, force: true });
+  }
+});

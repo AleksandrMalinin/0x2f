@@ -110,12 +110,14 @@ const len = cells => cells.reduce((total, cell) => total + String(cell.t ?? "").
 
 // --- the run rule --------------------------------------------------------------
 //
-// The design's progress rule, measured honestly. Its mock runtime knew each
-// run's total duration and could draw a percentage; a real run has no known
-// end, so this draws what IS known: one mark per reported signal, then the
-// live head, then unreported ground. A finished run fills — it is finished,
-// and that is a fact. Nothing here is time-proportional, exactly as
-// src/web/ledger.mjs refuses to synthesize geometry.
+// The design's progress rule. A finished run fills — it is finished, and
+// that is a fact. A run still moving draws a percentage when the shared
+// layer can measure one (this task's prior runs are a real baseline — see
+// ledger.progressPercent): the bar fills to the percentage and the readout
+// names the basis. Run 1 has no baseline, so the rule draws what IS known —
+// one mark per reported signal, then the live head, then unreported ground.
+// Nothing here is time-proportional geometry from nothing; a percentage
+// without a baseline is never fabricated.
 export function ruleCells(task, width, p) {
   const w = Math.max(4, width | 0);
   const finished = task.state === "ready" || task.state === "done";
@@ -125,6 +127,13 @@ export function ruleCells(task, width, p) {
 
   if (finished || failed) {
     marks.push({ ch: "━".repeat(w), c: failed ? p.bad : p.ok, b: 400 });
+  } else if (task.progress?.percent != null && !halted) {
+    const pct = Math.max(0, Math.min(100, task.progress.percent));
+    const filled = Math.max(1, Math.min(w - 1, Math.round((w * pct) / 100)));
+    marks.push({ ch: "━".repeat(filled), c: p.accent, b: 600 });
+    marks.push({ ch: "◆", c: p.fg, b: 600 });
+    const rest = w - filled - 1;
+    if (rest > 0) marks.push({ ch: "┄".repeat(rest), c: p.ghost, b: 400 });
   } else {
     const reported = Math.min(task.steps.length, w - 1);
     if (reported > 0) marks.push({ ch: "━".repeat(reported), c: p.fg, b: 400 });
@@ -496,9 +505,16 @@ function stateBlock(task, w, p, T) {
     }
   } else if (task.state === "working") {
     const last = [...task.steps].reverse().find(s => s.kind === "tool" || s.kind === "command");
-    lines.push({
-      cells: [T(" WORKING", p.fg, 600), T("   ", p.dim)].concat(ruleCells(task, Math.min(28, Math.max(6, w - 22)), p))
-    });
+    const ruleW = Math.min(28, Math.max(6, w - 22));
+    const cells = [T(" WORKING", p.fg, 600), T("   ", p.dim)].concat(ruleCells(task, ruleW, p));
+    if (task.progress?.percent != null) {
+      // The percentage readout names its basis — "62% of previous runs" —
+      // so nobody mistakes a measured ratio for a provider guarantee.
+      cells.push(
+        T("  " + cut(task.progress.percent + "% of " + task.progress.basis, Math.max(6, w - ruleW - 16)), p.dim)
+      );
+    }
+    lines.push({ cells });
     row(last ? last.verb.toLowerCase() : "", last ? last.arg : task.activity || "starting", p.fg);
   } else {
     lines.push({
@@ -513,10 +529,13 @@ function stateBlock(task, w, p, T) {
 
 // --- the changes view (d) ------------------------------------------------------
 //
-// The design's diff mode, over the data a run actually reports. No provider
-// in the registry emits hunks and the runtime stores none, so this shows
-// what IS known — the change a halted run PLANS to make, or the files a run
-// has already touched — instead of inventing a diff.
+// The design's diff mode. A halted run shows the change it PLANS to make
+// (nothing is written yet, so there is nothing to diff). A run that has
+// actually touched files shows a REAL diff: the shared layer computes
+// unified hunks from the working tree vs HEAD (src/core/diff.mjs), so the
+// view draws the actual difference, never a provider summary. A file with
+// no git baseline (untracked, or the workspace is not a repository) is
+// listed by path alone, and the view says no diff could be computed.
 export function buildChanges(model, state, cols, p, T) {
   const task = selected(model.tasks, state);
   if (!task) return [{ cells: [T(" no task selected", p.ghost)] }];
@@ -560,7 +579,40 @@ export function buildChanges(model, state, cols, p, T) {
     lines.push({
       cells: [T("  the file has not been written — allow the request and the run writes it", p.ghost)]
     });
+  } else if (state.diff && state.diff.length) {
+    // The real change set, already loaded by the app (actions.getTaskDiff).
+    let withHunks = 0;
+    lines.push({ cells: [T("")] });
+    for (const file of state.diff) {
+      if (file.kind === "hunks" && file.hunks) {
+        withHunks++;
+        lines.push({ cells: [T("  " + file.path, p.fg, 600)] });
+        for (const raw of file.hunks.split("\n")) {
+          if (!raw.trim()) continue;
+          const style = diffLineStyle(raw, p);
+          for (const row of wrap(raw, Math.max(10, cols - 4))) {
+            lines.push({ cells: [T("  " + row, style.c, style.b)] });
+          }
+        }
+        lines.push({ cells: [T("")] });
+      } else {
+        lines.push({ cells: [T("  " + cut(file.path, cols - 4), p.fg)] });
+      }
+    }
+    lines.push({
+      cells: [
+        T(
+          "  " + (withHunks
+            ? "the real diff of the working tree vs HEAD"
+            : "no diff could be computed — git has no baseline for these files") +
+            " · 0x2F does not stage or commit anything",
+          p.ghost
+        )
+      ]
+    });
   } else if (task.files.length) {
+    // Diff not loaded yet — the reported file list, exactly what the run
+    // said it touched.
     lines.push({ cells: [T("")] });
     for (const file of task.files) {
       lines.push({ cells: [T("  " + cut(file, cols - 4), p.fg)] });
@@ -575,6 +627,20 @@ export function buildChanges(model, state, cols, p, T) {
     lines.push({ cells: [T("  this run has not reported writing anything", p.ghost)] });
   }
   return lines;
+}
+
+// One line of a real unified diff, styled by what its own first character
+// says it is — an addition, a deletion, a hunk header, or context. The
+// whole wrapped line keeps the prefix's colour so a wrapped fragment never
+// reads as a context line.
+function diffLineStyle(line, p) {
+  if (line.startsWith("+") && !line.startsWith("+++")) return { c: p.ok, b: 500 };
+  if (line.startsWith("-") && !line.startsWith("---")) return { c: p.bad, b: 500 };
+  if (line.startsWith("@@")) return { c: p.accent, b: 600 };
+  if (/^(diff --git|index |new file|deleted file|---|\+\+\+)/.test(line)) {
+    return { c: p.ghost, b: 400 };
+  }
+  return { c: p.dim, b: 400 };
 }
 
 // --- the composer (n) ----------------------------------------------------------
@@ -652,14 +718,19 @@ export function buildComposer(model, state, cols, p, T) {
   lines.push({
     cells: [
       T(" ↵ START ", p.accent, 600),
-      T("  ⌥↵ brief   ⌃n newline   tab provider   esc cancel", p.dim)
+      T("  ⇧↵ newline   ⌥↵ brief   tab provider   esc cancel", p.dim)
     ]
   });
   // The title the ledger will show is DERIVED from these words — there is no
   // second field to fill in, and saying so here is the only way a first-time
   // user learns it.
   lines.push({ cells: [T("")] });
-  lines.push({ cells: [T(" 0x2F names the task from what you write.", p.ghost)] });
+  lines.push({
+    cells: [
+      T(" 0x2F names the task from what you write.", p.ghost),
+      T("   a terminal that cannot send ⇧↵ falls back to ⌃n", p.ghost)
+    ]
+  });
   return lines;
 }
 
@@ -672,11 +743,11 @@ const KEYS = [
   ["/", "search by title, brief or number"],
   ["↵", "the one action this task is waiting for (shown bottom-left)"],
   ["x", "the alternative — reject · save only · send back · drop"],
-  ["d", "changes — the planned write, or what the run already touched"],
+  ["d", "changes — the real diff of the working tree, or the planned write"],
   ["c", "note or correct — kept on the task, carried into every later run"],
   ["p", "point the next run at another provider"],
   ["t", "expand the trace of the current run"],
-  ["n", "new task — ⌥↵ expands your note into a brief, ↵ starts it"],
+  ["n", "new task — ⇧↵ inserts a newline (⌃n where your terminal cannot send ⇧↵), ⌥↵ expands your note into a brief, ↵ starts it"],
   ["esc", "clear filter and search · cancel an input"],
   ["?", "this list"],
   ["q", "detach — runs keep executing without you"]

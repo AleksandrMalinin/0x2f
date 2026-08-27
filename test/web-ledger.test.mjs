@@ -36,6 +36,7 @@ import {
   inferFailureKind,
   authFailureCopy,
   authFailureLine,
+  progressPercent,
   parseRich
 } from "../src/web/ledger.mjs";
 import { workEvent } from "../src/core/events.mjs";
@@ -817,6 +818,50 @@ test("ledger helpers", () => {
     sortTasks([task({ id: 1, status: "working" }), task({ id: 2, status: "working" })]).map(t => t.id),
     [2, 1]
   );
+});
+
+// --- the progress percentage ------------------------------------------------
+//
+// The rule's percentage is only ever measured against a REAL baseline: a
+// finished run is 100% (a fact), and a working rerun measures against this
+// task's own prior run durations (the only real "how long does this task
+// take" data that exists). Run 1 has no baseline — null, never fabricated.
+
+const RUN = (run, durationMs) => ({ run, durationMs });
+
+test("progressPercent: a finished run is 100%, whatever it did", () => {
+  assert.deepEqual(progressPercent({ status: "ready", runs: [] }, 10), { percent: 100, basis: "complete" });
+  assert.deepEqual(progressPercent({ status: "done", runs: [] }, 10), { percent: 100, basis: "complete" });
+  assert.deepEqual(progressPercent({ status: "failed", runs: [] }, 10), { percent: 100, basis: "stopped" });
+});
+
+test("progressPercent: a halted run reports null — the halt marker is the readout", () => {
+  assert.equal(progressPercent({ status: "needs_you", runs: [] }, 10), null);
+});
+
+test("progressPercent: run 1 has no baseline, so there is no percentage", () => {
+  assert.equal(progressPercent({ status: "working", runs: [RUN(1, null)] }, 30), null);
+  assert.equal(progressPercent({ status: "working", runs: [] }, 30), null);
+});
+
+test("progressPercent: a working rerun measures elapsed against its prior runs", () => {
+  const task = { status: "working", runs: [RUN(1, 100_000), RUN(2, undefined)] };
+  // Half of the 100s run 1 took has elapsed -> 50%.
+  assert.deepEqual(progressPercent(task, 50), { percent: 50, basis: "previous run" });
+  const two = { status: "working", runs: [RUN(1, 60_000), RUN(2, 180_000), RUN(3, undefined)] };
+  // Average of 60s and 180s is 120s; 24s elapsed -> 20%.
+  assert.deepEqual(progressPercent(two, 24), { percent: 20, basis: "previous runs" });
+});
+
+test("progressPercent: a working run is never claimed complete — capped at 99", () => {
+  const task = { status: "working", runs: [RUN(1, 10_000), RUN(2, undefined)] };
+  assert.equal(progressPercent(task, 10_000).percent, 99, "ten times the prior duration");
+  assert.equal(progressPercent(task, 0).percent, 1, "never 0% while working");
+});
+
+test("progressPercent: the current run's own record is never its own baseline", () => {
+  const task = { status: "working", runs: [RUN(1, 100_000), RUN(2, 50_000)] };
+  assert.deepEqual(progressPercent(task, 25), { percent: 25, basis: "previous run" });
 });
 
 test("a run measured in hours reads as hours, not as 479 minutes", () => {

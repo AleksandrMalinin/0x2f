@@ -11,8 +11,11 @@
 //
 // The design's mock runtime carried a few fields no real provider reports
 // (per-file line deltas, a known total duration for a progress bar). Those
-// are absent here rather than fabricated — see `ruleUnits`, which measures
-// reported signals, and READY, which lists changed files without deltas.
+// are absent here rather than fabricated: a run's hunks come from the actual
+// working tree (core/diff.mjs via actions.getTaskDiff), and the progress
+// rule draws a percentage only when a real baseline exists — this task's
+// own prior runs (see ledger.progressPercent) — falling back to reported
+// signals for run 1. READY lists changed files without deltas.
 
 import os from "node:os";
 import {
@@ -23,7 +26,8 @@ import {
   restAfterFirstSentence,
   inferFailureKind,
   authFailureCopy,
-  fidelity
+  fidelity,
+  progressPercent
 } from "../web/ledger.mjs";
 import { deriveWorkspace } from "../project.mjs";
 import { currentRunNumber } from "../core/runs.mjs";
@@ -83,9 +87,9 @@ export function providerMap(providers) {
 }
 
 // The human record on a task, in the order it was made. Read from the event
-// log (task.note / task.answered), which is the only place that says WHICH
-// kind of input it was and when — task.context.notes is one flat list. A
-// task whose events predate those types falls back to that list.
+// log (task.note / task.answered / task.corrected), which is the only place
+// that says WHICH kind of input it was and when — task.context.notes is one
+// flat list. A task whose events predate those types falls back to that list.
 function notesOf(task, events) {
   const out = [];
   let run = 1;
@@ -95,6 +99,8 @@ function notesOf(task, events) {
       out.push({ kind: "note", text: String(event.note), run });
     } else if (event.type === "task.answered" && event.answer) {
       out.push({ kind: "answer", text: String(event.answer), run });
+    } else if (event.type === "task.corrected" && event.correction) {
+      out.push({ kind: "correction", text: String(event.correction), run });
     }
   }
   if (out.length) return out;
@@ -192,6 +198,16 @@ export function projectTask(task, events, opts = {}) {
   // an hour has a long wait, not a long run.
   const elapsed = Math.max(0, ((running || state === "needs" ? now : lastAt) - origin) / 1000);
 
+  // The progress rule's percentage, measured against THIS run's own clock
+  // (a rerun's elapsed must not include its predecessors) and this task's
+  // prior run durations — the only real baseline that exists. Null for run 1,
+  // where the rule draws reported signals instead (see ledger.progressPercent).
+  const runStartedAt = task.runs?.at(-1)?.startedAt;
+  const runElapsed = runStartedAt
+    ? Math.max(0, (now - Date.parse(runStartedAt)) / 1000)
+    : elapsed;
+  const progress = progressPercent(task, runElapsed);
+
   const run = currentRunNumber(task);
   const runs = projectRuns(task.runs ?? [], {
     providers: Object.fromEntries(
@@ -217,6 +233,7 @@ export function projectTask(task, events, opts = {}) {
     runs,
     history: runs.filter(r => r.run !== run),
     elapsed,
+    progress,
     opened,
     steps,
     files,

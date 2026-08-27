@@ -605,6 +605,40 @@ export function trace(steps, opts = {}) {
   };
 }
 
+// --- the progress percentage ---------------------------------------------------
+//
+// The honest percentage for a run's progress rule. A finished run is 100% —
+// a fact, not an estimate. A run still moving has only one real baseline to
+// measure against: THIS task's own prior runs. A rerun is a continuation of
+// the same intent, so the durations of its predecessors are the only real
+// "how long does this task take" data that exists; the rule then draws how
+// much of that usual duration the current run has already spent, capped at
+// 99 (a working run is never claimed complete). Run 1 has no baseline —
+// null, and the rule draws reported signals instead. Nothing here is
+// fabricated geometry: no percentage exists without a real baseline.
+export function progressPercent(task, elapsedSeconds) {
+  const status = task.status;
+  if (status === "ready" || status === "done") {
+    return { percent: 100, basis: "complete" };
+  }
+  if (status === "failed") return { percent: 100, basis: "stopped" };
+  if (status === "needs_you") return null; // halted — the halt marker is the readout
+  if (typeof elapsedSeconds !== "number" || !Number.isFinite(elapsedSeconds)) return null;
+  const runs = Array.isArray(task.runs) ? task.runs : [];
+  const current = runs.at(-1)?.run ?? 1;
+  const prior = runs.filter(
+    r => r.run !== undefined && r.run !== null && r.run !== current &&
+      typeof r.durationMs === "number" && r.durationMs > 0
+  );
+  if (!prior.length) return null;
+  const averageMs = prior.reduce((sum, r) => sum + r.durationMs, 0) / prior.length;
+  const ratio = (elapsedSeconds * 1000) / averageMs;
+  return {
+    percent: Math.max(1, Math.min(99, Math.round(ratio * 100))),
+    basis: "previous run" + (prior.length === 1 ? "" : "s")
+  };
+}
+
 // --- brackets ----------------------------------------------------------------
 //
 // One is implementable from what the system actually knows: CHANGES, spanning

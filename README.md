@@ -150,11 +150,11 @@ The keymap is the surface's own, not a file manager's:
 | `/` | search by title, brief or number |
 | `↵` | the one action this task is waiting for (shown bottom-left) |
 | `x` | the alternative — reject · save only · send back · drop |
-| `d` | changes — the planned write, or what the run already touched |
+| `d` | changes — the real diff of the working tree, or the planned write |
 | `c` | note or correct — kept on the task, carried into every later run |
 | `p` | point the next run at another provider |
 | `t` | expand the trace of the current run |
-| `n` | new task (`⌥↵` expands your note into a brief, `↵` starts it) |
+| `n` | new task (`⇧↵` inserts a newline, `⌥↵` expands your note into a brief, `↵` starts it) |
 | `?` | the key list · `q` detaches — runs keep executing without you |
 
 `↵` is deliberately not "open": on a permission it ALLOWS, on a decision it is

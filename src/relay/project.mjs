@@ -233,6 +233,8 @@ export function projectEvent(event, base) {
       return { ...common, answer: trunc(event.answer, TRUNC.text, base) };
     case "task.note":
       return { ...common, note: trunc(event.note, TRUNC.text, base) };
+    case "task.corrected":
+      return { ...common, correction: trunc(event.correction, TRUNC.text, base) };
     default:
       return common;
   }
