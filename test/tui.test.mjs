@@ -27,7 +27,7 @@ import {
   secondaryAction
 } from "../src/tui/state.mjs";
 import { snapshot, STATE_KEY } from "../src/tui/model.mjs";
-import { frame, wrap, cut, pad, oneline, shortPath } from "../src/tui/view.mjs";
+import { frame, wrap, cut, pad, oneline, shortPath, cellWord } from "../src/tui/view.mjs";
 import { renderLine, renderFrame, createPainter } from "../src/tui/screen.mjs";
 import { providerSignature, palette } from "../src/tui/theme.mjs";
 import { createApp } from "../src/tui/app.mjs";
@@ -277,6 +277,17 @@ test("cut, pad and shortPath keep a cell to its measure", () => {
   assert.equal(pad("abcdef", 3), "abc");
   assert.equal(shortPath("a/b/c/d/file.ts", 12), "…/d/file.ts");
   assert.equal(shortPath("short.ts", 40), "short.ts");
+});
+
+test("cellWord ellipsis-truncates long provider words and keeps the column gap", () => {
+  // A tool verb in an 8-column slot must never merge into the next column
+  // as "EDIT SUBsrc/app.ts" — it truncates WITH an ellipsis and a gap.
+  assert.equal(cellWord("EDIT SUBMIT PATH", 8), "EDIT S… ");
+  assert.equal(cellWord("edit submit-capture.ts", 8), "edit s… ");
+  // Short words render exactly as pad did — the grid keeps its columns.
+  assert.equal(cellWord("CHANGED", 8), "CHANGED ");
+  assert.equal(cellWord("plan", 8), "plan    ");
+  assert.equal(cellWord("DEEPSEEK HARNESS", 15), "DEEPSEEK HARN… ");
 });
 
 test("wrap keeps paragraph breaks — a decision question is prose, not a label", () => {

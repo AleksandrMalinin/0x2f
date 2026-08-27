@@ -391,9 +391,14 @@ async function scenarioOverview() {
     await sleep(250);
     await capture(session, "decision-long-120x36", { state: "decision-long", mode: "work" });
 
-    // A constrained terminal: resize and capture the same states.
+    // A constrained terminal: resize and capture the same states. The
+    // resize preserves the detail scroll, so reset it (escape) — the
+    // overview frame should show the fresh narrow-size view, not a
+    // continuation of the scrolled detail from the 120x36 frame.
     session.resize(24, 80);
     await session.waitForFrame(24, 80);
+    session.press("escape");
+    await sleep(200);
     await capture(session, "overview-many-80x24", { state: "overview", mode: "work" });
     session.press("J");
     session.press("J");

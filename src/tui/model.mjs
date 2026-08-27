@@ -171,7 +171,10 @@ function failOf(task, steps, files, provider, node) {
   const firstLine = lines.find(l => /\berror\b\s*:/i.test(l)) ?? lines[0] ?? error;
   const detail = error.slice(error.indexOf(firstLine) + firstLine.length).trim();
   return {
-    at: last ? `${last.verb.toLowerCase()} ${last.arg}`.trim() : "before anything was reported",
+    // The last step, read as "what it was doing when it stopped" — the verb
+    // (provider prose, often a tool title) and its target are separated with
+    // the design's separator token so they never read as one ambiguous path.
+    at: last ? `${last.verb.toLowerCase()} · ${last.arg}`.trim() : "before anything was reported",
     reason: error,
     headline: firstLine.trim(),
     detail,

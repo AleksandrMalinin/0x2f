@@ -398,17 +398,19 @@ test("NAVIGATION: many tasks overflow the ledger; j/k/g/G move, / searches, ? he
   const session = await startTui({ workspace: base, cols: 100, rows: 30 });
   try {
     // The counts row shows the full picture; the groups at the top of the
-    // windowed ledger order it (the bottom groups are scrolled out — that is
-    // the point of the viewport overflow).
+    // windowed ledger order it, and the window's own cue row says how much
+    // is cut off below (the bottom groups are scrolled out — that is the
+    // point of the viewport overflow).
     await session.waitForText(/0x2F/, { timeout: 15000, label: "the product frame" });
     await session.waitForText(/! 5/, { label: "needs count" });
     await session.waitForText(/✕ 4/, { label: "failed count" });
     await session.waitForText(/✓ 6/, { label: "ready count" });
     await session.waitForText(/▶ 6/, { label: "working count" });
     await session.waitForText(/· 5/, { label: "done count" });
-    for (const group of ["NEEDS YOU", "FAILED", "READY"]) {
+    for (const group of ["NEEDS YOU", "FAILED"]) {
       await session.waitForText(new RegExp(group), { label: `group header ${group}` });
     }
+    await session.waitForText(/▼ \d+/, { label: "the overflow cue at the ledger cutoff" });
 
     // The cursor starts on what wants you.
     await session.waitForText(/NEEDS YOU ·/, { label: "first selection is a needs task" });

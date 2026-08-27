@@ -68,6 +68,19 @@ export function cut(value, n) {
   return s.length <= width ? s : s.slice(0, Math.max(1, width - 1)) + "…";
 }
 
+// A fixed-width cell for provider-authored WORDS — a tool verb, an action
+// title, a provider name. These routinely exceed their column ("EDIT
+// SUBMIT PATH" in an 8-column verb slot), and `pad` would truncate them
+// SILENTLY: the cut word then collides with the next column ("EDIT
+// SUBsrc/app.ts"). cellWord ellipsis-truncates to width-1 and reserves one
+// trailing gap, so a long word is marked as truncated and the next column
+// always starts on a clean boundary. Short values render exactly as pad
+// did, so the grid keeps its fixed columns.
+export function cellWord(value, n) {
+  const width = Math.max(2, n | 0);
+  return pad(cut(value, width - 1), width - 1) + " ";
+}
+
 // A path shortened from the FRONT: the filename is what identifies it, the
 // leading directories are context you drop first.
 export function shortPath(value, n) {
@@ -169,6 +182,20 @@ function stateColor(task, p) {
   return p.dim;
 }
 
+// The ledger's one-line answer to "what is this task waiting for?" A
+// permission's op is provider prose — often a tool title that itself names
+// a file ("Edit submit-capture.ts") — so it is ellipsis-truncated and the
+// target path is separated with the design's separator token: the two must
+// never read as one ambiguous path. The whole line is bounded with an
+// explicit ellipsis so a narrow pane clips honestly instead of silently.
+function permissionSubLine(task, w, p, T) {
+  const path = shortPath(task.halt.path, Math.max(8, w - 26));
+  const opMax = Math.max(4, w - 16 - path.length);
+  // cut() trims, so the indent lives outside the bounded body.
+  const body = cut("wants " + cut(task.halt.op.toLowerCase(), opMax) + " · " + path, w - 7);
+  return [T("     " + body, p.accent)];
+}
+
 // --- left pane: the ledger -----------------------------------------------------
 
 export function buildLeft(model, state, w, p, T) {
@@ -236,9 +263,9 @@ export function buildLeft(model, state, w, p, T) {
       // job is to let you scan, not to explain every task at once.
       let sub = null;
       if (task.state === "needs") {
-        sub = [T("     " + (task.halt?.kind === "decision"
-          ? "awaiting your answer"
-          : "wants " + task.halt.op.toLowerCase() + " " + shortPath(task.halt.path, Math.max(8, w - 26))), p.accent)];
+        sub = task.halt?.kind === "decision"
+          ? [T("     awaiting your answer", p.accent)]
+          : permissionSubLine(task, w, p, T);
       } else if (task.state === "failed") {
         sub = [T("     " + cut(task.fail?.at ?? "stopped", w - 6), p.bad)];
       } else if (task.state === "ready") {
@@ -248,7 +275,7 @@ export function buildLeft(model, state, w, p, T) {
         const last = [...task.steps].reverse().find(s => s.kind === "tool" || s.kind === "command");
         sub = [T("     ", p.dim)]
           .concat(ruleCells(task, 14, p))
-          .concat([T("  " + cut(last ? last.verb.toLowerCase() + " " + last.arg : task.activity || "starting", Math.max(6, w - 22)), p.dim)]);
+          .concat([T("  " + cut(last ? last.verb.toLowerCase() + " · " + last.arg : task.activity || "starting", Math.max(6, w - 22)), p.dim)]);
       }
       if (sub && (isSelected || task.state === "needs" || task.state === "failed")) {
         for (const cell of sub) cell.bg = bg;
@@ -330,7 +357,7 @@ export function buildRight(model, state, w, p, T) {
       lines.push({
         cells: [
           T("   " + padl(run.num, 2) + "  ", p.ghost),
-          T(pad(run.provider, 15), live ? p.fg : p.dim, live ? 600 : 400),
+          T(cellWord(run.provider, 15), live ? p.fg : p.dim, live ? 600 : 400),
           T(padl(run.duration ?? "—", 7) + "  ", p.ghost),
           T(pad(run.state, 10), color, live ? 600 : 500),
           T(run.model ? cut(run.model, Math.max(4, w - 42)) : "", p.ghost)
@@ -371,7 +398,7 @@ export function buildRight(model, state, w, p, T) {
     lines.push({
       cells: [
         T("   " + pad(kind, 9), p.ghost, 500),
-        T(pad(verb, 8), step.human || halt ? p.accent : bad ? p.bad : p.dim, step.human || halt ? 600 : 500),
+        T(cellWord(verb, 8), step.human || halt ? p.accent : bad ? p.bad : p.dim, step.human || halt ? 600 : 500),
         T(pad(cut(step.arg, argW), argW), step.human ? p.accent : bad ? p.bad : p.fg),
         T("  " + time, p.ghost)
       ]
@@ -407,6 +434,10 @@ export function buildRight(model, state, w, p, T) {
   if (primary) {
     acts.push(T("   ↵ ", p.accent, 600));
     acts.push(T(pad(primary.label, primary.label.length + 3), p.accent, 600));
+  } else {
+    // A working run wants nothing from you — the pinned row keeps its
+    // left margin so "c NOTE" never starts flush against the pane divider.
+    acts.push(T("   ", p.dim));
   }
   if (secondary) acts.push(T("x " + pad(secondary.label, secondary.label.length + 3), p.dim));
   acts.push(T("c NOTE", p.dim));
@@ -419,14 +450,14 @@ function stateBlock(task, w, p, T) {
   const lines = [];
   const row = (label, value, color, weight) =>
     lines.push({
-      cells: [T("   " + pad(label, 8), p.dim), T(cut(value, Math.max(6, w - 14)), color, weight)]
+      cells: [T("   " + cellWord(label, 8), p.dim), T(cut(value, Math.max(6, w - 14)), color, weight)]
     });
 
   if (task.state === "needs" && task.halt.kind === "permission") {
     lines.push({ cells: [T(" NEEDS YOU · PERMISSION", p.accent, 600)] });
     lines.push({
       cells: [
-        T("   " + pad(task.halt.op.toLowerCase(), 8), p.dim),
+        T("   " + cellWord(task.halt.op.toLowerCase(), 8), p.dim),
         T(shortPath(task.halt.path, Math.max(8, w - 14)), p.fg, 600)
       ]
     });
@@ -565,7 +596,7 @@ export function buildChanges(model, state, cols, p, T) {
     lines.push({ cells: [T("")] });
     lines.push({
       cells: [
-        T(" " + pad(task.halt.op.toLowerCase(), 8), p.dim),
+        T(" " + cellWord(task.halt.op.toLowerCase(), 8), p.dim),
         T(task.halt.path, p.fg, 600)
       ]
     });
@@ -767,7 +798,14 @@ export function buildHelp(cols, p, T) {
     { cells: [T("")] }
   ];
   for (const [key, description] of KEYS) {
-    lines.push({ cells: [T("   " + pad(key, 8), p.accent, 600), T(description, p.dim)] });
+    // Descriptions wrap onto continuation lines (the key cell stays on the
+    // first) — a long entry must never be clipped silently at the edge.
+    const rows = wrap(description, Math.max(20, cols - 16));
+    rows.forEach((row, i) => {
+      lines.push({
+        cells: [T("   " + pad(i ? "" : key, 8), p.accent, 600), T(row, p.dim)]
+      });
+    });
   }
   lines.push({ cells: [T("")] });
   lines.push({ cells: [T("   MODEL", p.fg, 600)] });
@@ -838,9 +876,20 @@ export function frame(model, state, opts = {}) {
     // pinned — the counts and the clock must never scroll away.
     let leftWindow = left;
     if (left.length > avail) {
+      // One row of the window is the orientation cue, exactly where the
+      // ledger cuts off — mirroring the detail pane's N/M · J K readout, so
+      // groups hidden above or below the viewport are never silent.
       const selIndex = left.findIndex(l => l.selected);
-      const start = Math.max(3, Math.min(left.length - avail + 3, selIndex - Math.floor(avail / 2)));
-      leftWindow = left.slice(0, 3).concat(left.slice(start, start + avail - 3));
+      const cap = avail - 4;
+      const start = Math.max(3, Math.min(left.length - cap - 3, selIndex - Math.floor(cap / 2)));
+      const hiddenAbove = start - 3;
+      const hiddenBelow = left.length - (start + cap);
+      leftWindow = left.slice(0, 3).concat(left.slice(start, start + cap));
+      const cue = [
+        hiddenAbove > 0 ? "▲ " + hiddenAbove : null,
+        hiddenBelow > 0 ? "▼ " + hiddenBelow : null
+      ].filter(Boolean).join(" · ");
+      leftWindow.push({ cells: [T("     " + cue, p.ghost)] });
     }
 
     // The action row is pinned to the bottom of the right pane: the one
@@ -896,7 +945,10 @@ export function frame(model, state, opts = {}) {
     for (const part of parts) {
       const next = hint ? hint + "   " + part : part;
       if (next.length > cols - 4) {
-        hint += "   ?";
+        // The hint bar is full: mark the cut with an ellipsis and keep the
+        // pointer to the key list, bounded so the footer's own cut is a
+        // no-op — never a bare dangling fragment.
+        hint = cut(hint, cols - 9) + " ?";
         break;
       }
       hint = next;
