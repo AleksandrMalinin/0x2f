@@ -1,6 +1,9 @@
 # Work task state — never commit
 .work/
 
+# Generated TUI visual-review artifacts (frames, reports)
+.review/
+
 # Relay runtime state — disposable by design, never commit
 relay/data/
 

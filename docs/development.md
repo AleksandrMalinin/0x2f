@@ -178,6 +178,46 @@ installed. It runs the same golden path against a real provider in a scratch
 workspace (kept for inspection unless `--clean`), shows what the TUI showed
 at every checkpoint, and verifies clean terminal restoration.
 
+## The TUI visual-review pipeline
+
+`npm run review:tui` (`scripts/review-tui.mjs`) captures a small FIXED set of
+representative terminal frames by driving the same deterministic PTY journey
+(the shared `test/tui-pty/driver.mjs` + fake ACP agents) — populated
+overview, WORKING, a live permission, a long-question decision, READY +
+the real diff view, a normalized provider-auth FAILED state, the composer,
+help, and two states at a constrained 80x24 size — and saves them to
+`.review/frames/`:
+
+- `<id>.txt` — the normalized fixed-width cell grid, scrubbed of the live
+  clock, elapsed durations, the machine hostname and scratch paths, so
+  frames are byte-stable across runs (verified: re-captures diff clean);
+- `<id>.svg` — the same cells rendered with the real theme palette at fixed
+  cell metrics (no developer-terminal screenshots);
+- `index.html` — a one-page gallery for human inspection;
+- `report.md` / `report.json` — the structured verdict report.
+
+Every frame is first checked with deterministic structural invariants (frame
+fills the terminal exactly, no control/ANSI leaks, expected landmarks, a
+single focus marker, the footer intact, elision at narrow sizes). Then —
+OPTIONALLY — the frames are handed to an installed reviewer:
+
+```bash
+npm run review:tui                 # local checks; AI if claude/dsh is found
+npm run review:tui -- --no-ai      # local checks only
+npm run review:tui -- --ai claude  # force the Claude Code CLI reviewer
+npm run review:tui -- --ai deepseek# force `dsh --profile headless`
+npm run review:tui -- --strict     # exit 1 on AI findings too
+```
+
+The reviewer gets the frames inline as fixed-width text, a prompt restricted
+to visual criteria only (overflow, clipping, grid alignment, hierarchy,
+truncation, focus ambiguity, spacing, narrow sizes — never redesign or new
+features), runs with cwd inside `.review/` (no repository tree reachable),
+and must return a JSON verdict per frame. The reply is parsed and merged
+into the report; the raw reply is kept when it does not parse. The pipeline
+never runs during `npm test`, and with no reviewer configured it still
+produces the full PASS/findings report — an AI reviewer is strictly optional.
+
 ## Adding a provider
 
 **Configured (no source change):** drop one manifest into

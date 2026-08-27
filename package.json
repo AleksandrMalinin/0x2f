@@ -34,6 +34,7 @@
     "test": "node --test \"test/*.test.mjs\"",
     "test:tui": "node --test test/tui-pty-e2e.test.mjs",
     "dogfood:tui": "node scripts/dogfood-tui.mjs",
+    "review:tui": "node scripts/review-tui.mjs",
     "build:client": "node deploy/client/build.mjs",
     "verify:phone": "node scripts/verify-phone.mjs"
   },
