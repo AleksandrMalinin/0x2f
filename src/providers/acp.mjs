@@ -434,6 +434,17 @@ function runAcp({ manifest, cwd, prompt, onEvent, permissions, decisionFile = nu
         permissionPending.delete(requestId);
         const optionId =
           decision.grant === "allow" ? allowOption?.optionId : rejectOption?.optionId;
+        // Surface the resolution to the worker BEFORE answering the agent.
+        // The worker's permission.resolved handler rewrites the task to
+        // "working" while the same run continues; answering first would let
+        // the agent's completion settle the run (ready) and then be clobbered
+        // back to "working" by the fire-and-forget handler landing last —
+        // a finished run stuck at working forever.
+        try {
+          await onEvent({ type: "permission.resolved", grant: decision.grant });
+        } catch {
+          /* best-effort — the completion path still settles the run */
+        }
         rpc.respond(requestId, {
           outcome: optionId
             ? { outcome: "selected", optionId }
@@ -444,7 +455,6 @@ function runAcp({ manifest, cwd, prompt, onEvent, permissions, decisionFile = nu
         } catch {
           /* best-effort */
         }
-        onEvent({ type: "permission.resolved", grant: decision.grant });
       }, 250);
       pollTimers.add(timer);
     }

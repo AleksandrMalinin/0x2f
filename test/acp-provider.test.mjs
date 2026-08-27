@@ -482,7 +482,10 @@ test("ACP: cancel sends session/cancel and the run ends failed", async () => {
     let outcome;
     try {
       const run = provider.start({ cwd: dir, prompt: "x", onEvent: e => events.push(e) });
-      await new Promise(r => setTimeout(r, 400)); // let the agent reach session/prompt
+      // Wait for the session to actually exist before cancelling — a fixed
+      // sleep races the handshake under load and would cancel with no
+      // session id (and no cancel to assert on).
+      await waitForEvent(events, e => e.type === "run.started");
       provider.cancel();
       outcome = await run;
     } finally {

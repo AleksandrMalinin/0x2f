@@ -210,6 +210,11 @@ const onEvent = async event => {
       await record("permission.resolved", { grant: event.grant });
       await withState(async () => {
         const fresh = await store.readJson(metaPath);
+        // Reflect the resumed run only while the task is still parked on it.
+        // If the run already settled to a terminal state (the completion
+        // raced this fire-and-forget handler), the terminal state stands —
+        // a late "working" write must never clobber ready/failed.
+        if (fresh.status !== "needs_you") return;
         const now = new Date().toISOString();
         let resumed = { ...fresh, status: "working", updatedAt: now };
         delete resumed.blockedOn;
