@@ -347,7 +347,7 @@ Everything else is added **declaratively**: drop one JSON manifest into
   "id": "cursor",
   "displayName": "Cursor",
   "transport": "acp",
-  "command": ["cursor", "--acp"]
+  "command": ["agent", "acp"]
 }
 ```
 

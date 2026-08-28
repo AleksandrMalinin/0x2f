@@ -1,4 +1,4 @@
-// LAN transport helpers for v0.5 LAN-first pairing.
+// LAN transport helpers for LAN-first pairing.
 //
 // The phone and the Mac are on the same local network; `2f pair` exposes a
 // one-time pairing surface on the Mac's private LAN interface and the phone

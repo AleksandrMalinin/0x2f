@@ -1,6 +1,7 @@
-// The hosted 0x2F endpoints `2f pair` uses when no --relay / --client flag is
-// given and no prior pairing config exists — the "just run `2f pair`" flow for
-// a real phone.
+// The hosted 0x2F endpoints used when the hosted path is explicitly
+// requested — `2f pair --relay` / `--client`, or the 0X2F_RELAY_URL /
+// 0X2F_CLIENT_ORIGIN env vars. Plain `2f pair` with no flags pairs over the
+// local network (LAN-first).
 //
 // Two origins, on purpose (see deploy/README.md): the relay and the client
 // origin are separate HTTPS endpoints, because the E2E guarantee "a

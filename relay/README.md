@@ -16,7 +16,7 @@ AES-256-GCM envelope keyed by the pairing code — which the relay never sees
 serve).
 
 The implementation lives in `src/relay/server.mjs` and is shared: the local
-product mounts it **in-process** for LAN-first pairing (v0.5 — a phone on the
+product mounts it **in-process** for LAN-first pairing (a phone on the
 same Wi-Fi talks to the Mac directly through the same protocol; see
 [`docs/remote-control.md`](../docs/remote-control.md)), while this directory
 is the **private hosted deployment** for future remote use — never shipped in
@@ -58,7 +58,7 @@ node server.mjs --port 8080 --host 127.0.0.1 --data ./data/state.json
 
 ## Pairing
 
-**v0.5 is LAN-first.** On the Mac, in the workspace you want remote control
+**0x2F is LAN-first.** On the Mac, in the workspace you want remote control
 over, run `2f pair` with no flags — it detects the Mac's private LAN address,
 turns the Mac's runtime into its own local relay for the pairing window, and
 prints a same-Wi-Fi URL + code (see

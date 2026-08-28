@@ -38,8 +38,8 @@
 // The API is protected by four layers, all enforced HERE at the boundary:
 //
 //   1. Host allowlist — only Host headers naming 127.0.0.1 / localhost /
-//      [::1] are served, PLUS, only while LAN pairing is active (`2f pair`,
-//      v0.5), private-LAN hosts — and even then only the BOUNDED LAN surface
+//      [::1] are served, PLUS, only while LAN pairing is active (`2f pair`),
+//      private-LAN hosts — and even then only the BOUNDED LAN surface
 //      below, never the local API. A DNS-rebinding page resolves a foreign
 //      host to the loopback address, but its Host header is the attacker's
 //      name, so it is refused before any routing happens.
@@ -54,7 +54,7 @@
 //      local scripts/tests). The token is generated per server process.
 //   4. Request-body cap — bodies are bounded before any JSON.parse.
 //
-// LAN-first pairing (v0.5): `2f pair` is the ONLY thing that turns the LAN
+// LAN-first pairing: `2f pair` is the ONLY thing that turns the LAN
 // surface on. When it does, the runtime is started with LAN mode: it binds
 // all interfaces and serves private-LAN hosts ONLY the static client (the
 // pairing page + app) and an in-process instance of the RELAY protocol — the

@@ -367,7 +367,7 @@ detects remote mode from the stored pairing and never queues commands.
 
 ## Remote control — `src/relay/`, `relay/`, `src/web/`
 
-- `pair.mjs` — `2f pair`: LAN-first by default (v0.5) — detects the Mac's
+- `pair.mjs` — `2f pair`: LAN-first by default — detects the Mac's
   private LAN address and writes `.work/relay.json` (stable `deviceId` +
   long-lived `deviceSecret`) with the LAN transport, so the Mac's own runtime
   serves the phone. `--relay <url>` / `--client <url>` (or the
@@ -409,7 +409,7 @@ detects remote mode from the stored pairing and never queues commands.
   npm package).
 
 ```text
-LAN (v0.5 default)   phone ── http://<mac's LAN IP>:4242 ──► Mac runtime
+LAN (default)   phone ── http://<mac's LAN IP>:4242 ──► Mac runtime
                        (pairing page + relay protocol, in-process mount)
 
 Hosted (future/remote)

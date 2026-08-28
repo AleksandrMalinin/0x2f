@@ -8,7 +8,7 @@
 //   - hosted (private deployment): relay/server.mjs is the standalone entry
 //     point behind TLS (Caddy/nginx), state in relay/data/state.json — never
 //     shipped in the npm package;
-//   - LAN pairing (v0.5, part of the local product): the Mac's runtime
+//   - LAN pairing (part of the local product): the Mac's runtime
 //     server mounts it in-process (src/server.mjs, `mount: true`) so a phone
 //     on the same Wi-Fi talks to the Mac directly through the same protocol.
 //

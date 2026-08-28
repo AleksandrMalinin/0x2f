@@ -1,6 +1,6 @@
 # 0x2F hosted endpoints — deployment
 
-> **v0.5 is LAN-first**: plain `2f pair` pairs a phone on the same Wi-Fi with
+> **0x2F is LAN-first**: plain `2f pair` pairs a phone on the same Wi-Fi with
 > no hosted infrastructure at all (the Mac's runtime becomes its own local
 > relay — see `docs/remote-control.md`). This document is the **hosted**
 > deployment: the future/remote path (and your own custom relay), reached
@@ -57,9 +57,10 @@ E2E key derivation, session/revocation, and `pair --off`.
 4. **Revocation intact.** `2f pair --off` and credential rotation hit the
    relay over the network exactly as before; sessions still expire on their
    own (30 days) and re-pairing still retires the previous phone.
-5. **The default flow stays `2f pair`.** The CLI defaults to the hosted
-   endpoints (`src/relay/defaults.mjs`); `--relay` / `--client` and the
-   `0X2F_RELAY_URL` / `0X2F_CLIENT_ORIGIN` env vars remain for development.
+5. **The default flow stays `2f pair`.** Plain `2f pair` pairs over the local
+   network (LAN-first); the hosted endpoints (`src/relay/defaults.mjs`) are
+   used when `--relay` / `--client` or the `0X2F_RELAY_URL` /
+   `0X2F_CLIENT_ORIGIN` env vars are given.
 
 ## Deploy (≈5 minutes, one small VPS)
 

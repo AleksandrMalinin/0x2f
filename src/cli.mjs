@@ -503,7 +503,7 @@ async function main() {
   }
 
   // `2f pair [--relay <url>] [--client <url>] [--lan] [--port <n>]` — one-time
-  // pairing for remote control from a phone. v0.5 pairs over the local
+  // pairing for remote control from a phone. 0x2F pairs over the local
   // network by default (same Wi-Fi); `--relay` / `--client` (or the
   // 0X2F_RELAY_URL / 0X2F_CLIENT_ORIGIN env vars) pair through a hosted
   // relay. Prints a phone-openable URL and the E2E pairing code; the phone

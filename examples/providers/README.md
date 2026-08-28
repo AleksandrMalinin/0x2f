@@ -51,7 +51,7 @@ Verified: `opencode acp` starts OpenCode as an ACP-compatible subprocess
 
 ## `codex-acp.json` — (removed: Codex is now a built-in native provider)
 
-Codex no longer needs an ACP manifest: since 0x2F v0.6, `codex` is a built-in
+Codex no longer needs an ACP manifest: `codex` is a built-in
 native provider (`codex exec --json` + `codex exec resume`), with its own
 documented capability boundaries (see `docs/codex-capability-map.md`). A
 `.work/providers/*.json` manifest with `"id": "codex"` is rejected as a
@@ -59,7 +59,7 @@ redefinition of a built-in provider.
 
 ## `gemini.json` — (removed: Gemini CLI is now a built-in native provider)
 
-Gemini CLI no longer needs an ACP manifest: since 0x2F v0.6, `gemini` is a
+Gemini CLI no longer needs an ACP manifest: `gemini` is a
 built-in native provider (`gemini -p --skip-trust -o stream-json` + `--resume
 <uuid>`), with its own documented capability boundaries (see
 `docs/gemini-capability-map.md`). A `.work/providers/*.json` manifest with

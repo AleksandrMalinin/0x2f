@@ -4,7 +4,7 @@
 // by the Mac, bound to the Mac's outbound relay connection, and presented by
 // the phone exactly once. No accounts, no passwords, no relay-side identity.
 //
-// Transports (v0.5):
+// Transports:
 //   - LAN (default): the phone and the Mac are on the same local network.
 //     `2f pair` detects the Mac's private LAN address, writes the LAN
 //     transport into `.work/relay.json`, and the runtime becomes the Mac's
@@ -137,7 +137,7 @@ export async function pairDevice({
   const cfg = await readConfig(configPath);
 
   // Transport choice: --lan forces LAN; --relay / --client / the hosted env
-  // vars force the hosted relay; otherwise v0.5 pairs over the local network
+  // vars force the hosted relay; otherwise 0x2F pairs over the local network
   // (LAN-first). The pairing semantics — URL + one-time code, token, session,
   // E2E key — are identical across transports.
   const explicitHosted = Boolean(url || client || process.env["0X2F_RELAY_URL"] || process.env["0X2F_CLIENT_ORIGIN"]);

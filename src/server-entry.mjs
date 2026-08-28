@@ -25,7 +25,7 @@ const [, , base, portArg] = process.argv;
 const port = portArg ? Number(portArg) : 4242;
 
 try {
-  // LAN-first pairing (v0.5): when `.work/relay.json` was written by
+  // LAN-first pairing: when `.work/relay.json` was written by
   // `2f pair` with the LAN transport, this runtime is the Mac's own relay —
   // it binds the LAN interface and serves the phone the pairing page +
   // relay protocol (see src/server.mjs). A loopback-only runtime cannot

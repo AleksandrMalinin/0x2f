@@ -1,6 +1,6 @@
 # 0x2F Remote Control — setup & testing walkthrough
 
-Control 0x2F from your phone. v0.5 is **LAN-first**: the phone and the Mac
+Control 0x2F from your phone. 0x2F is **LAN-first**: the phone and the Mac
 must be on the same local network — no relay, no tunnels, no accounts.
 
 ```text
@@ -145,7 +145,7 @@ E2E key, and retires the previous phone — that is how you switch phones.
 
 ## Step 7 — Hosted relay (future/remote, or your own deployment)
 
-LAN is the v0.5 default. The hosted path is preserved and unchanged:
+LAN is the default. The hosted path is preserved and unchanged:
 
 ```bash
 2f pair --relay https://relay.example.com --client https://app.example.com
