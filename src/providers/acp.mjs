@@ -44,7 +44,7 @@ import { classifyResult } from "../core/lifecycle.mjs";
 import { substituteCommand } from "./manifests.mjs";
 
 export const ACP_PROTOCOL_VERSION = 1;
-export const ACP_CLIENT_INFO = { name: "0x2f", version: "0.1.1" };
+export const ACP_CLIENT_INFO = { name: "0x2f", version: "0.1.2" };
 
 // Handshake steps must answer promptly; a prompt turn may legitimately run
 // for minutes, so only the handshake is bounded.

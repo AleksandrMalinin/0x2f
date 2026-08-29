@@ -29,6 +29,7 @@
 // as a reported step.
 
 import { deriveTitle, briefBody } from "../core/title.mjs";
+import { canonicalPath } from "../core/paths.mjs";
 
 export const LONG_TITLE_CHARS = 90;
 
@@ -728,8 +729,18 @@ export function sections(task, steps, caps = {}, result = null) {
     s => s.kind === "tool" || s.kind === "command" || s.kind === "human" || s.kind === "halt"
   );
   const changeSteps = steps.filter(s => s.kind === "change");
-  const files = uniq(changeSteps.map(s => s.arg));
-  const observedFiles = changeSteps.filter(s => s.source === "worktree").length;
+  // Canonicalize + dedupe the aggregate: the same logical file can arrive as
+  // "src/foo.mjs", "./src/foo.mjs" or "src/./foo.mjs", and as BOTH a
+  // provider-reported event and a repository-observed one. It is one file.
+  const canonical = p => canonicalPath(p);
+  const observedPaths = uniq(changeSteps.filter(s => s.source === "worktree").map(s => canonical(s.arg)));
+  const providerPaths = uniq(changeSteps.filter(s => s.source !== "worktree").map(s => canonical(s.arg)));
+  // Repository-observed final state is authoritative for what currently
+  // changed on disk: when observation exists, the aggregate list is the
+  // observed set (provider-reported paths that never persisted are transient
+  // telemetry and are NOT counted). Without observation (no git baseline),
+  // the canonicalized provider-reported set is the aggregate.
+  const files = observedPaths.length ? observedPaths : providerPaths;
   const commands = steps.filter(s => s.kind === "command").map(s => s.arg);
 
   const failed = task.status === "failed" || (task.status === "done" && !!task.error);
@@ -740,7 +751,7 @@ export function sections(task, steps, caps = {}, result = null) {
   // Drift is about PROVIDER-REPORTED evidence exceeding a declared capability.
   // Repository-observed changes (source "worktree") are 0x2F's own observation
   // of the working tree, not a claim the provider made — they never count.
-  if (changeSteps.some(s => s.source !== "worktree") && caps.supportsFileChanges !== true) {
+  if (providerPaths.length && caps.supportsFileChanges !== true) {
     capabilityDrift.push("fileChanges");
   }
   if (commands.length && caps.supportsCommands !== true) capabilityDrift.push("commands");
@@ -750,7 +761,7 @@ export function sections(task, steps, caps = {}, result = null) {
     activity: activityUnits.length
       ? { recent: activityUnits.slice(-5), earlier: Math.max(0, activityUnits.length - 5) }
       : null,
-    files: files.length ? { paths: files, observed: observedFiles } : null,
+    files: files.length ? { paths: files, observed: observedPaths.length } : null,
     commands: commands.length ? { commands } : null,
     result: !failed && closed && hasResult ? { text: result } : null,
     failure: failed ? { error: task.error ?? "" } : null,

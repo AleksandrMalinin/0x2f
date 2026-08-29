@@ -17,6 +17,7 @@ import {
   projectTask,
   projectRun,
   projectBlockedOn,
+  relPath,
   projectSnapshot,
   projectWorkspaceLabel,
   taskShowsResult,
@@ -62,7 +63,7 @@ test("projectTask: failure.remedy is bounded like any other adapter-authored fie
 });
 
 test("the closed vocabulary the relay checks against is the same one core/lifecycle.mjs owns", () => {
-  assert.deepEqual(FAILURE_KINDS, ["auth", "unavailable", "crashed", "blocked"]);
+  assert.deepEqual(FAILURE_KINDS, ["auth", "unavailable", "crashed", "blocked", "resume"]);
   for (const kind of FAILURE_KINDS) {
     const p = projectTask(baseTask({ failure: { kind } }));
     assert.equal(p.failure.kind, kind);
@@ -261,4 +262,19 @@ test("projectRun: outcome, duration and provider cross the relay for run history
   assert.equal(p.provider, "deepseek-harness");
   assert.equal(p.outcome, "needs_you");
   assert.equal(p.durationMs, 120000);
+});
+
+// --- §06: canonical path projection (item 3) ---------------------------------
+
+test("relPath: ./src/foo.mjs, src/foo.mjs and /w/src/foo.mjs project identically", () => {
+  assert.equal(relPath("/w", "./src/foo.mjs"), "src/foo.mjs");
+  assert.equal(relPath("/w", "src/foo.mjs"), "src/foo.mjs");
+  assert.equal(relPath("/w", "src/./foo.mjs"), "src/foo.mjs");
+  assert.equal(relPath("/w", "/w/src/foo.mjs"), "src/foo.mjs");
+});
+
+test("relPath: out-of-workspace paths flatten to the basename — never an absolute path", () => {
+  assert.equal(relPath("/w", "/other/place/x.ts"), "x.ts");
+  assert.equal(relPath("/w", "../outside/y.txt"), "y.txt");
+  assert.equal(relPath("/w", "../outside/x/y.txt"), "y.txt");
 });

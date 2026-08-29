@@ -256,12 +256,12 @@ if (remoteState) {
 }
 
 async function api(path, options) {
-  if (remoteClient) return remoteClient.api(path, options);
+  if (remoteClient) return remoteApi(path, options);
   if (remoteState) {
     // A pairing is stored but the client is still coming up (or was dropped
     // as unusable). Never fall back to the local API from a remote origin.
     await remoteReady;
-    if (remoteClient) return remoteClient.api(path, options);
+    if (remoteClient) return remoteApi(path, options);
   }
   const opts = { ...options };
   // Every mutating request carries a unique idempotency key. The relay
@@ -282,6 +282,25 @@ async function api(path, options) {
     throw new Error(message);
   }
   return res.status === 204 ? null : res.json();
+}
+
+// The remote transport wraps every call in an E2E-encrypted command round
+// trip. After ANY state-changing command settles — success OR failure — the
+// phone reconciles with the Mac's authoritative task state. This is the fix
+// for a remote action that mutates on the Mac but is never reflected back:
+// the phone no longer depends solely on the separate SSE event stream to
+// show READY -> DONE, and a failed/hung command leaves a refreshed, honest
+// view (never a permanently disabled control). The remote client's bounded
+// command timeout guarantees this finally always runs.
+async function remoteApi(path, options) {
+  const method = options?.method ?? "GET";
+  try {
+    return await remoteClient.api(path, options);
+  } finally {
+    if (method === "POST") {
+      reloadTasks().catch(() => {});
+    }
+  }
 }
 
 function requestId() {
@@ -653,8 +672,10 @@ const reject = id => {
   act(() => post("/api/tasks/" + id + "/reject"));
 };
 const accept = id => {
-  if (remoteBlocked()) return;
-  act(async () => {
+  if (remoteBlocked()) return Promise.resolve(false);
+  // Settles on success OR failure (act() flashes the error) so callers can
+  // re-render — a settled action must never leave a disabled control behind.
+  return act(async () => {
     await post("/api/tasks/" + id + "/close");
     if (state.openId === id) state.openId = null;
   });
@@ -3109,7 +3130,7 @@ function renderMobileActionBar(row, frozen) {
     const acceptBtn = el("button", { class: "m-abar-btn m-abar-primary", text: "ACCEPT" });
     acceptBtn.addEventListener("click", () => {
       acceptBtn.disabled = true;
-      accept(row.id);
+      accept(row.id).finally(() => render());
     });
     const correctBtn = el("button", { class: "m-abar-btn m-abar-secondary", text: "CORRECT" });
     correctBtn.addEventListener("click", () => openCorrection(row.id));
@@ -3128,7 +3149,7 @@ function renderMobileActionBar(row, frozen) {
     const closeBtn = el("button", { class: "m-abar-btn m-abar-secondary", text: "CLOSE" });
     closeBtn.addEventListener("click", () => {
       closeBtn.disabled = true;
-      close(row.id);
+      close(row.id).finally(() => render());
     });
     return el("div", { class: "m-abar" }, [el("div", { class: "m-abar-row" }, [retryBtn, closeBtn])]);
   }

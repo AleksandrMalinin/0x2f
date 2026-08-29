@@ -11,7 +11,7 @@
 // Attention Stack still renders while the Mac is offline — the relay holds no
 // content anymore.
 
-import { importKey, b64decode, b64encode, encrypt, decrypt, randomId } from "/app/e2e.mjs";
+import { importKey, b64decode, b64encode, encrypt, decrypt, randomId } from "./e2e.mjs";
 
 export const REMOTE_STORE_KEY = "0x2f.remote";
 export const REMOTE_CACHE_KEY = "0x2f.remote-cache";
@@ -75,7 +75,7 @@ function mapPath(path, method) {
   return null;
 }
 
-export async function createRemoteClient(state) {
+export async function createRemoteClient(state, opts = {}) {
   const key = await importKey(b64decode(state.key));
   const authHeaders = { "content-type": "application/json", authorization: "Bearer " + state.session };
 
@@ -88,6 +88,13 @@ export async function createRemoteClient(state) {
   // one requestId, never double execution).
   const RETRY_503 = 3;
   const RETRY_DELAY_MS = 800;
+  // A bounded command round-trip. The relay itself answers 504 after its own
+  // command timeout (30s), so this is the backstop for a response lost in
+  // transit — WITHOUT it, a dropped HTTP response leaves the phone's action
+  // promise pending forever and the control surface stuck "disabled". The
+  // failure is surfaced honestly and the caller reconciles with the Mac's
+  // authoritative state; it is never a silent retry that could double-run.
+  const COMMAND_TIMEOUT_MS = opts.commandTimeoutMs ?? 45_000;
 
   async function sendCommand(op, { taskId, body } = {}, { requestId = randomId(), ts } = {}) {
     const plaintext = {
@@ -101,12 +108,20 @@ export async function createRemoteClient(state) {
     const { iv, data } = await encrypt(key, plaintext, { from: state.phoneId, requestId });
     let lastError = null;
     for (let attempt = 0; attempt <= RETRY_503; attempt++) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), COMMAND_TIMEOUT_MS);
       try {
-        const res = await fetch(`${state.relayUrl}/api/command`, {
-          method: "POST",
-          headers: authHeaders,
-          body: JSON.stringify({ requestId, from: state.phoneId, iv, data })
-        });
+        let res;
+        try {
+          res = await fetch(`${state.relayUrl}/api/command`, {
+            method: "POST",
+            headers: authHeaders,
+            body: JSON.stringify({ requestId, from: state.phoneId, iv, data }),
+            signal: controller.signal
+          });
+        } finally {
+          clearTimeout(timer);
+        }
         if (!res.ok) {
           let message = "HTTP " + res.status;
           try {
@@ -128,6 +143,17 @@ export async function createRemoteClient(state) {
         }
         return ack.body;
       } catch (error) {
+        if (error?.name === "AbortError") {
+          // The relay never answered within the bound — the response was lost
+          // in transit. Surface it honestly (never silently retry: the Mac
+          // may already have executed the action).
+          throw Object.assign(
+            new Error(
+              "The Mac did not respond in time — the action may or may not have run. The task state has been refreshed."
+            ),
+            { status: 504 }
+          );
+        }
         if (error.status !== 503 || attempt >= RETRY_503) throw error;
         lastError = error;
         await new Promise(r => setTimeout(r, RETRY_DELAY_MS));

@@ -109,7 +109,7 @@ test("worker records repository-observed file.changed events for a provider with
   }
 });
 
-test("a provider that DOES declare file-change reporting is not observed (no double-reporting)", async () => {
+test("a provider that DOES declare file-change reporting is observed too (authoritative on-disk state)", async () => {
   const base = await fs.mkdtemp(path.join(os.tmpdir(), "work-observed-claude-"));
   try {
     await git(["init"], base);
@@ -158,9 +158,15 @@ test("a provider that DOES declare file-change reporting is not observed (no dou
     const task = await store.findTask(1);
     const logEvents = await store.readEvents(task.slug);
     const observed = logEvents.filter(e => e.type === "file.changed" && e.source === "worktree");
-    // The provider reports file changes, so the worker must not double-observe.
-    assert.equal(observed.length, 0);
-    const reported = logEvents.filter(e => e.type === "file.changed");
+    // The worker observes EVERY run (when git gives a baseline), so the
+    // on-disk final state is authoritative even for a provider that reports
+    // its own file.changed events. Both representations coexist as telemetry;
+    // the aggregate ledger dedupes them by canonical path.
+    assert.ok(
+      observed.some(e => e.path === "made-by-claude.txt"),
+      "the provider's run is also observed: " + JSON.stringify(logEvents)
+    );
+    const reported = logEvents.filter(e => e.type === "file.changed" && e.source !== "worktree");
     assert.ok(reported.length >= 1, "the provider's own file.changed event is recorded");
   } finally {
     await fs.rm(base, { recursive: true, force: true });

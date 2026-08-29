@@ -150,6 +150,10 @@ const ASSETS = {
   // those two from drifting — the same reason ledger.mjs itself is shared.
   // It is a pure string function: no store, no fs, no secrets.
   "/core/title.mjs": ["core/title.mjs", "text/javascript; charset=utf-8"],
+  // Pure string path canonicalization, shared by the ledger's aggregate
+  // changed-file list (served to the browser like title.mjs) and the relay
+  // projection. No fs, no secrets.
+  "/core/paths.mjs": ["core/paths.mjs", "text/javascript; charset=utf-8"],
   // The pure-JS crypto fallback (see src/web/e2e.mjs): WebCrypto's subtle API
   // is unavailable in insecure contexts, so a phone on a plain-http LAN page
   // imports these vendored modules. Kept in sync with scripts/vendor-crypto.mjs.

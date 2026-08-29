@@ -64,7 +64,7 @@ let currentProvider = null;
 let runSessionId = null; // the provider-surfaced session id, persisted on pause
 // Git baseline captured before the run starts, so the worker can observe
 // which files the run changed (see recordObservedChanges). Null when the
-// provider reports file changes itself, or the workspace has no git baseline.
+// workspace has no git baseline (observation is impossible, honestly).
 let worktreeBefore = null;
 process.on("SIGTERM", () => {
   try {
@@ -266,8 +266,9 @@ async function finish(current, outcome) {
 }
 
 // Repository-observed changes land BEFORE the terminal event, so the run's
-// trace reads "changed … completed", never the reverse. Only providers
-// without file-change reporting are observed (see the baseline above);
+// trace reads "changed … completed", never the reverse. The observed set is
+// the authoritative on-disk final state for the aggregate changed-file list
+// (the ledger dedupes provider telemetry against it by canonical path);
 // 0x2F's own `.work/` state is never counted as a run's change.
 async function recordObservedChanges() {
   if (!worktreeBefore) return;
@@ -297,16 +298,14 @@ try {
   }
   currentProvider = provider;
 
-  // Baseline for repository-observed file changes. A provider that declares
-  // file-change reporting (Claude Code) already reports what it edits; a
-  // provider that does not (Codex exec, DeepSeek Harness headless) still
-  // leaves its work in the working tree, so this worker observes git around
-  // the run instead of faking a provider event. Captured after the run's
-  // prompt file is in place and before the provider starts executing.
-  worktreeBefore =
-    provider.capabilities?.supportsFileChanges === true
-      ? null
-      : await snapshotWorktree(base);
+  // Baseline for repository-observed file changes. The worker observes git
+  // around EVERY run (when a git baseline exists) so the final changed-file
+  // claim is always the authoritative on-disk state — providers' own
+  // file.changed telemetry (live, possibly transient) stays in the trace,
+  // and the ledger's aggregate dedupes the two by canonical path with the
+  // observed set authoritative. Captured after the run's prompt file is in
+  // place and before the provider starts executing.
+  worktreeBefore = await snapshotWorktree(base);
 
   let current = task;
   let outcome;

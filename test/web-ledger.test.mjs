@@ -1354,3 +1354,41 @@ test("projectRuns: duration falls back to completedAt - startedAt; absent timing
   assert.equal(runs[0].duration, "2:00");
   assert.equal(runs[1].duration, null); // in-flight run has no completion yet
 });
+
+// --- canonical aggregate changed-file list (item 3) --------------------------
+
+test("sections: provider + observed spellings of ONE file aggregate to ONE logical file", () => {
+  const events = log([
+    ["file.changed", 1, { path: "src/foo.mjs" }],
+    ["file.changed", 2, { path: "./src/foo.mjs" }],
+    ["file.changed", 3, { path: "src/foo.mjs", source: "worktree" }]
+  ]);
+  const { steps } = toSteps(coarseTask(), events);
+  const sec = sections(coarseTask(), steps, COARSE["deepseek-harness"].capabilities, null);
+  assert.deepEqual(sec.files.paths, ["src/foo.mjs"]);
+  assert.equal(sec.files.observed, 1);
+});
+
+test("sections: transient provider events that never persisted are NOT counted when observation exists", () => {
+  const events = log([
+    ["file.changed", 1, { path: "a.ts" }],
+    ["file.changed", 2, { path: "tmp/transient.ts" }],
+    ["file.changed", 3, { path: "a.ts", source: "worktree" }]
+  ]);
+  const { steps } = toSteps(coarseTask(), events);
+  const sec = sections(coarseTask(), steps, COARSE["deepseek-harness"].capabilities, null);
+  // The observed final state (a.ts) is authoritative; tmp/transient.ts was
+  // reported but never persisted — it stays historical telemetry, not a claim.
+  assert.deepEqual(sec.files.paths, ["a.ts"]);
+});
+
+test("sections: without observation, provider-reported paths are canonicalized and deduped", () => {
+  const events = log([
+    ["file.changed", 1, { path: "src/foo.mjs" }],
+    ["file.changed", 2, { path: "./src/foo.mjs" }]
+  ]);
+  const { steps } = toSteps(coarseTask(), events);
+  const sec = sections(coarseTask(), steps, COARSE["deepseek-harness"].capabilities, null);
+  assert.deepEqual(sec.files.paths, ["src/foo.mjs"]);
+  assert.equal(sec.files.observed, 0);
+});

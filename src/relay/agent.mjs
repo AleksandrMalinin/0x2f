@@ -466,7 +466,23 @@ export function createRelayAgent({
 
   function queueCommand(frame, plaintext) {
     const { requestId, op, taskId, body, ts } = plaintext;
-    if (!confirmed()) return; // no phone has completed pairing
+    if (!confirmed()) {
+      // A command arriving while the pairing is not confirmed used to be
+      // silently dropped — the phone's request then hung until the relay's
+      // command timeout, with no signal and no state change. Answer honestly
+      // instead (when a key exists to encrypt with); the phone surfaces the
+      // error and reconciles with the authoritative state.
+      sendEnvelope(
+        {
+          cmd: "ack",
+          ok: false,
+          status: 401,
+          error: "The Mac is not accepting remote commands right now (pairing not confirmed)."
+        },
+        requestId
+      );
+      return;
+    }
     if (frame.from !== cfg.phoneId) return; // envelope not from our phone
 
     const cached = ackCache.get(requestId);

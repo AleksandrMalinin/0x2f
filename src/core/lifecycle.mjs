@@ -31,7 +31,7 @@ export const BLOCKED_REASONS = ["permission", "decision", "question"];
 // error prose. A small closed vocabulary Work owns, not a free string —
 // providers may only pick from it, never invent a new kind:
 //
-//   { kind: "auth" | "unavailable" | "crashed" | "blocked", remedy? }
+//   { kind: "auth" | "unavailable" | "crashed" | "blocked" | "resume", remedy? }
 //
 // `remedy` is optional and adapter-authored: a short, single-line,
 // non-interpolated string the UI renders verbatim (e.g. "claude /login").
@@ -41,7 +41,10 @@ export const BLOCKED_REASONS = ["permission", "decision", "question"];
 // `blocked` means the agent explicitly reported it could not perform the
 // requested work because of an environment/sandbox/access blocker (see
 // `classifyResult` below) — the process exited fine, the work did not happen.
-export const FAILURE_KINDS = ["auth", "unavailable", "crashed", "blocked"];
+// `resume` means a permission grant was recorded but the provider could not
+// continue the session (a vendor resume limitation) — the run fails honestly
+// rather than pretending the granted work continued.
+export const FAILURE_KINDS = ["auth", "unavailable", "crashed", "blocked", "resume"];
 
 // Work's shared prompt (project.mjs) asks every agent to end with a
 // `## Needs human decision` section. This parser is a Work convention — not a

@@ -19,6 +19,7 @@
 
 import { FAILURE_KINDS } from "../core/lifecycle.mjs";
 import { MAX_BRIEF } from "../core/limits.mjs";
+import { canonicalPath } from "../core/paths.mjs";
 
 const TRUNC = {
   text: 500, // progress activity line
@@ -68,15 +69,24 @@ function truncProse(value, max, base) {
 }
 
 // Paths: inside the workspace → relative; outside → basename only. Either way
-// the machine's absolute layout never leaves the Mac.
+// the machine's absolute layout never leaves the Mac. The path is CANONICALIZED
+// first ("./src/foo.mjs" and "src/foo.mjs" name the same file, so they must
+// project to the same relative path — not one relative and one basename),
+// which is also what keeps the phone's aggregate changed-file count consistent
+// with the desktop's. A workspace-relative path is kept relative (the provider
+// ran with the workspace as cwd); only paths that clearly point OUTSIDE the
+// workspace — absolute elsewhere, or relative with a leading "../" — flatten
+// to their basename.
 export function relPath(base, file) {
   if (!file) return "";
-  const s = String(file);
+  const s = canonicalPath(file);
   if (base) {
     const prefix = base.endsWith("/") ? base : base + "/";
     if (s.startsWith(prefix)) {
-      const rel = s.slice(prefix.length);
-      return trunc(rel || ".", TRUNC.path);
+      return trunc(s.slice(prefix.length) || ".", TRUNC.path);
+    }
+    if (!s.startsWith("/") && !s.startsWith("../")) {
+      return trunc(s || ".", TRUNC.path);
     }
   }
   const basename = s.split(/[\\/]/).pop() || s;

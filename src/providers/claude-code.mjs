@@ -156,7 +156,7 @@ export const claudeCodeProvider = {
       args.push("--permission-mode", "acceptEdits");
     }
     args.push(prompt);
-    return runClaude({ cwd, args, onEvent });
+    return runClaude({ cwd, args, onEvent, resuming: true });
   }
 };
 
@@ -169,7 +169,31 @@ export function claudeBin() {
   return process.env.CLAUDE_BIN ?? "claude";
 }
 
-function runClaude({ cwd, args, onEvent }) {
+// A failed invocation -> a normalized failed outcome. When the failure
+// happens on a RESUME, the run is classified kind "resume" (unless it is a
+// more specific auth failure): the human's ALLOW was recorded, but Claude
+// Code could not continue the session — print-mode session resume is not
+// reliably supported by the vendor CLI (documented limitation) — so the run
+// must fail HONESTLY instead of pretending the permission was successfully
+// granted and the work continued. This is structural (the invocation was a
+// resume), never a match on a vendor error string.
+function failedOutcome(error, resuming) {
+  const failure = classifyClaudeFailure(error);
+  if (!resuming || failure) {
+    return { status: "failed", error, ...(failure ? { failure } : {}) };
+  }
+  return {
+    status: "failed",
+    error:
+      `Claude Code could not resume the session (${error}). ` +
+      `The permission was recorded, but print-mode session resume is not reliably ` +
+      `supported by the installed Claude Code CLI, so the work could not be ` +
+      `continued in place. Rerun the task or close it.`,
+    failure: { kind: "resume" }
+  };
+}
+
+function runClaude({ cwd, args, onEvent, resuming = false }) {
   return new Promise((resolve, reject) => {
     let child;
     try {
@@ -222,15 +246,12 @@ function runClaude({ cwd, args, onEvent }) {
         const error =
           stderr.trim() ||
           `claude exited with code ${code} before producing a result.`;
-        const failure = classifyClaudeFailure(error);
-        resolve({ status: "failed", error, ...(failure ? { failure } : {}) });
+        resolve(failedOutcome(error, resuming));
       } else {
-        resolve({
-          status: "failed",
-          error: sawEvent
-            ? "claude exited without a result event."
-            : "claude produced no output. Is the Claude Code CLI installed and authenticated?"
-        });
+        const error = sawEvent
+          ? "claude exited without a result event."
+          : "claude produced no output. Is the Claude Code CLI installed and authenticated?";
+        resolve(failedOutcome(error, resuming));
       }
     });
 
