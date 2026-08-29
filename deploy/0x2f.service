@@ -1,0 +1,46 @@
+# 0x2F runtime — systemd unit for a dedicated always-on Linux host.
+#
+# The runtime is the foreground entry (src/server-entry.mjs, the same code as
+# `2f serve`). On start it recovers interrupted runs (tasks left "working"
+# with a dead worker are marked failed/crashed — see src/recover.mjs), and on
+# SIGTERM it shuts down cleanly without terminating detached workers, so an
+# in-flight run keeps executing while the runtime restarts.
+#
+# Install (replace <USER> and the two /srv/<REPO> paths with your values):
+#
+#   sudo cp deploy/0x2f.service /etc/systemd/system/0x2f.service
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now 0x2f
+#
+# Notes:
+#   - Run as the SAME user whose provider logins are valid (claude/codex/dsh
+#     keep credentials in that user's $HOME). A dedicated service account
+#     means re-authenticating every provider under it.
+#   - <REPO> is the repository whose .work/ 0x2F manages. 0x2F is one
+#     workspace per runtime: add another unit on another port for a second
+#     repository.
+#   - Restart=always + the recovery sweep make reboot self-healing. `2f pair`
+#     (LAN pairing) restarts this runtime with SIGTERM; systemd brings it
+#     straight back up, re-reading `.work/relay.json` and serving the LAN.
+#   - `systemctl stop 0x2f` is an admin stop and is honored; Restart=always
+#     only applies to unexpected exits.
+#   - The macOS equivalent is deploy/0x2f.plist (launchd). Neither OS is the
+#     default; both are thin templates for the same foreground entry.
+
+[Unit]
+Description=0x2F work runtime
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=<USER>
+WorkingDirectory=/srv/<REPO>
+ExecStart=/usr/bin/env node /usr/local/lib/node_modules/0x2f/src/server-entry.mjs /srv/<REPO> 4242
+Restart=always
+RestartSec=2
+UMask=0077
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

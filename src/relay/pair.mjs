@@ -321,11 +321,17 @@ export async function pairDevice({
   return { url: pairUrl, token, code, expiresAt: cfg.tokenExpiresAt, registered, transport };
 }
 
-// Stop the detached runtime for this workspace+port. Used by LAN mode to
-// restart a loopback-only runtime so it comes up serving the LAN surface.
-// The command line is the identity (same pattern the verify script uses).
+// Stop the runtime for this workspace+port. Used by LAN mode to restart a
+// loopback-only runtime so it comes up serving the LAN surface. Matches both
+// canonical forms of the foreground entry — `node …/server-entry.mjs <base>
+// <port>` (the detached runtime `2f ui` spawns and the service units use) and
+// `2f serve …` (the foreground alias) — so pairing works under either
+// supervisor. One runtime per port, so the serve arm matches by port; the
+// server-entry arm keeps the base for precision.
 function killRuntime(base, port) {
-  const child = spawn("pkill", ["-f", `server-entry.mjs ${base} ${port}`]);
+  const basePattern = String(base).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const pattern = `(server-entry\\.mjs ${basePattern} ${port}|cli\\.mjs serve[^\\n]* ${port})`;
+  const child = spawn("pkill", ["-f", pattern]);
   child.on("error", () => {});
   return child;
 }

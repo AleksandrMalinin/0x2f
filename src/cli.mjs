@@ -48,6 +48,9 @@ Commands:
   2f providers      list execution providers (native + configured)
   2f ui [port]      open the Web UI (start the runtime if needed; --no-browser
                     starts it without opening a browser)
+  2f serve [port]   run the runtime in the FOREGROUND (for launchd/systemd
+                    supervision — recovers interrupted runs at startup and
+                    shuts down cleanly on SIGTERM; workers keep running)
   2f tui [--light]  open the terminal client: the whole ledger, one task in
                     full, and the action it is waiting for — the same runtime
                     the Web UI and the phone speak to
@@ -499,6 +502,32 @@ async function main() {
     await requireProject(base);
     const { flags } = parseFlags(args);
     await runTui({ base, theme: flags.light ? "light" : "dark" });
+    return;
+  }
+
+  // `2f serve [port] [--port <n>]` — run the 0x2F runtime in the foreground.
+  // This is the supervised entry for a dedicated always-on host: point a
+  // launchd/systemd unit at it (or at `node src/server-entry.mjs <base>
+  // <port>` — the same code, see src/serve.mjs) and the runtime stays up
+  // across reboots, recovers interrupted runs at startup (src/recover.mjs),
+  // and shuts down cleanly on SIGTERM without terminating detached workers.
+  // `2f ui` (detached runtime + browser) is unchanged; `2f serve` is the same
+  // runtime without the launcher. It runs until signalled — the HTTP server
+  // keeps the event loop alive.
+  if (command === "serve") {
+    await requireProject(base);
+    const { rest, flags } = parseFlags(args);
+    const port =
+      flags.port !== undefined
+        ? Number(flags.port)
+        : rest[0]
+          ? Number(rest[0])
+          : 4242;
+    if (!Number.isFinite(port)) {
+      throw new Error("Usage: 2f serve [port] [--port <n>]");
+    }
+    const { serveRuntime } = await import("./serve.mjs");
+    await serveRuntime({ base, port, log: console });
     return;
   }
 

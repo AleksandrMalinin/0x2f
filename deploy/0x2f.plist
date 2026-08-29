@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  0x2F runtime — launchd unit for a dedicated always-on Mac.
+
+  The runtime is the foreground entry (src/server-entry.mjs, the same code as
+  `2f serve`). On start it recovers interrupted runs (tasks left "working"
+  with a dead worker are marked failed/crashed — see src/recover.mjs), and on
+  SIGTERM it shuts down cleanly without terminating detached workers, so an
+  in-flight run keeps executing while the runtime restarts.
+
+  Install (replace <USER>, <REPO> and the /opt/0x2f path with your values;
+  /opt/0x2f is where `npm install -g 0x2f` placed the package — symlink the
+  npm global node_modules/0x2f there if it lives elsewhere):
+
+    cp deploy/0x2f.plist ~/Library/LaunchAgents/dev.0x2f.runtime.plist
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.0x2f.runtime.plist
+
+  Notes:
+    - Run as the SAME user whose provider logins are valid (claude/codex/dsh
+      keep credentials in that user's $HOME). A LaunchAgent runs as the
+      logged-in user automatically; a system-wide LaunchDaemon needs
+      UserName=<USER> and an absolute /Users/<USER>/ path.
+    - KeepAlive + the recovery sweep make reboot self-healing. `2f pair`
+      (LAN pairing) restarts this runtime with SIGTERM; launchd brings it
+      straight back up, re-reading `.work/relay.json` and serving the LAN.
+    - While loaded, launchd restarts the runtime on ANY exit. To stop it
+      permanently, unload it first: `launchctl bootout gui/$(id -u)/dev.0x2f.runtime`.
+    - The Linux equivalent is deploy/0x2f.service (systemd). Neither OS is
+      the default; both are thin templates for the same foreground entry.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>dev.0x2f.runtime</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/local/bin/node</string>
+    <string>/opt/0x2f/src/server-entry.mjs</string>
+    <string>/Users/<USER>/<REPO></string>
+    <string>4242</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>/Users/<USER>/<REPO></string>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>StandardOutPath</key>
+  <string>/Users/<USER>/<REPO>/.work/0x2f-runtime.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/<USER>/<REPO>/.work/0x2f-runtime.log</string>
+</dict>
+</plist>

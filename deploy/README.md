@@ -109,3 +109,48 @@ runs (`--manual` waits until the phone claims it). If the free tunnel
 services are rate-limited or unavailable, `--local-tls` runs the identical
 flow deterministically over local https (self-signed cert, two distinct
 origins) — the same code paths minus the public DNS leg.
+
+## Running the runtime on a dedicated always-on host
+
+The 0x2F **runtime** (the local HTTP/SSE server that owns the Web UI, remote
+control and startup recovery) is a foreground process:
+`node src/server-entry.mjs <base> <port>` or the equivalent `2f serve
+[port]`. It is deliberately NOT a detached daemon — a process supervisor
+keeps it alive, which is what makes a mini PC / Mac mini a self-healing host:
+
+- **Recovers from reboot/crash.** On startup the runtime marks every task
+  left `working` with a dead worker pid as `failed` with the `crashed`
+  classification (see `src/recover.mjs`), so a reboot never leaves an
+  ambiguous "WORKING with no live run". Run history and any persisted
+  `externalSessionId` are preserved; the task reruns normally afterward.
+- **Graceful shutdown.** SIGTERM/SIGINT close the runtime cleanly (relay
+  agent, HTTP server) and exit 0 **without terminating detached workers** —
+  an in-flight run keeps executing and writes its outcome to the task state
+  while the supervisor brings the runtime back up.
+- **LAN pairing keeps working.** `2f pair` restarts a loopback-only runtime
+  with SIGTERM; the supervisor respawns it, it re-reads `.work/relay.json`,
+  and the LAN surface comes up on its own.
+
+Two thin, equivalent service templates are provided — use whichever OS your
+host runs; neither is the default:
+
+| Host | Unit | Install |
+|---|---|---|
+| Linux (systemd) | `deploy/0x2f.service` | `sudo cp deploy/0x2f.service /etc/systemd/system/0x2f.service && sudo systemctl daemon-reload && sudo systemctl enable --now 0x2f` |
+| macOS (launchd) | `deploy/0x2f.plist` | `cp deploy/0x2f.plist ~/Library/LaunchAgents/dev.0x2f.runtime.plist && launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.0x2f.runtime.plist` |
+
+Both run `src/server-entry.mjs <base> <port>` under the logged-in/configured
+user. **Run as the same user whose provider logins are valid** — claude,
+codex and dsh keep credentials in that user's `$HOME` (provider auth is done
+once, over SSH, and persists headless; re-auth after token expiry is the one
+operation that still needs a terminal on the host). One runtime per
+repository: add another unit on another port for a second workspace. Reserve
+a static DHCP address for the host so the LAN pairing URL survives reconnects
+(reconnects never require re-pairing; only a changed IP or the 30-day session
+expiry does).
+
+Logs: `journalctl -u 0x2f` (systemd), the `StandardOutPath` file (launchd),
+or `.work/ui.log` / `.work/tasks/<slug>/run.log` inside the repository.
+Update: `npm update -g 0x2f` then `systemctl restart 0x2f` /
+`launchctl kickstart -k gui/$(id -u)/dev.0x2f.runtime` — project `.work/`
+state survives updates untouched.
