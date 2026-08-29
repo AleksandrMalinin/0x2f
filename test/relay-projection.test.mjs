@@ -15,9 +15,11 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   projectTask,
+  projectRun,
   projectBlockedOn,
   projectSnapshot,
   projectWorkspaceLabel,
+  taskShowsResult,
   REMOTE_LIMITS
 } from "../src/relay/project.mjs";
 import { FAILURE_KINDS } from "../src/core/lifecycle.mjs";
@@ -60,7 +62,7 @@ test("projectTask: failure.remedy is bounded like any other adapter-authored fie
 });
 
 test("the closed vocabulary the relay checks against is the same one core/lifecycle.mjs owns", () => {
-  assert.deepEqual(FAILURE_KINDS, ["auth", "unavailable", "crashed"]);
+  assert.deepEqual(FAILURE_KINDS, ["auth", "unavailable", "crashed", "blocked"]);
   for (const kind of FAILURE_KINDS) {
     const p = projectTask(baseTask({ failure: { kind } }));
     assert.equal(p.failure.kind, kind);
@@ -190,4 +192,73 @@ test("an absolute workspace path quoted inside a brief is still stripped", () =>
   const p = projectTask(baseTask({ brief: "Refactor " + base + "/src/a.ts please." }), base);
   assert.equal(p.brief.includes(base), false, "the Mac's absolute layout must never leave it");
   assert.match(p.brief, /Refactor …\/src\/a\.ts please\./);
+});
+
+// --- §04: the safe user-facing result crosses the relay (item 3) -------------
+
+test("projectTask: a READY task carries its projected result, base paths stripped", () => {
+  const p = projectTask(
+    baseTask({ status: "ready" }),
+    "/Users/me/work",
+    "## Result\nfixed it\npath: /Users/me/work/src/a.ts"
+  );
+  assert.equal(p.result, "## Result\nfixed it\npath: …/src/a.ts");
+});
+
+test("projectTask: result is gated to states that show one — a stale result.md never leaks onto a failed task", () => {
+  const failed = projectTask(baseTask({ status: "failed", error: "boom" }), "/w", "stale result text");
+  assert.ok(!("result" in failed), "a failed task never carries a result");
+  assert.equal(taskShowsResult(baseTask({ status: "ready" })), true);
+  assert.equal(taskShowsResult(baseTask({ status: "failed", error: "boom" })), false);
+  assert.equal(taskShowsResult(baseTask({ status: "working" })), false);
+  assert.equal(taskShowsResult(baseTask({ status: "needs_you" })), false);
+  assert.equal(taskShowsResult(baseTask({ status: "done", error: undefined })), true);
+  assert.equal(taskShowsResult(baseTask({ status: "done", error: "boom" })), false);
+});
+
+test("projectSnapshot: READY tasks carry their result when the agent supplies resultsByTask", async () => {
+  const snap = await projectSnapshot({
+    tasks: [baseTask({ id: 2, status: "ready" })],
+    eventsByTask: {},
+    providers: [],
+    routing: {},
+    base: "/w",
+    serverTime: 0,
+    node: "mac",
+    resultsByTask: { 2: "the fix is in" }
+  });
+  assert.equal(snap.tasks[0].result, "the fix is in");
+  // A failed task with a supplied result stays clean (no stale leak).
+  const withFail = await projectSnapshot({
+    tasks: [baseTask({ id: 3 })],
+    eventsByTask: {},
+    providers: [],
+    routing: {},
+    base: "/w",
+    serverTime: 0,
+    node: "mac",
+    resultsByTask: { 3: "stale" }
+  });
+  assert.ok(!("result" in withFail.tasks[0]));
+});
+
+// --- §05: run history crosses the relay with status + duration (item 4) ------
+
+test("projectRun: outcome, duration and provider cross the relay for run history", () => {
+  const p = projectRun(
+    {
+      run: 2,
+      provider: "deepseek-harness",
+      outcome: "needs_you",
+      startedAt: "2026-01-01T10:00:00.000Z",
+      completedAt: "2026-01-01T10:02:00.000Z",
+      durationMs: 120000,
+      attempts: 1
+    },
+    "/w"
+  );
+  assert.equal(p.run, 2);
+  assert.equal(p.provider, "deepseek-harness");
+  assert.equal(p.outcome, "needs_you");
+  assert.equal(p.durationMs, 120000);
 });

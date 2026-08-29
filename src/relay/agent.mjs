@@ -536,12 +536,18 @@ export function createRelayAgent({
   async function buildSnapshot() {
     const tasks = await runtime.actions.listWork();
     const eventsByTask = {};
+    const resultsByTask = {};
     for (const task of tasks) {
       const all = await runtime.store.readEvents(task.slug);
       eventsByTask[String(task.id)] = all.slice(-SNAPSHOT_EVENTS_PER_TASK);
+      // The safe user-facing result for READY tasks, carried on the task
+      // projection itself (projectTask gates it to states that show a result,
+      // so a stale result.md never leaks onto a failed task).
+      resultsByTask[task.id] = await runtime.store.readTaskResult(task);
     }
     return projectSnapshot({
       tasks,
+      resultsByTask,
       eventsByTask,
       providers: currentProviders(),
       routing: currentRouting(),
@@ -566,7 +572,7 @@ export function createRelayAgent({
           return ok(200, (await runtime.actions.listWork()).map(t => projectTask(t, base)));
         case "get": {
           const full = await runtime.actions.getWork(taskId);
-          return ok(200, { ...projectTask(full, base), result: projectResult(full.result, base) });
+          return ok(200, projectTask(full, base, full.result));
         }
         case "getRun": {
           const full = await runtime.actions.getRun(taskId, Number(body?.run));

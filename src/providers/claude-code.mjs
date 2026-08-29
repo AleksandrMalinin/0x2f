@@ -30,7 +30,7 @@
 // may be.
 
 import { spawn } from "node:child_process";
-import { decisionSection } from "../core/lifecycle.mjs";
+import { classifyResult } from "../core/lifecycle.mjs";
 
 // ---------------------------------------------------------------------------
 // Claude Code provider (native adapter — the boundary where Claude-specific
@@ -332,17 +332,24 @@ export function normalizeOutcome(result, { sessionId = null } = {}) {
   }
 
   const text = typeof result.result === "string" ? result.result : "";
-  const decision = decisionSection(text);
-  if (decision) {
+  const classified = classifyResult(text);
+  if (classified.status === "needs_you") {
     return {
       status: "needs_you",
       reason: "decision",
       externalSessionId: result.session_id ?? sessionId,
       result: text,
-      blockedOn: { type: "decision", text: decision }
+      blockedOn: classified.blockedOn
     };
   }
-
+  if (classified.status === "failed") {
+    return {
+      status: "failed",
+      externalSessionId: result.session_id ?? sessionId,
+      error: classified.error,
+      failure: classified.failure
+    };
+  }
   return {
     status: "ready",
     externalSessionId: result.session_id ?? sessionId,

@@ -40,7 +40,7 @@
 
 import fs from "node:fs/promises";
 import { spawn } from "node:child_process";
-import { decisionSection } from "../core/lifecycle.mjs";
+import { classifyResult } from "../core/lifecycle.mjs";
 import { substituteCommand } from "./manifests.mjs";
 
 export const ACP_PROTOCOL_VERSION = 1;
@@ -553,14 +553,17 @@ function runAcp({ manifest, cwd, prompt, onEvent, permissions, decisionFile = nu
     function outcomeFromStopReason(stopReason) {
       if (stopReason === "end_turn") {
         const result = currentText || resultText || "";
-        const decision = decisionSection(result);
-        if (decision) {
+        const classified = classifyResult(result);
+        if (classified.status === "needs_you") {
           return {
             status: "needs_you",
             reason: "decision",
             result,
-            blockedOn: { type: "decision", text: decision }
+            blockedOn: classified.blockedOn
           };
+        }
+        if (classified.status === "failed") {
+          return { status: "failed", error: classified.error, failure: classified.failure };
         }
         return { status: "ready", result };
       }

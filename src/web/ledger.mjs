@@ -355,7 +355,18 @@ export function toSteps(task, events = [], opts = {}) {
       case "file.changed": {
         const changed = relativePath(base, event.path);
         if (changed) {
-          steps.push({ kind: "change", verb: "CHANGED", arg: changed, at, t, human: false });
+          steps.push({
+            kind: "change",
+            verb: "CHANGED",
+            arg: changed,
+            // Provider-REPORTED vs repository-OBSERVED (the worker records
+            // observed changes with source "worktree" when the provider does
+            // not declare file-change reporting).
+            source: event.source === "worktree" ? "worktree" : "provider",
+            at,
+            t,
+            human: false
+          });
         }
         break;
       }
@@ -673,9 +684,15 @@ const BRACKET_LABEL_W = 56; // "CHANGES" at 9.5px/.14em in the mono face, plus a
 // `units` and `cells` come from the SAME trace() call (units[i] <-> cells[i]
 // for i < units.length) so a bracket's pixels always agree with what is
 // actually drawn.
-export function brackets(units, caps = {}, cells = []) {
+export function brackets(units, caps = {}, cells = [], opts = {}) {
   const out = [];
-  if (caps?.supportsFileChanges === true) {
+  // Draw the CHANGES bracket when the provider declares file-change
+  // reporting, OR when the run's changes were repository-observed
+  // (source "worktree") — a provider without the declared capability still
+  // left real changes in the tree, and hiding them would say "nothing
+  // changed" when the repository objectively changed.
+  const drawChanges = caps?.supportsFileChanges === true || opts.observed === true;
+  if (drawChanges) {
     let labelledX = -Infinity;
     for (const span of contiguousRuns(units, s => markClass(s) === "change")) {
       const from = cells[span.from];
@@ -710,7 +727,9 @@ export function sections(task, steps, caps = {}, result = null) {
   const activityUnits = steps.filter(
     s => s.kind === "tool" || s.kind === "command" || s.kind === "human" || s.kind === "halt"
   );
-  const files = uniq(steps.filter(s => s.kind === "change").map(s => s.arg));
+  const changeSteps = steps.filter(s => s.kind === "change");
+  const files = uniq(changeSteps.map(s => s.arg));
+  const observedFiles = changeSteps.filter(s => s.source === "worktree").length;
   const commands = steps.filter(s => s.kind === "command").map(s => s.arg);
 
   const failed = task.status === "failed" || (task.status === "done" && !!task.error);
@@ -718,7 +737,12 @@ export function sections(task, steps, caps = {}, result = null) {
   const hasResult = typeof result === "string" && result.trim().length > 0;
 
   const capabilityDrift = [];
-  if (files.length && caps.supportsFileChanges !== true) capabilityDrift.push("fileChanges");
+  // Drift is about PROVIDER-REPORTED evidence exceeding a declared capability.
+  // Repository-observed changes (source "worktree") are 0x2F's own observation
+  // of the working tree, not a claim the provider made — they never count.
+  if (changeSteps.some(s => s.source !== "worktree") && caps.supportsFileChanges !== true) {
+    capabilityDrift.push("fileChanges");
+  }
   if (commands.length && caps.supportsCommands !== true) capabilityDrift.push("commands");
   if (activityUnits.length && caps.supportsStructuredEvents !== true) capabilityDrift.push("structuredEvents");
 
@@ -726,7 +750,7 @@ export function sections(task, steps, caps = {}, result = null) {
     activity: activityUnits.length
       ? { recent: activityUnits.slice(-5), earlier: Math.max(0, activityUnits.length - 5) }
       : null,
-    files: files.length ? { paths: files } : null,
+    files: files.length ? { paths: files, observed: observedFiles } : null,
     commands: commands.length ? { commands } : null,
     result: !failed && closed && hasResult ? { text: result } : null,
     failure: failed ? { error: task.error ?? "" } : null,
@@ -953,6 +977,7 @@ export function projectRow(task, events, opts = {}) {
   const elapsedSeconds = Math.max(0, traceEnd / 1000);
 
   const sec = sections(task, steps, capabilities, null);
+  const observedChanges = steps.some(s => s.kind === "change" && s.source === "worktree");
   const allowedKeys = SECTION_KEYS_BY_STATUS[task.status] ?? [];
   const activitySection = allowedKeys.includes("activity") ? sec.activity : null;
   const filesSection = allowedKeys.includes("files") ? sec.files : null;
@@ -974,7 +999,7 @@ export function projectRow(task, events, opts = {}) {
       totalW: laid.totalW,
       truncated: laid.truncated,
       total: laid.total,
-      brackets: brackets(laid.units, capabilities, laid.cells)
+      brackets: brackets(laid.units, capabilities, laid.cells, { observed: observedChanges })
     };
   }
 
@@ -990,7 +1015,7 @@ export function projectRow(task, events, opts = {}) {
       totalW: laid.totalW,
       truncated: laid.truncated,
       total: laid.total,
-      brackets: brackets(laid.units, capabilities, laid.cells),
+      brackets: brackets(laid.units, capabilities, laid.cells, { observed: observedChanges }),
       heading: failedStatus ? "BEFORE THE STOP" : "PROVENANCE"
     };
   }

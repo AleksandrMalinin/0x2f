@@ -18,6 +18,7 @@ import { applyOutcome, beginResume } from "./core/lifecycle.mjs";
 import { workEvent } from "./core/events.mjs";
 import { updateRun } from "./core/runs.mjs";
 import { createProviderRegistry } from "./providers/index.mjs";
+import { snapshotWorktree, changedSince } from "./core/worktree.mjs";
 
 // argv: node worker.mjs <base> <slug> <run> [resume <grant>]
 // The run number is explicit (the node derives it from the task's run
@@ -61,6 +62,10 @@ const task = await store.readJson(metaPath);
 // session/cancel, command providers just die with us).
 let currentProvider = null;
 let runSessionId = null; // the provider-surfaced session id, persisted on pause
+// Git baseline captured before the run starts, so the worker can observe
+// which files the run changed (see recordObservedChanges). Null when the
+// provider reports file changes itself, or the workspace has no git baseline.
+let worktreeBefore = null;
 process.on("SIGTERM", () => {
   try {
     currentProvider?.cancel?.();
@@ -260,6 +265,20 @@ async function finish(current, outcome) {
   );
 }
 
+// Repository-observed changes land BEFORE the terminal event, so the run's
+// trace reads "changed … completed", never the reverse. Only providers
+// without file-change reporting are observed (see the baseline above);
+// 0x2F's own `.work/` state is never counted as a run's change.
+async function recordObservedChanges() {
+  if (!worktreeBefore) return;
+  const changed = await changedSince(base, worktreeBefore);
+  for (const p of changed) {
+    if (p === ".work" || p.startsWith(".work/")) continue;
+    await record("file.changed", { path: p, source: "worktree" });
+    log(`observed change: ${p}`);
+  }
+}
+
 try {
   const provider = providers.getProvider(
     task.execution?.provider ?? providers.defaultProviderId
@@ -277,6 +296,17 @@ try {
     process.exit(1);
   }
   currentProvider = provider;
+
+  // Baseline for repository-observed file changes. A provider that declares
+  // file-change reporting (Claude Code) already reports what it edits; a
+  // provider that does not (Codex exec, DeepSeek Harness headless) still
+  // leaves its work in the working tree, so this worker observes git around
+  // the run instead of faking a provider event. Captured after the run's
+  // prompt file is in place and before the provider starts executing.
+  worktreeBefore =
+    provider.capabilities?.supportsFileChanges === true
+      ? null
+      : await snapshotWorktree(base);
 
   let current = task;
   let outcome;
@@ -374,6 +404,7 @@ try {
     }
   }
 
+  await recordObservedChanges();
   await finish(current, outcome);
 } catch (error) {
   let failed = applyOutcome(task, {

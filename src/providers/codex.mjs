@@ -47,7 +47,7 @@
 //     classified here, once, from Codex's own failure text.
 
 import { spawn } from "node:child_process";
-import { decisionSection } from "../core/lifecycle.mjs";
+import { classifyResult } from "../core/lifecycle.mjs";
 
 // Injectable for tests and non-PATH installs; defaults to `codex` on PATH.
 export function codexBin() {
@@ -339,18 +339,27 @@ export function normalizeCodexRun({ text = "", threadId = null, error = null } =
   }
 
   // The shared prompt asks the agent to end with `## Needs human decision`;
-  // honor that Work convention exactly like the other providers do.
-  const decision = decisionSection(text);
-  if (decision) {
+  // honor that Work convention exactly like the other providers do. The same
+  // shared classifier also turns an explicit blocker report ("could not
+  // continue because …") into a failed run instead of a false READY.
+  const classified = classifyResult(text);
+  if (classified.status === "needs_you") {
     return {
       status: "needs_you",
       reason: "decision",
       ...(threadId ? { externalSessionId: threadId } : {}),
       result: text,
-      blockedOn: { type: "decision", text: decision }
+      blockedOn: classified.blockedOn
     };
   }
-
+  if (classified.status === "failed") {
+    return {
+      status: "failed",
+      ...(threadId ? { externalSessionId: threadId } : {}),
+      error: classified.error,
+      failure: classified.failure
+    };
+  }
   return {
     status: "ready",
     ...(threadId ? { externalSessionId: threadId } : {}),

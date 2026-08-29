@@ -154,6 +154,25 @@ test("normalizeCodexRun: result with the shared decision protocol -> needs_you/d
   assert.equal(outcome.externalSessionId, "t-2");
 });
 
+test("normalizeCodexRun: an explicit blocker report is failed, never READY", () => {
+  const outcome = normalizeCodexRun({
+    text: "## Result\nI could not continue because the sandbox blocked writes to the workspace.\n## Changes\nNone",
+    threadId: "t-3"
+  });
+  assert.equal(outcome.status, "failed");
+  assert.equal(outcome.failure.kind, "blocked");
+  assert.match(outcome.error, /could not continue/);
+  // A failed run still carries the session id it surfaced.
+  assert.equal(outcome.externalSessionId, "t-3");
+});
+
+test("normalizeCodexRun: a partial limitation inside a completed result is still ready", () => {
+  const outcome = normalizeCodexRun({
+    text: "## Result\nThe fix is complete. I could not run the integration tests because the sandbox blocks network access.\n## Changes\n- src/fix.mjs"
+  });
+  assert.equal(outcome.status, "ready");
+});
+
 test("normalizeCodexRun: error -> failed with auth classification", () => {
   const outcome = normalizeCodexRun({
     error: "unexpected status 401 Unauthorized: Invalid API key provided"

@@ -148,6 +148,17 @@ export function projectResult(text, base) {
   return trunc(text, TRUNC.result, base);
 }
 
+// Whether a task's current state shows a written result at all. Mirrors the
+// local ledger rule (sections() gates result on !failed && closed): a task
+// that is failed/working/needs_you never carries a result across the relay,
+// so a stale result.md from an earlier ready run can never leak onto a
+// failed task. The `get`/`getRun` ops and the snapshot pass the result text
+// they read from disk; this decides whether it is shown.
+export function taskShowsResult(task) {
+  if (!task || typeof task !== "object") return false;
+  return task.status === "ready" || (task.status === "done" && !task.error);
+}
+
 // §01: only a recognized kind crosses the relay boundary — the same rule
 // core/lifecycle.mjs enforces when a provider outcome is first applied to
 // the task. This is defense in depth, not trust: a value that already
@@ -162,7 +173,7 @@ function projectFailure(failure) {
   };
 }
 
-export function projectTask(task, base) {
+export function projectTask(task, base, result) {
   if (!task || typeof task !== "object") return null;
   // The user's own words, carried whole (see TRUNC.brief). A task created
   // before `brief` existed falls back to its title, which WAS the full text
@@ -170,7 +181,7 @@ export function projectTask(task, base) {
   // the action already enforced — but when it is true the phone SAYS the
   // text was cut instead of just ending mid-sentence.
   const brief = truncProse(task.brief ?? task.title, TRUNC.brief, base);
-  return {
+  const projected = {
     id: task.id,
     title: task.title ?? "",
     brief: brief.text,
@@ -185,6 +196,14 @@ export function projectTask(task, base) {
     blockedOn: projectBlockedOn(task.blockedOn, base),
     runs: Array.isArray(task.runs) ? task.runs.map(r => projectRun(r, base)).filter(Boolean) : undefined
   };
+  // The safe user-facing result, carried on the task itself so the phone's
+  // snapshot/cache always has what the desktop shows — no dependence on a
+  // separate round-trip. Gated to states that actually show a result, so a
+  // stale result.md can never leak onto a failed task.
+  if (taskShowsResult(task) && typeof result === "string" && result.trim()) {
+    projected.result = projectResult(result, base);
+  }
+  return projected;
 }
 
 export function projectEvent(event, base) {
@@ -255,9 +274,12 @@ export function projectWorkspaceLabel(base) {
 // The full remote state pull the phone issues on connect/reconnect:
 // redacted tasks, recent redacted events per task, provider descriptors,
 // routing, and the Mac's clock (so the phone can correct skew on commands).
-export async function projectSnapshot({ tasks, eventsByTask, providers, routing, base, serverTime, node }) {
+// `resultsByTask` (id -> result text) is optional: when the agent supplies
+// it, READY tasks carry their safe user-facing result in the snapshot; when
+// absent, the snapshot stays as lean as before.
+export async function projectSnapshot({ tasks, eventsByTask, providers, routing, base, serverTime, node, resultsByTask = {} }) {
   return {
-    tasks: tasks.map(t => projectTask(t, base)),
+    tasks: tasks.map(t => projectTask(t, base, resultsByTask[t.id])),
     eventsByTask: Object.fromEntries(
       Object.entries(eventsByTask).map(([id, events]) => [
         id,

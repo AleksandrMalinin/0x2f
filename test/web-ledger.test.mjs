@@ -1253,3 +1253,104 @@ test("a closed coarse run archives its ambient bar in the rule colour too", () =
   assert.equal(laid.cells[0].c, "#dbe2e7");
   assert.equal(laid.cells.length, 1, "no head, no tear — the run is over");
 });
+
+// --- repository-observed file changes (item 1) --------------------------------
+
+test("toSteps: file.changed events carry their source (provider vs worktree)", () => {
+  const events = log([
+    ["file.changed", 1, { path: "a.ts" }],
+    ["file.changed", 2, { path: "b.ts", source: "worktree" }]
+  ]);
+  const { steps } = toSteps(task(), events);
+  const changes = steps.filter(s => s.kind === "change");
+  assert.equal(changes[0].source, "provider");
+  assert.equal(changes[1].source, "worktree");
+});
+
+test("sections: repository-observed changes render for a provider without file-change reporting, with no drift", () => {
+  const events = log([
+    ["file.changed", 1, { path: "made-by-run.txt", source: "worktree" }]
+  ]);
+  const { steps } = toSteps(coarseTask(), events);
+  // The provider declares no file-change capability (headless DSH)...
+  const sec = sections(coarseTask(), steps, COARSE["deepseek-harness"].capabilities, null);
+  // ...yet the observed change renders, marked as observed, and is NOT a
+  // capability drift (0x2F observed it; the provider never claimed it).
+  assert.deepEqual(sec.files.paths, ["made-by-run.txt"]);
+  assert.equal(sec.files.observed, 1);
+  assert.deepEqual(sec.capabilityDrift, []);
+});
+
+test("sections: provider-REPORTED files against a false declaration still flag the drift", () => {
+  const events = log([
+    ["file.changed", 1, { path: "a.ts" }]
+  ]);
+  const { steps } = toSteps(coarseTask(), events);
+  const sec = sections(coarseTask(), steps, COARSE["deepseek-harness"].capabilities, null);
+  assert.deepEqual(sec.files.paths, ["a.ts"]);
+  assert.equal(sec.files.observed, 0);
+  assert.deepEqual(sec.capabilityDrift, ["fileChanges"]);
+});
+
+test("brackets: observed changes draw the CHANGES bracket even without the declared capability", () => {
+  const events = log([
+    ["file.changed", 1, { path: "a.ts", source: "worktree" }]
+  ]);
+  const { steps } = toSteps(task(), events);
+  const laid = trace(steps, { n: 20, w: 4, scale: 1, coarse: false, live: false, elapsedSeconds: 10 });
+  const without = brackets(laid.units, { supportsFileChanges: false }, laid.cells, {});
+  assert.deepEqual(without, []);
+  const withObserved = brackets(laid.units, { supportsFileChanges: false }, laid.cells, { observed: true });
+  assert.ok(withObserved.length >= 1, "observed changes draw a CHANGES bracket");
+});
+
+// --- run history projection (item 4) -----------------------------------------
+
+test("projectRuns: every run row carries number, provider, duration and outcome state", () => {
+  const runs = projectRuns(
+    [
+      {
+        run: 1, provider: "codex", node: "local",
+        startedAt: "2026-01-01T10:00:00.000Z",
+        completedAt: "2026-01-01T10:00:30.000Z",
+        outcome: "failed", error: "boom"
+      },
+      {
+        run: 2, provider: "deepseek-harness", node: "local",
+        startedAt: "2026-01-01T10:01:00.000Z",
+        completedAt: "2026-01-01T10:03:00.000Z",
+        outcome: "needs_you"
+      },
+      {
+        run: 3, provider: "claude-code", node: "local",
+        startedAt: "2026-01-01T10:04:00.000Z",
+        completedAt: "2026-01-01T10:05:00.000Z",
+        durationMs: 60000,
+        outcome: "ready"
+      }
+    ],
+    { providers: { codex: "Codex", "deepseek-harness": "DeepSeek Harness", "claude-code": "Claude Code" } }
+  );
+
+  assert.equal(runs[0].num, "01");
+  assert.equal(runs[0].provider, "CODEX");
+  assert.equal(runs[0].state, "FAILED");
+  assert.equal(runs[0].duration, "0:30");
+
+  assert.equal(runs[1].provider, "DEEPSEEK HARNESS");
+  assert.equal(runs[1].state, "NEEDS YOU");
+  assert.equal(runs[1].duration, "2:00");
+
+  assert.equal(runs[2].provider, "CLAUDE CODE");
+  assert.equal(runs[2].state, "READY");
+  assert.equal(runs[2].duration, "1:00");
+});
+
+test("projectRuns: duration falls back to completedAt - startedAt; absent timing shows —", () => {
+  const runs = projectRuns([
+    { run: 1, provider: "codex", startedAt: "2026-01-01T10:00:00.000Z", completedAt: "2026-01-01T10:02:00.000Z", outcome: "ready" },
+    { run: 2, provider: "codex", startedAt: "2026-01-01T11:00:00.000Z", outcome: "working" }
+  ]);
+  assert.equal(runs[0].duration, "2:00");
+  assert.equal(runs[1].duration, null); // in-flight run has no completion yet
+});

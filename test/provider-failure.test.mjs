@@ -98,7 +98,7 @@ test("applyOutcome drops an unrecognized failure.kind — no unvetted string rea
     failure: { kind: "not-a-real-kind" }
   });
   assert.equal(next.failure, undefined);
-  assert.deepEqual(FAILURE_KINDS, ["auth", "unavailable", "crashed"]);
+  assert.deepEqual(FAILURE_KINDS, ["auth", "unavailable", "crashed", "blocked"]);
 });
 
 test("applyOutcome clears a stale failure once the task recovers (needs_you / ready)", () => {

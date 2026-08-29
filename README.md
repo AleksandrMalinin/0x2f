@@ -310,7 +310,7 @@ unless you opt into remote pairing:
 | --- | --- |
 | task state + run history | `.work/tasks/<slug>/` |
 | project context every prompt is built from | `project.md` · `rules.md` · `knowledge.md` · `decisions.md` |
-| routing policy | `.work/routing.json` |
+| routing policy (optional — you author it; `2f init` does not create it) | `.work/routing.json` |
 | extra providers | `.work/providers/*.json` |
 | UI runtime log | `.work/ui.log` |
 | pairing credentials (only if you pair) | `.work/relay.json` |
@@ -376,6 +376,11 @@ persisted with the run and shown by `2f open` / the Web UI. Override any time:
   "prefer": ["claude-code", "deepseek-harness"]
 }
 ```
+
+`routing.json` is optional and hand-authored. `2f init` does not create it,
+and `2f new` runs fine without it — the routing default (or an explicit
+`--provider`) applies until you write the file yourself. No command edits it;
+edit the JSON directly if you want non-default routing policy.
 
 ## Architecture
 

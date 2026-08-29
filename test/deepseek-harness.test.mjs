@@ -70,6 +70,15 @@ test("normalizeDshRun: exit 0 + explicit decision protocol -> needs_you/decision
   assert.match(outcome.blockedOn.text, /Which backend/);
 });
 
+test("normalizeDshRun: exit 0 + an explicit blocker report -> failed (kind blocked), never READY", () => {
+  const outcome = normalizeDshRun({
+    code: 0,
+    stdout: "I could not continue because the sandbox denied writes to the workspace."
+  });
+  assert.equal(outcome.status, "failed");
+  assert.equal(outcome.failure.kind, "blocked");
+});
+
 test("normalizeDshRun: exit 1 -> failed with the stderr message", () => {
   const outcome = normalizeDshRun({ code: 1, stdout: "", stderr: "dsh: E_AGENT: agent failed\n" });
   assert.equal(outcome.status, "failed");

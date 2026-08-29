@@ -5,6 +5,7 @@
 // calls (core/actions.mjs). It contains no lifecycle, provider, or session
 // logic of its own; `2f allow` and `2f reject` are thin wrappers over
 // actions.allowWork / actions.rejectWork.
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import readline from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
@@ -24,11 +25,20 @@ import { pairDevice, pairOff } from "./relay/pair.mjs";
 import { formatCode } from "./web/e2e.mjs";
 import { unavailableMessage } from "./providers/index.mjs";
 
+// The installed package version — `2f version` / `2f --version` / `2f -v`.
+// Read from the package manifest next to the CLI source so it works identically
+// from a repo checkout and a global npm install.
+function packageVersion() {
+  const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+  return pkg.version;
+}
+
 function help() {
   console.log(`2f — task-native coding-agent wrapper
 
 Commands:
   2f                list today's tasks
+  2f version        print the installed 0x2F version
   2f init
   2f new <task> [--provider <id>]   provider: auto | <id> (default from routing)
   2f status
@@ -250,6 +260,11 @@ async function main() {
 
   if (command === "help" || command === "--help" || command === "-h") {
     help();
+    return;
+  }
+
+  if (command === "version" || command === "--version" || command === "-v") {
+    console.log(packageVersion());
     return;
   }
 

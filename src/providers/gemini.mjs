@@ -60,7 +60,7 @@
 // why every invocation carries it.
 
 import { spawn } from "node:child_process";
-import { decisionSection } from "../core/lifecycle.mjs";
+import { classifyResult } from "../core/lifecycle.mjs";
 
 // Injectable for tests and non-PATH installs; defaults to `gemini` on PATH.
 export function geminiBin() {
@@ -338,14 +338,22 @@ export function normalizeGeminiRun({
       };
     }
     // status === "success"
-    const decision = decisionSection(text);
-    if (decision) {
+    const classified = classifyResult(text);
+    if (classified.status === "needs_you") {
       return {
         status: "needs_you",
         reason: "decision",
         ...(sessionId ? { externalSessionId: sessionId } : {}),
         result: text,
-        blockedOn: { type: "decision", text: decision }
+        blockedOn: classified.blockedOn
+      };
+    }
+    if (classified.status === "failed") {
+      return {
+        status: "failed",
+        ...(sessionId ? { externalSessionId: sessionId } : {}),
+        error: classified.error,
+        failure: classified.failure
       };
     }
     return {

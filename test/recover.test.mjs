@@ -143,6 +143,49 @@ test("an orphaned working run is failed with the crashed classification, preserv
   }
 });
 
+test("an interrupted run's completedAt/durationMs anchor to the last event the worker persisted, not the sweep time", async () => {
+  const base = await tempBase();
+  try {
+    // The worker started 60s ago, persisted a couple of run events, then died
+    // 15s ago (well before the sweep now). The recovered run must be anchored to
+    // the LAST persisted event (15s ago), not to the moment the sweep runs.
+    const { store, task } = await makeWorkingTask(base, { startedAgoMs: 60000 });
+    const startedMs = Date.parse(task.runs[0].startedAt);
+    const lastPersistedMs = Date.now() - 15000;
+    await store.appendEvent(task.slug, {
+      type: "run.started",
+      taskId: task.id,
+      run: 1,
+      at: new Date(startedMs + 1000).toISOString()
+    });
+    await store.appendEvent(task.slug, {
+      type: "progress",
+      taskId: task.id,
+      run: 1,
+      at: new Date(lastPersistedMs).toISOString(),
+      text: "working…"
+    });
+
+    await recoverInterruptedRuns(base, { kill: DEAD, log: quiet });
+
+    const onDisk = await store.findTask(task.id);
+    const run = onDisk.runs[0];
+    assert.equal(run.outcome, "failed");
+    // Anchored to the last persisted event, NOT the sweep's "now".
+    assert.equal(run.completedAt, new Date(lastPersistedMs).toISOString());
+    assert.ok(
+      Math.abs(run.durationMs - (lastPersistedMs - startedMs)) <= 2,
+      `duration should be ~${lastPersistedMs - startedMs}ms (last event − startedAt), got ${run.durationMs}`
+    );
+    // The recovery's own terminal events must not be picked up as the anchor
+    // (they are appended after the anchor is computed, so the anchor is the
+    // worker's last event).
+    assert.ok(Date.parse(run.completedAt) < Date.now(), "anchor predates the sweep");
+  } finally {
+    await fs.rm(base, { recursive: true, force: true });
+  }
+});
+
 test("a task with no recorded pid is also recovered (worker died before pid persisted)", async () => {
   const base = await tempBase();
   try {

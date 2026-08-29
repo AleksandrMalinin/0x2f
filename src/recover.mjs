@@ -12,9 +12,12 @@
 // accepts requests, so a client never observes a "working" task whose worker
 // is gone. It marks such tasks failed through the EXISTING lifecycle
 // (applyOutcome + the already-defined failure kind "crashed"), finalizing the
-// interrupted run's record the way the worker would have, while preserving
-// run history and any persisted externalSessionId. A task whose worker is
-// alive is never touched — the sweep must not race a genuinely running run.
+// interrupted run's record the way the worker would have — but with the run's
+// completedAt/durationMs anchored to the last event the worker persisted (an
+// honest lower bound, since its true death moment is unknowable) — while
+// preserving run history and any persisted externalSessionId. A task whose
+// worker is alive is never touched — the sweep must not race a genuinely
+// running run.
 //
 // PID liveness is a cheap existence probe (signal 0). A task whose worker
 // died is unrecoverable in place, so the honest state is failed; the
@@ -53,11 +56,26 @@ function info(log, ...args) {
 
 // Mark one interrupted task failed through the shared lifecycle. The current
 // run's record is finalized like the worker would have finalized it (outcome
-// failed, real completion time, duration from startedAt), but externalSessionId
-// and every other historical field are preserved. Returns the failed task.
+// failed), but the worker is dead so its true completion moment is unknowable.
+// Rather than stamp the sweep's own time as the completion time — which would
+// show every interrupted run as having run until recovery — we anchor the run's
+// completedAt and durationMs to the LAST event the worker actually persisted
+// (its events.jsonl entry for this run): an honest lower bound saying "it ran
+// at least until this moment". A run that died silently after its last event is
+// still understated, which is exactly how a lower bound should behave. When the
+// run persisted no events at all, there is no event to anchor to, so we fall
+// back to the sweep's time (the only remaining anchor). externalSessionId and
+// every other historical field are preserved. Returns the failed task.
 export async function failInterruptedRun(store, task, { log = console } = {}) {
-  const now = new Date().toISOString();
   const runNumber = currentRunNumber(task);
+  // The last event this run's worker persisted — the honest lower-bound anchor.
+  const events = await store.readEvents(task.slug);
+  const lastPersistedAt = events.filter(e => e.run === runNumber).at(-1)?.at;
+  const now = new Date().toISOString();
+  // Without any persisted event there is nothing to anchor to; the sweep time is
+  // the only signal we have that the run ended by recovery.
+  const completedAt = typeof lastPersistedAt === "string" ? lastPersistedAt : now;
+  const completedMs = Date.parse(completedAt);
   let failed = applyOutcome(task, {
     status: "failed",
     error: INTERRUPTED_ERROR,
@@ -68,9 +86,9 @@ export async function failInterruptedRun(store, task, { log = console } = {}) {
     const startedMs = record ? Date.parse(record.startedAt) : NaN;
     failed = updateRun(failed, runNumber, {
       outcome: "failed",
-      completedAt: now,
-      ...(Number.isFinite(startedMs)
-        ? { durationMs: Date.parse(now) - startedMs }
+      completedAt,
+      ...(Number.isFinite(startedMs) && Number.isFinite(completedMs)
+        ? { durationMs: completedMs - startedMs }
         : {}),
       error: INTERRUPTED_ERROR,
       blockedOn: undefined

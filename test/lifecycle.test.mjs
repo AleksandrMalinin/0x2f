@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { applyOutcome, beginResume, closeTask, STATUSES } from "../src/core/lifecycle.mjs";
+import { applyOutcome, beginResume, closeTask, STATUSES, classifyResult, blockedResultText, FAILURE_KINDS } from "../src/core/lifecycle.mjs";
 
 const baseTask = () => ({
   id: 2,
@@ -99,4 +99,62 @@ test("closeTask works from needs_you too (user abandons)", () => {
     blockedOn: { type: "permission" }
   });
   assert.equal(closeTask(task).status, "done");
+});
+
+// --- completed-run classification (item 2) ------------------------------------
+
+test("FAILURE_KINDS includes the blocked kind", () => {
+  assert.ok(FAILURE_KINDS.includes("blocked"));
+});
+
+test("classifyResult: an explicit blocker report is failed, not ready", () => {
+  const out = classifyResult(
+    "## Result\nI could not continue because the sandbox blocked writes to the workspace.\n## Changes\nNone"
+  );
+  assert.equal(out.status, "failed");
+  assert.equal(out.failure.kind, "blocked");
+  assert.match(out.error, /could not continue/);
+});
+
+test("classifyResult: a task-level passive blocker is failed", () => {
+  const out = classifyResult(
+    "The task could not be completed because the environment denied network access."
+  );
+  assert.equal(out.status, "failed");
+  assert.equal(out.failure.kind, "blocked");
+});
+
+test("classifyResult: a partial limitation is NOT a blocker (work was done)", () => {
+  const out = classifyResult(
+    "## Result\nThe fix is complete and the diff is applied.\n## Evidence\nAll tests pass locally.\n## Changes\n- src/fix.mjs\n## Verification\nI could not run the integration suite because the sandbox blocks network access, but the unit tests pass."
+  );
+  assert.equal(out.status, "ready");
+});
+
+test("classifyResult: a warning about a subtask never becomes a blocker", () => {
+  const out = classifyResult(
+    "## Result\nThe tests could not continue because the service was down, so I verified the change statically instead. The task is done."
+  );
+  assert.equal(out.status, "ready");
+});
+
+test("classifyResult: an explicit decision protocol still wins over ready", () => {
+  const out = classifyResult(
+    "## Result\ninvestigated\n## Needs human decision\nREQUIRED: yes\nQUESTION: Which backend should the retry use?"
+  );
+  assert.equal(out.status, "needs_you");
+  assert.equal(out.reason, "decision");
+  assert.match(out.blockedOn.text, /Which backend/);
+});
+
+test("classifyResult: plain completed text is ready", () => {
+  const out = classifyResult("## Result\nfixed it\n## Verification\nnpm test");
+  assert.equal(out.status, "ready");
+});
+
+test("blockedResultText: returns the agent's own explanation sentence, capped", () => {
+  const text = "I could not continue because the sandbox blocked writes. I tried three times.";
+  const err = blockedResultText(text);
+  assert.ok(err && err.includes("could not continue"));
+  assert.ok(!err.includes("three times"));
 });

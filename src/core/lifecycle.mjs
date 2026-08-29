@@ -31,14 +31,17 @@ export const BLOCKED_REASONS = ["permission", "decision", "question"];
 // error prose. A small closed vocabulary Work owns, not a free string —
 // providers may only pick from it, never invent a new kind:
 //
-//   { kind: "auth" | "unavailable" | "crashed", remedy? }
+//   { kind: "auth" | "unavailable" | "crashed" | "blocked", remedy? }
 //
 // `remedy` is optional and adapter-authored: a short, single-line,
 // non-interpolated string the UI renders verbatim (e.g. "claude /login").
 // Absent `failure` (or an unrecognized `kind`) renders exactly as before —
 // only "auth" changes presentation today. `error` is always kept verbatim
 // alongside it; `failure` never replaces `error`, it classifies it.
-export const FAILURE_KINDS = ["auth", "unavailable", "crashed"];
+// `blocked` means the agent explicitly reported it could not perform the
+// requested work because of an environment/sandbox/access blocker (see
+// `classifyResult` below) — the process exited fine, the work did not happen.
+export const FAILURE_KINDS = ["auth", "unavailable", "crashed", "blocked"];
 
 // Work's shared prompt (project.mjs) asks every agent to end with a
 // `## Needs human decision` section. This parser is a Work convention — not a
@@ -115,6 +118,63 @@ export function decisionSection(result) {
 
 // Backward-compatible name (v0 exported this from lib).
 export const hasHumanDecision = result => decisionSection(result) !== null;
+
+// ---------------------------------------------------------------------------
+// Completed-run classification — the SHARED decision the provider boundary
+// makes for any run whose process exited successfully with written text.
+//
+// `process completion != task completion` (module header): a run can exit 0
+// while the task is actually parked on a human (decision) or was never
+// performed at all (blocked). Providers normalize the same way:
+//
+//   classifyResult(text):
+//     needs_you  — an explicit `## Needs human decision` block (strict protocol)
+//     failed     — the text EXPLICITLY says the requested work could not be
+//                  done because of a blocker (kind "blocked")
+//     ready      — everything else
+//
+// The blocked check is deliberately narrow so ordinary warnings and partial
+// limitations ("I could not run the integration tests because the sandbox
+// blocks network, but the fix is complete") never become failures: the denial
+// must be attributed to the agent or the task as a whole, name completion or
+// continuation of the work, and be tied to a cause in the same sentence.
+export function classifyResult(text) {
+  const decision = decisionSection(text);
+  if (decision) {
+    return {
+      status: "needs_you",
+      reason: "decision",
+      blockedOn: { type: "decision", text: decision }
+    };
+  }
+  const blocked = blockedResultText(text);
+  if (blocked) {
+    return { status: "failed", error: blocked, failure: { kind: "blocked" } };
+  }
+  return { status: "ready" };
+}
+
+const BLOCKED_DENIAL_RE = [
+  // "I could not continue … because …" — continuing the work is task-level.
+  /\b(i|we|the agent|this run)\s+(could not|couldn'?t|was unable to|were unable to|am unable to|are unable to|cannot|can'?t)\s+continue\b[^.]*\b(because|due to|blocked by|blocked from|prevented by)\b/i,
+  // "I could not complete/finish/perform/do (the) task/work … because …"
+  /\b(i|we|the agent)\s+(could not|couldn'?t|was unable to|were unable to|am unable to|are unable to|cannot|can'?t|failed to)\s+(complete|finish|perform|do)\s+(the\s+)?(task|work|request|assignment|job)\b[^.]*\b(because|due to|blocked by|blocked from|prevented by)\b/i,
+  // Passive, task-level: "the task could not be completed … because …"
+  /\b(the|this)\s+(task|work|request)\s+(could not|couldn'?t|cannot|can'?t)\s+be\s+(completed|finished|performed|done)\b[^.]*\b(because|due to|blocked by|blocked from|prevented by)\b/i,
+  // "… was/were blocked by/from …" attributed to the agent or the task.
+  /\b(i|we|the agent|the task|this run)\s+(was|were|am|are|got|get|is)\s+blocked\s+(by|from)\b/i
+];
+
+// The agent's own explanation of the blocker (first sentence that states the
+// denial, capped), or null when the text is not an explicit blocker report.
+export function blockedResultText(text) {
+  const s = String(text ?? "");
+  const denial = BLOCKED_DENIAL_RE.find(re => re.test(s));
+  if (!denial) return null;
+  const sentence =
+    s.split(/(?<=[.!?])\s+/).find(part => denial.test(part)) ?? s.trim();
+  return capText(sentence, 2000);
+}
 
 // A storage guard, not a display decision: bounds an unbounded/adversarial
 // section so the task record can't grow without limit. Trims surrounding
