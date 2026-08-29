@@ -815,9 +815,20 @@ export function buildHelp(cols, p, T) {
 
 // --- the whole frame -----------------------------------------------------------
 
+// The outer breathing room around the whole frame — a column of ground on
+// each side and a blank row top and bottom, so the design's content never
+// sits flush against the terminal's own edge (or a host app's panel border,
+// which paints no inset of its own). Every width/height computation below
+// this point works in the SHRUNK budget; the gutter is stitched back on once
+// the frame is built, rather than threading it through every column sum.
+const GUTTER_X = 1;
+const GUTTER_Y = 1;
+
 export function frame(model, state, opts = {}) {
-  const cols = Math.max(60, opts.cols ?? 132);
-  const rows = Math.max(12, opts.rows ?? 38);
+  const trueCols = Math.max(60, opts.cols ?? 132);
+  const trueRows = Math.max(12, opts.rows ?? 38);
+  const cols = trueCols - GUTTER_X * 2;
+  const rows = trueRows - GUTTER_Y * 2;
   const p = opts.palette;
   const T = (t, c, b) => ({ t: String(t), c, b: b || 400, bg: "transparent" });
 
@@ -1015,7 +1026,23 @@ export function frame(model, state, opts = {}) {
       if (!cell.bg) cell.bg = "transparent";
     }
   }
+
+  // Stitch the gutter back on: a blank row of ground top and bottom, and a
+  // column of ground before every line. The trailing column on the right
+  // needs no cell of its own — renderLine already pads any row shorter than
+  // `trueCols` with the frame's ground, and every line here was built to a
+  // budget `GUTTER_X` narrower than that.
+  const blankRow = { cells: [] };
+  const gutteredLines = [
+    blankRow,
+    ...lines.map(line => ({
+      ...line,
+      cells: [{ t: " ".repeat(GUTTER_X), c: p.dim, b: 400, bg: "transparent" }, ...line.cells]
+    })),
+    blankRow
+  ];
+
   // `bg` travels with the frame because the caret cell is drawn inverted —
   // its ink is the terminal's own ground, which only the palette knows.
-  return { lines, cols, rows, bg: p.bg };
+  return { lines: gutteredLines, cols: trueCols, rows: trueRows, bg: p.bg };
 }

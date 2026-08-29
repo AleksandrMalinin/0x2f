@@ -570,13 +570,15 @@ test("the frame shows the workspace, the counts, the halt and the action it is w
   assert.ok(screen.includes("REJECT"));
 });
 
-test("the last three rows are a fixed footer that the panes never scroll into", async () => {
+test("the last three rows above the bottom gutter are a fixed footer that the panes never scroll into", async () => {
   const { runtime } = await makeRuntime();
   await blockTask(runtime, "A task that needs a decision", { type: "decision", text: "Which way?" });
   const { text } = await frameFor(runtime, initialState());
-  assert.match(text[text.length - 3], /^\s─+\s*$/, "a rule");
-  assert.match(text[text.length - 2], /n to submit work/, "the message line");
-  assert.match(text[text.length - 1], /q detach/, "the hint line");
+  // The very last row is blank — the frame's own bottom gutter.
+  assert.match(text[text.length - 1], /^\s*$/, "the bottom gutter");
+  assert.match(text[text.length - 4], /^\s+─+\s*$/, "a rule");
+  assert.match(text[text.length - 3], /n to submit work/, "the message line");
+  assert.match(text[text.length - 2], /q detach/, "the hint line");
 });
 
 test("help, the composer and the changes view each render their own full frame", async () => {
