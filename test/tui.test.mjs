@@ -28,7 +28,7 @@ import {
 } from "../src/tui/state.mjs";
 import { snapshot, STATE_KEY } from "../src/tui/model.mjs";
 import { frame, wrap, cut, pad, oneline, shortPath, cellWord } from "../src/tui/view.mjs";
-import { renderLine, renderFrame, createPainter } from "../src/tui/screen.mjs";
+import { renderLine, renderFrame, createPainter, colorSupport } from "../src/tui/screen.mjs";
 import { providerSignature, palette } from "../src/tui/theme.mjs";
 import { createApp } from "../src/tui/app.mjs";
 
@@ -308,6 +308,39 @@ test("renderLine emits truecolor when the terminal has it and 256 when it does n
   assert.match(renderLine(cells, 1, { support: "truecolor" }), /38;2;143;178;238m/);
   assert.match(renderLine(cells, 1, { support: "256" }), /38;5;\d+m/);
   assert.equal(renderLine(cells, 1, { support: "none" }), "x");
+});
+
+test("colorSupport follows the documented capability contract", () => {
+  // NO_COLOR always wins, even over COLORTERM=truecolor.
+  assert.equal(colorSupport({ NO_COLOR: "1", TERM: "xterm-256color", COLORTERM: "truecolor" }), "none");
+  // COLORTERM=truecolor / 24bit advertise truecolor.
+  assert.equal(colorSupport({ TERM: "xterm", COLORTERM: "truecolor" }), "truecolor");
+  assert.equal(colorSupport({ TERM: "xterm", COLORTERM: "24bit" }), "truecolor");
+  // A TERM that says truecolor does too.
+  assert.equal(colorSupport({ TERM: "xterm-truecolor" }), "truecolor");
+  // A dumb or absent TERM means a terminal that cannot be styled: plain text.
+  assert.equal(colorSupport({ TERM: "dumb" }), "none");
+  assert.equal(colorSupport({ TERM: "" }), "none");
+  assert.equal(colorSupport({}), "none");
+  // Anything else is treated as the xterm-256 cube — the conservative middle.
+  assert.equal(colorSupport({ TERM: "xterm-256color" }), "256");
+  assert.equal(colorSupport({ TERM: "xterm" }), "256");
+  assert.equal(colorSupport({ TERM: "screen" }), "256");
+});
+
+test("256-color fallback quantizes the palette onto the canonical xterm cube", () => {
+  // The xterm cube levels are {0, 95, 135, 175, 215, 255}. A regression
+  // quantized mid-bright values one step too high, so the accent rendered as
+  // lavender (#afd7ff) instead of blue (#87afff) on TERM=xterm-256color.
+  const line = cells => renderLine([{ t: "x", c: cells }], 1, { support: "256" });
+  assert.equal(line("#8fb2ee"), ESC + "[38;5;111mx" + ESC + "[0m", "accent lands on cube (2,3,5)");
+  assert.equal(line("#e79274"), ESC + "[38;5;174mx" + ESC + "[0m", "bad lands on cube (4,2,2)");
+  assert.equal(line("#96a1aa"), ESC + "[38;5;109mx" + ESC + "[0m", "dim lands on cube (2,3,3)");
+  // Truecolor output is byte-identical regardless of the cube mapping.
+  assert.equal(
+    renderLine([{ t: "x", c: "#8fb2ee" }], 1, { support: "truecolor" }),
+    ESC + "[38;2;143;178;238mx" + ESC + "[0m"
+  );
 });
 
 // Count printable characters emitted while NO background is in effect —

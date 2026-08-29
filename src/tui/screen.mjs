@@ -37,7 +37,7 @@ function hex(value) {
 function cube(v) {
   if (v < 48) return 0;
   if (v < 115) return 1;
-  return Math.min(5, Math.round((v - 35) / 40));
+  return Math.min(5, Math.round((v - 55) / 40));
 }
 
 function to256([r, g, b]) {
