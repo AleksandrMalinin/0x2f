@@ -52,183 +52,6 @@ disposable execution underneath it. A task can be run again through a
 different harness, corrected with notes, and continued with prior results in
 context — because the task, not the session, is what 0x2F keeps.
 
-## How a task works
-
-```text
-                    ┌────────────────────────────────────┐
-                    ▼                                    │
- WORKING ───────────────► READY / FAILED ────────────────┘
-    │                                (2f close → DONE)
-    │  the agent needs a human
-    ▼
- NEEDS YOU
-   ├─ PERMISSION  → 2f allow | 2f reject
-   │                the same run/session continues
-   └─ DECISION    → 2f answer (recorded with the task)
-                    rerun the task to continue with it in context
-```
-
-A task that hits something the agent cannot decide alone becomes **NEEDS YOU**.
-`2f open <id>` (or the Web UI) shows what it is asking for. There are two
-distinct interactions:
-
-- **PERMISSION** — a concrete operation needing authorization (an edit, a
-  command). `2f allow <id>` / `2f reject <id>` answers it and the same run
-  continues.
-- **DECISION** — the agent cannot continue without your judgment.
-  `2f answer <id> "<your answer>"` records your answer with the task. A
-  decision is never allow/rejected.
-
-The decision request is a machine-read protocol, not prose. Agents signal one
-by ending with:
-
-```text
-## Needs human decision
-REQUIRED: yes
-QUESTION: <the concrete question a human must answer>
-```
-
-Anything else — a bare heading, "None", "No decision required", or any prose —
-is treated as **no** decision, so a finished run completes READY instead of
-interrupting you for work that did not need you.
-
-`2f close <id>` (or **CLOSE** in the Web UI) removes any task from active
-attention — a wrong NEEDS YOU, a non-resumable one, a FAILED or READY run you
-no longer want. It never resumes the provider and never starts a new
-execution.
-
-## One task, many runs
-
-Every execution is recorded as a **run** under the task, so the same task can
-be run again — through a different harness, for comparison:
-
-```text
-Task  "Investigate why retries restart the whole run"
-  ├── run 01 · claude-code         a fresh session
-  ├── run 02 · deepseek-harness    a fresh session
-  └── run 03 · claude-code         a fresh session, with your notes
-                                   and prior results in context
-```
-
-```bash
-2f rerun 1 --provider deepseek-harness   # run 02 under task #1
-2f open 1 --run 2                        # one run's factual detail
-```
-
-A new run is a **continuation of the task, not a blank attempt**: its input
-(`runs/<n>/prompt.md`) is rebuilt from current task state — the original
-request plus your constraints/answers and prior runs' results, verification
-and changed files — and handed to a fresh provider session. The task is
-persistent; provider sessions are disposable. Add a constraint with
-`2f note <id> "<constraint>"` (or `2f answer` on a decision block); it becomes
-part of the next run's context, with no manual copying. The original
-`prompt.md` is never overwritten.
-
-## The terminal client
-
-`2f tui` is the full-screen surface: the whole ledger on the left, the
-selected task in full on the right, and — pinned to the bottom of the detail
-pane — the one action that task is waiting for.
-
-```bash
-2f tui                     # or: 2f tui --light
-```
-
-It is a client, not a second runtime. It builds the same runtime every other
-command builds, calls the same shared actions, and tails the same event logs
-the Web server tails — so a run finishing in the background, a `2f allow`
-typed in another terminal and a tap on your phone all land in it live, and
-anything you do in it lands everywhere else.
-
-The keymap is the surface's own, not a file manager's:
-
-| key | what it does |
-| --- | --- |
-| `j` `k` | move between tasks (`g` / `G` jump to first / last) |
-| `J` `K` | scroll the task detail |
-| `tab` | filter — all · needs you · failed · ready · working |
-| `/` | search by title, brief or number |
-| `↵` | the one action this task is waiting for (shown bottom-left) |
-| `x` | the alternative — reject · save only · send back · drop |
-| `d` | changes — the real diff of the working tree, or the planned write |
-| `c` | note or correct — kept on the task, carried into every later run |
-| `p` | point the next run at another provider |
-| `t` | expand the trace of the current run |
-| `n` | new task (`⇧↵` inserts a newline, `⌥↵` expands your note into a brief, `↵` starts it) |
-| `?` | the key list · `q` detaches — runs keep executing without you |
-
-`↵` is deliberately not "open": on a permission it ALLOWS, on a decision it is
-ANSWER & CONTINUE, on a READY task it ACCEPTS, on a FAILED one it RETRIES. The
-alternative under `x` is the other half of the same pair. Both go through the
-shared actions, so the TUI can never allow something the CLI would refuse.
-
-## Desktop + mobile
-
-The CLI, the TUI and the Web are three surfaces over the same core:
-
-```bash
-2f ui                      # or: 2f ui <port>, 2f ui --no-browser
-```
-
-`2f ui` behaves like opening a local application: if a 0x2F runtime is already
-healthy on `http://127.0.0.1:4242` (localhost only) it reuses it; otherwise it
-starts the runtime in the background, waits until it is healthy, and opens the
-UI. Runtime output lands in `.work/ui.log`. The browser calls the same shared
-actions over a local HTTP/SSE API and subscribes to the same normalized
-events.
-
-Control 0x2F from your phone on the **same Wi-Fi** — the Mac keeps running
-the work; the phone is a compact control surface:
-
-```bash
-2f pair
-```
-
-No flags, no IPs to find, no relay to configure. `2f pair` detects the Mac's
-private LAN address, enables the pairing surface on that interface (and only
-while pairing is active), and prints a phone-openable URL **plus a one-time
-pairing code**:
-
-```
-0x2F PAIR
-
-same Wi-Fi required
-
-  http://192.168.1.163:4242/pair?relay=…&token=…&device=…
-
-code  ZEPQQ-N4WH8-NG4D
-```
-
-Open the URL on your phone and type the code into the trusted page (served by
-the Mac itself). The phone then speaks the same Web UI against the Mac: see
-NEEDS YOU / WORKING / READY / FAILED, open a task, and ANSWER / ALLOW /
-REJECT / NOTE / SEND BACK / ACCEPT. Every command, ack, event and snapshot is
-end-to-end encrypted (AES-256-GCM keyed by the pairing code) — the same
-encrypted channel the hosted relay uses, so a passive observer on the Wi-Fi
-sees only ciphertext. While the Mac is offline the phone shows its own
-last-known state with a **MAC OFFLINE** banner and disables actions; commands
-are never queued, and a retried command reuses its `requestId` so it can
-never execute twice.
-
-Pairing tokens are one-time and expire in 10 minutes; phone sessions live 30
-days and are revoked by `2f pair --off` (a real revocation — the LAN surface
-closes within a second, and normal `2f` / `2f ui` stay loopback-only the whole
-time) or by re-pairing, which also rotates the Mac's credential and the E2E
-key. The LAN surface serves only the pairing client + relay protocol on
-private-LAN addresses (RFC 1918) — the normal local API is never reachable
-from other devices on the network.
-
-For **remote control away from the LAN** (future use, or your own
-deployment), the hosted relay path is unchanged: `2f pair --relay https://…`
-/ `--client https://…`, or the `0X2F_RELAY_URL` / `0X2F_CLIENT_ORIGIN` env
-vars (see [`deploy/README.md`](deploy/README.md)). The hosted relay is
-**private infrastructure, not part of the local product**: a small standalone
-app that forwards encrypted envelopes, holds no task state, and is never
-shipped in the npm package. Deployment details live in
-[`relay/README.md`](https://github.com/AleksandrMalinin/0x2f/blob/main/relay/README.md);
-a full setup-and-test walkthrough is in
-[`docs/remote-control.md`](https://github.com/AleksandrMalinin/0x2f/blob/main/docs/remote-control.md).
-
 ## Install
 
 Requires **Node.js ≥ 20** and at least one coding harness on your PATH:
@@ -299,6 +122,191 @@ run, or what to install if none is available.
 If `2f new` refuses with "Execution provider ... is unavailable", no harness
 is on PATH — install one, or configure a provider (see
 [Providers](#providers)).
+
+## How a task works
+
+```text
+                    ┌────────────────────────────────────┐
+                    ▼                                    │
+ WORKING ───────────────► READY / FAILED ────────────────┘
+    │                                (2f close → DONE)
+    │  the agent needs a human
+    ▼
+ NEEDS YOU
+   ├─ PERMISSION  → 2f allow | 2f reject
+   │                the same run/session continues
+   └─ DECISION    → 2f answer (recorded with the task)
+                    rerun the task to continue with it in context
+```
+
+A task that hits something the agent cannot decide alone becomes **NEEDS YOU**.
+`2f open <id>` (or the Web UI) shows what it is asking for. There are two
+distinct interactions:
+
+- **PERMISSION** — a concrete operation needing authorization (an edit, a
+  command). `2f allow <id>` / `2f reject <id>` answers it and the same run
+  continues.
+- **DECISION** — the agent cannot continue without your judgment.
+  `2f answer <id> "<your answer>"` records your answer with the task. A
+  decision is never allow/rejected.
+
+The decision request is a machine-read protocol, not prose. Agents signal one
+by ending with:
+
+```text
+## Needs human decision
+REQUIRED: yes
+QUESTION: <the concrete question a human must answer>
+```
+
+Anything else — a bare heading, "None", "No decision required", or any prose —
+is treated as **no** decision, so a finished run completes READY instead of
+interrupting you for work that did not need you.
+
+`2f close <id>` (or **CLOSE** in the Web UI) removes any task from active
+attention — a wrong NEEDS YOU, a non-resumable one, a FAILED or READY run you
+no longer want. It never resumes the provider and never starts a new
+execution.
+
+## One task, many runs
+
+
+<img width="920" height="506" alt="Screenshot 2026-08-29 at 14 00 41" src="https://github.com/user-attachments/assets/10a1dc37-7439-4d75-a024-d68e35a62275" />
+
+Every execution is recorded as a **run** under the task, so the same task can
+be run again — through a different harness, for comparison:
+
+```text
+Task  "Investigate why retries restart the whole run"
+  ├── run 01 · claude-code         a fresh session
+  ├── run 02 · deepseek-harness    a fresh session
+  └── run 03 · claude-code         a fresh session, with your notes
+                                   and prior results in context
+```
+
+```bash
+2f rerun 1 --provider deepseek-harness   # run 02 under task #1
+2f open 1 --run 2                        # one run's factual detail
+```
+
+A new run is a **continuation of the task, not a blank attempt**: its input
+(`runs/<n>/prompt.md`) is rebuilt from current task state — the original
+request plus your constraints/answers and prior runs' results, verification
+and changed files — and handed to a fresh provider session. The task is
+persistent; provider sessions are disposable. Add a constraint with
+`2f note <id> "<constraint>"` (or `2f answer` on a decision block); it becomes
+part of the next run's context, with no manual copying. The original
+`prompt.md` is never overwritten.
+
+## The terminal client
+
+`2f tui` is the full-screen surface: the whole ledger on the left, the
+selected task in full on the right, and — pinned to the bottom of the detail
+pane — the one action that task is waiting for.
+
+<img width="920" alt="Screenshot 2026-08-29 at 14 26 01" src="https://github.com/user-attachments/assets/3e87a04e-a233-49e8-8516-fcd8e66e194c" />
+
+```bash
+2f tui                     # or: 2f tui --light
+```
+
+It is a client, not a second runtime. It builds the same runtime every other
+command builds, calls the same shared actions, and tails the same event logs
+the Web server tails — so a run finishing in the background, a `2f allow`
+typed in another terminal and a tap on your phone all land in it live, and
+anything you do in it lands everywhere else.
+
+The keymap is the surface's own, not a file manager's:
+
+| key | what it does |
+| --- | --- |
+| `j` `k` | move between tasks (`g` / `G` jump to first / last) |
+| `J` `K` | scroll the task detail |
+| `tab` | filter — all · needs you · failed · ready · working |
+| `/` | search by title, brief or number |
+| `↵` | the one action this task is waiting for (shown bottom-left) |
+| `x` | the alternative — reject · save only · send back · drop |
+| `d` | changes — the real diff of the working tree, or the planned write |
+| `c` | note or correct — kept on the task, carried into every later run |
+| `p` | point the next run at another provider |
+| `t` | expand the trace of the current run |
+| `n` | new task (`⇧↵` inserts a newline, `⌥↵` expands your note into a brief, `↵` starts it) |
+| `?` | the key list · `q` detaches — runs keep executing without you |
+
+`↵` is deliberately not "open": on a permission it ALLOWS, on a decision it is
+ANSWER & CONTINUE, on a READY task it ACCEPTS, on a FAILED one it RETRIES. The
+alternative under `x` is the other half of the same pair. Both go through the
+shared actions, so the TUI can never allow something the CLI would refuse.
+
+## Desktop + mobile
+
+The CLI, the TUI and the Web are three surfaces over the same core:
+
+```bash
+2f ui                      # or: 2f ui <port>, 2f ui --no-browser
+```
+
+`2f ui` behaves like opening a local application: if a 0x2F runtime is already
+healthy on `http://127.0.0.1:4242` (localhost only) it reuses it; otherwise it
+starts the runtime in the background, waits until it is healthy, and opens the
+UI. Runtime output lands in `.work/ui.log`. The browser calls the same shared
+actions over a local HTTP/SSE API and subscribes to the same normalized
+events.
+
+Control 0x2F from your phone on the **same Wi-Fi** — the Mac keeps running
+the work; the phone is a compact control surface:
+
+<img width="310" height="552" alt="Screenshot 2026-08-29 at 14 01 06" src="https://github.com/user-attachments/assets/fb6311de-c662-4a4d-9097-d4cee465f826" />
+
+
+```bash
+2f pair
+```
+
+No flags, no IPs to find, no relay to configure. `2f pair` detects the Mac's
+private LAN address, enables the pairing surface on that interface (and only
+while pairing is active), and prints a phone-openable URL **plus a one-time
+pairing code**:
+
+```
+0x2F PAIR
+
+same Wi-Fi required
+
+  http://192.168.1.163:4242/pair?relay=…&token=…&device=…
+
+code  ZEPQQ-N4WH8-NG4D
+```
+
+Open the URL on your phone and type the code into the trusted page (served by
+the Mac itself). The phone then speaks the same Web UI against the Mac: see
+NEEDS YOU / WORKING / READY / FAILED, open a task, and ANSWER / ALLOW /
+REJECT / NOTE / SEND BACK / ACCEPT. Every command, ack, event and snapshot is
+end-to-end encrypted (AES-256-GCM keyed by the pairing code) — the same
+encrypted channel the hosted relay uses, so a passive observer on the Wi-Fi
+sees only ciphertext. While the Mac is offline the phone shows its own
+last-known state with a **MAC OFFLINE** banner and disables actions; commands
+are never queued, and a retried command reuses its `requestId` so it can
+never execute twice.
+
+Pairing tokens are one-time and expire in 10 minutes; phone sessions live 30
+days and are revoked by `2f pair --off` (a real revocation — the LAN surface
+closes within a second, and normal `2f` / `2f ui` stay loopback-only the whole
+time) or by re-pairing, which also rotates the Mac's credential and the E2E
+key. The LAN surface serves only the pairing client + relay protocol on
+private-LAN addresses (RFC 1918) — the normal local API is never reachable
+from other devices on the network.
+
+For **remote control away from the LAN** (future use, or your own
+deployment), the hosted relay path is unchanged: `2f pair --relay https://…`
+/ `--client https://…`, or the `0X2F_RELAY_URL` / `0X2F_CLIENT_ORIGIN` env
+vars (see [`deploy/README.md`](deploy/README.md)). The hosted relay is
+**private infrastructure, not part of the local product**: a small standalone
+app that forwards encrypted envelopes, holds no task state, and is never
+shipped in the npm package. Deployment details live in
+[`relay/README.md`](https://github.com/AleksandrMalinin/0x2f/blob/main/relay/README.md);
+a full setup-and-test walkthrough is in
+[`docs/remote-control.md`](https://github.com/AleksandrMalinin/0x2f/blob/main/docs/remote-control.md).
 
 ## Where your work lives
 
