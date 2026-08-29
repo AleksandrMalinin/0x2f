@@ -35,10 +35,29 @@ export async function readText(p, fallback = "") {
 // world-readable by an older version is tightened.
 const PRIVATE_FILE = { encoding: "utf8", mode: 0o600 };
 
-export async function writeText(p, value) {
+// Atomic whole-file write: write to a temp file in the same directory, then
+// rename over the destination. A reader (or a crash mid-write) can never
+// observe a partially written file — the task ledger sees either the previous
+// complete file or the new complete file, never a torn one. rename() is
+// atomic on the same filesystem; the temp file lives next to the destination
+// so they share one. Mode is 0600 on creation and re-applied after the
+// rename, exactly as the previous direct write behaved. A temp file orphaned
+// by a crash between write and rename is a hidden dotfile that the store
+// never reads; the next successful write replaces the destination normally.
+async function writeAtomic(p, value) {
   await fs.mkdir(path.dirname(p), { recursive: true });
-  await fs.writeFile(p, value, PRIVATE_FILE);
-  await fs.chmod(p, 0o600);
+  const tmp = path.join(
+    path.dirname(p),
+    `.${path.basename(p)}.${process.pid}.${Date.now().toString(36)}.${Math.random().toString(36).slice(2, 8)}.tmp`
+  );
+  await fs.writeFile(tmp, value, PRIVATE_FILE);
+  await fs.chmod(tmp, 0o600);
+  await fs.rename(tmp, p);
+  await fs.chmod(p, 0o600).catch(() => {});
+}
+
+export async function writeText(p, value) {
+  await writeAtomic(p, value);
 }
 
 export async function readJson(p) {
@@ -46,9 +65,7 @@ export async function readJson(p) {
 }
 
 export async function writeJson(p, value) {
-  await fs.mkdir(path.dirname(p), { recursive: true });
-  await fs.writeFile(p, JSON.stringify(value, null, 2) + "\n", PRIVATE_FILE);
-  await fs.chmod(p, 0o600);
+  await writeAtomic(p, JSON.stringify(value, null, 2) + "\n");
 }
 
 function slugify(input) {

@@ -108,3 +108,36 @@ test("task state files are written owner-only (0600)", async () => {
     await fs.rm(base, { recursive: true, force: true });
   }
 });
+
+test("writeJson/writeText are atomic: temp file + rename, no leftovers, 0600 preserved", async () => {
+  const base = await tempWorkspace();
+  try {
+    const store = createStore(base);
+    const dir = path.join(base, ".work", "atomic");
+    const p = path.join(dir, "task.json");
+
+    // First write creates the directory, the file, and the JSON shape
+    // (indented, trailing newline) at 0600.
+    await store.writeJson(p, { a: 1 });
+    assert.equal((await fs.stat(p)).mode & 0o777, 0o600);
+    assert.equal(await store.readText(p), JSON.stringify({ a: 1 }, null, 2) + "\n");
+    assert.deepEqual(await store.readJson(p), { a: 1 });
+
+    // Overwrite replaces the whole file atomically — no partial content.
+    await store.writeJson(p, { b: 2, note: "x\n" });
+    assert.deepEqual(await store.readJson(p), { b: 2, note: "x\n" });
+    assert.equal((await fs.stat(p)).mode & 0o777, 0o600, "mode must survive the rename");
+
+    // writeText behaves the same.
+    const t = path.join(dir, "notes.md");
+    await store.writeText(t, "hello\nworld");
+    assert.equal(await store.readText(t), "hello\nworld");
+    assert.equal((await fs.stat(t)).mode & 0o777, 0o600);
+
+    // No temp files are left behind in the directory.
+    const entries = (await fs.readdir(dir)).sort();
+    assert.deepEqual(entries, ["notes.md", "task.json"]);
+  } finally {
+    await fs.rm(base, { recursive: true, force: true });
+  }
+});
