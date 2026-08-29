@@ -356,7 +356,12 @@ export function createActions(ctx) {
         `Task #${id} has no resumable execution session. Its provider run ended without a recoverable session, so it cannot be continued in place.`
       );
     }
-    await node.resumeExecution({ task, grant });
+    const pid = await node.resumeExecution({ task, grant });
+    // Persist the resumed worker's pid so the crash/reboot recovery sweep
+    // (src/recover.mjs) can tell a live resumed run from an orphaned one.
+    // The worker itself flips the task to working when it starts; until then
+    // the task correctly stays needs_you with the new worker's pid attached.
+    if (pid) await store.updateTask({ ...task, pid });
     return { ...task, status: "working" };
   }
 
