@@ -1,6 +1,6 @@
 {
   "name": "0x2f",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "A local work router for coding agents. Tasks persist across runs, so a task can be continued through a different harness without losing prior results or decisions.",
   "type": "module",
   "license": "MIT",
