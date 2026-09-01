@@ -1,3 +1,8 @@
+PROBNAYA / 0x2F
+INSTRUMENT
+
+Independent Computational Laboratory
+
 # 0x2F
 
 0x2F is a local work router for coding agents. Give it engineering work —
@@ -304,9 +309,9 @@ vars (see [`deploy/README.md`](deploy/README.md)). The hosted relay is
 **private infrastructure, not part of the local product**: a small standalone
 app that forwards encrypted envelopes, holds no task state, and is never
 shipped in the npm package. Deployment details live in
-[`relay/README.md`](https://github.com/AleksandrMalinin/0x2f/blob/main/relay/README.md);
+[`relay/README.md`](https://github.com/probnaya-work/0x2f/blob/main/relay/README.md);
 a full setup-and-test walkthrough is in
-[`docs/remote-control.md`](https://github.com/AleksandrMalinin/0x2f/blob/main/docs/remote-control.md).
+[`docs/remote-control.md`](https://github.com/probnaya-work/0x2f/blob/main/docs/remote-control.md).
 
 ## Where your work lives
 
@@ -363,7 +368,7 @@ ACP manifests may set `"permissions"`: `"interactive"` (default — a permission
 request pauses the run and asks you), `"deny"`, or `"approve"` (headless
 auto-resolution). Command manifests must pass the task through the `{prompt}`
 placeholder. Commands are spawned as argv arrays, never through a shell.
-Verified example manifests live in [`examples/providers/`](https://github.com/AleksandrMalinin/0x2f/blob/main/examples/providers/README.md);
+Verified example manifests live in [`examples/providers/`](https://github.com/probnaya-work/0x2f/blob/main/examples/providers/README.md);
 `2f providers` lists every provider with its integration type and availability.
 
 By default `2f new` uses the configured routing default. When it is `auto`,
@@ -465,9 +470,9 @@ npm run check     # syntax-check every source and test file
 npm start         # run the CLI: node src/cli.mjs
 ```
 
-See [`docs/development.md`](https://github.com/AleksandrMalinin/0x2f/blob/main/docs/development.md)
+See [`docs/development.md`](https://github.com/probnaya-work/0x2f/blob/main/docs/development.md)
 for the repository layout and how the pieces fit;
-[`docs/architecture.md`](https://github.com/AleksandrMalinin/0x2f/blob/main/docs/architecture.md)
+[`docs/architecture.md`](https://github.com/probnaya-work/0x2f/blob/main/docs/architecture.md)
 traces a task through the whole system.
 
 ## License

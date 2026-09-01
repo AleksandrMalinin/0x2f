@@ -1,7 +1,7 @@
 {
   "name": "0x2f",
   "version": "0.1.2",
-  "description": "0x2F \u2014 manage engineering work, not AI sessions. A task-native wrapper around coding agents with a local-first Web UI.",
+  "description": "A local work router for coding agents. Tasks persist across runs, so a task can be continued through a different harness without losing prior results or decisions.",
   "type": "module",
   "license": "MIT",
   "keywords": [
@@ -25,9 +25,12 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/AleksandrMalinin/0x2f.git"
+    "url": "git+https://github.com/probnaya-work/0x2f.git"
   },
-  "homepage": "https://github.com/AleksandrMalinin/0x2f#readme",
+  "bugs": {
+    "url": "https://github.com/probnaya-work/0x2f/issues"
+  },
+  "homepage": "https://0x2f.space/",
   "scripts": {
     "start": "node src/cli.mjs",
     "check": "find src test relay scripts deploy -name node_modules -prune -o \\( -name '*.mjs' -o -name '*.js' \\) -exec node --check {} \\; && python3 -c \"import ast,glob,sys; [ast.parse(open(f, encoding='utf-8').read(), f) for f in glob.glob('test/tui-pty/*.py')]\"",
